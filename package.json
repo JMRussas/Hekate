@@ -1,0 +1,124 @@
+{
+  "name": "beethoven-fleet",
+  "displayName": "Beethoven Fleet Control",
+  "description": "Fleet control center for Beethoven AI agent orchestration",
+  "version": "0.1.0",
+  "publisher": "jmrussas",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onView:beethovenTree"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "beethoven",
+          "title": "Beethoven Fleet",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "beethoven": [
+        {
+          "id": "beethovenTree",
+          "name": "Fleet",
+          "type": "tree"
+        },
+        {
+          "id": "beethovenChat",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "beethoven.refresh",
+        "title": "Refresh Fleet",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "beethoven.selectProject",
+        "title": "Select Project"
+      },
+      {
+        "command": "beethoven.startProject",
+        "title": "Start Project",
+        "icon": "$(play)"
+      },
+      {
+        "command": "beethoven.pauseProject",
+        "title": "Pause Project",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "beethoven.retryTask",
+        "title": "Retry Task",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "beethoven.cancelTask",
+        "title": "Cancel Task",
+        "icon": "$(close)"
+      },
+      {
+        "command": "beethoven.connect",
+        "title": "Connect to Beethoven"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "beethoven.startProject",
+          "when": "view == beethovenTree && viewItem == project-paused",
+          "group": "inline"
+        },
+        {
+          "command": "beethoven.pauseProject",
+          "when": "view == beethovenTree && viewItem == project-running",
+          "group": "inline"
+        },
+        {
+          "command": "beethoven.retryTask",
+          "when": "view == beethovenTree && viewItem == task-failed",
+          "group": "inline"
+        },
+        {
+          "command": "beethoven.cancelTask",
+          "when": "view == beethovenTree && viewItem == task-running",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Beethoven Fleet",
+      "properties": {
+        "beethoven.apiUrl": {
+          "type": "string",
+          "default": "http://192.168.1.164:5200",
+          "description": "URL of the Beethoven orchestration API"
+        },
+        "beethoven.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to the API on activation"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20",
+    "typescript": "^5.3"
+  }
+}
