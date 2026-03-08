@@ -34,6 +34,10 @@ export class BeethovenClient {
     return this._connected;
   }
 
+  getApiUrl(): string {
+    return this.apiUrl;
+  }
+
   // ── Private helpers ──────────────────────────────────────────────
 
   private async _fetch<T>(path: string, options?: RequestInit): Promise<T> {

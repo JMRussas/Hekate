@@ -107,11 +107,17 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
   private autoRefreshTimer: ReturnType<typeof setInterval> | undefined;
   private cachedProjects: ProjectDetail[] = [];
   private cachedServices: ServiceStatus[] = [];
+  private _connected = false;
 
   private client: BeethovenClient;
 
   constructor(client: BeethovenClient) {
     this.client = client;
+  }
+
+  private setConnected(value: boolean): void {
+    this._connected = value;
+    vscode.commands.executeCommand("setContext", "beethoven.connected", value);
   }
 
   updateClient(client: BeethovenClient): void {
@@ -170,7 +176,28 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
 
   // -- root --------------------------------------------------------------
 
-  private getRootItems(): FleetItem[] {
+  private async getRootItems(): Promise<FleetItem[]> {
+    // Fetch everything in one shot — probe + cache
+    try {
+      const [projects, services] = await Promise.all([
+        this.client.listProjects(),
+        this.client.getServices().catch(() => [] as ServiceStatus[]),
+      ]);
+      this.cachedProjects = projects;
+      this.cachedServices = services;
+      this.setConnected(true);
+    } catch {
+      this.setConnected(false);
+      return [
+        new FleetItem(
+          "Not connected",
+          "header",
+          vscode.TreeItemCollapsibleState.None,
+          { description: "Backend unavailable — chat works without it" },
+        ),
+      ];
+    }
+
     return [
       new FleetItem(
         "Projects",
@@ -189,19 +216,7 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
 
   // -- projects ----------------------------------------------------------
 
-  private async getProjectItems(): Promise<FleetItem[]> {
-    try {
-      this.cachedProjects = await this.client.listProjects();
-    } catch {
-      return [
-        new FleetItem(
-          "Failed to load projects",
-          "header",
-          vscode.TreeItemCollapsibleState.None,
-        ),
-      ];
-    }
-
+  private getProjectItems(): FleetItem[] {
     if (this.cachedProjects.length === 0) {
       return [
         new FleetItem(
@@ -319,19 +334,7 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
 
   // -- agents ------------------------------------------------------------
 
-  private async getAgentItems(): Promise<FleetItem[]> {
-    try {
-      this.cachedServices = await this.client.getServices();
-    } catch {
-      return [
-        new FleetItem(
-          "Failed to load agents",
-          "header",
-          vscode.TreeItemCollapsibleState.None,
-        ),
-      ];
-    }
-
+  private getAgentItems(): FleetItem[] {
     if (this.cachedServices.length === 0) {
       return [
         new FleetItem(

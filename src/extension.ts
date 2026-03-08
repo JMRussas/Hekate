@@ -16,10 +16,13 @@ let refreshInterval: ReturnType<typeof setInterval> | undefined;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const config = vscode.workspace.getConfiguration("beethoven");
   const apiUrl = config.get<string>("apiUrl", "http://localhost:5200");
-  const autoConnect = config.get<boolean>("autoConnect", false);
+  const autoConnect = config.get<boolean>("autoConnect", true);
 
   const secrets = context.secrets;
   let apiKey = await secrets.get("beethoven.apiKey");
+
+  const ollamaUrl = config.get<string>("ollamaUrl", "http://localhost:11434");
+  const ollamaModel = config.get<string>("ollamaModel", "qwen2.5-coder:14b");
 
   let client = new BeethovenClient(apiUrl, apiKey ?? undefined);
 
@@ -28,7 +31,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   vscode.window.registerTreeDataProvider("beethovenTree", treeProvider);
 
   // Chat webview
-  const chatProvider = new ChatViewProvider(context.extensionUri, client);
+  const chatProvider = new ChatViewProvider(context.extensionUri, client, ollamaUrl, ollamaModel, context.globalState);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("beethovenChat", chatProvider)
   );
@@ -40,10 +43,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // --- Commands ---
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.refresh", async () => {
+    vscode.commands.registerCommand("beethoven.refresh", () => {
       treeProvider.refresh();
-      const runningCount = await client.getRunningTaskCount();
-      updateStatusBar(statusBarItem, client.isConnected(), runningCount);
+      updateStatusBar(statusBarItem, client.isConnected(), 0);
     })
   );
 
@@ -116,15 +118,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // --- Auto-refresh ---
 
   if (autoConnect) {
-    refreshInterval = setInterval(async () => {
+    refreshInterval = setInterval(() => {
       treeProvider.refresh();
-      try {
-        const runningCount = await client.getRunningTaskCount();
-        updateStatusBar(statusBarItem, client.isConnected(), runningCount);
-      } catch {
-        updateStatusBar(statusBarItem, false, 0);
-      }
-    }, 10_000);
+      updateStatusBar(statusBarItem, client.isConnected(), 0);
+    }, 30_000);
 
     context.subscriptions.push({
       dispose: () => {
