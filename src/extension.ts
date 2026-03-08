@@ -13,15 +13,23 @@ import { createStatusBar, updateStatusBar } from "./statusBar";
 
 let refreshInterval: ReturnType<typeof setInterval> | undefined;
 
+const log = vscode.window.createOutputChannel("Beethoven Fleet", { log: true });
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const config = vscode.workspace.getConfiguration("beethoven");
   const apiUrl = config.get<string>("apiUrl", "http://localhost:5200");
   const autoConnect = config.get<boolean>("autoConnect", true);
 
   const secrets = context.secrets;
-  let apiKey = await secrets.get("beethoven.apiKey")
-    || config.get<string>("apiKey", "")
-    || process.env.BEETHOVEN_API_KEY;
+  const secretKey = await secrets.get("beethoven.apiKey");
+  const configKey = config.get<string>("apiKey", "");
+  const envKey = process.env.BEETHOVEN_API_KEY;
+  let apiKey = secretKey || configKey || envKey;
+
+  log.info(`API URL: ${apiUrl}`);
+  log.info(`API key source: ${secretKey ? "secrets" : configKey ? "settings" : envKey ? "env" : "NONE"}`);
+  log.info(`API key present: ${!!apiKey} (${apiKey ? apiKey.slice(0, 12) + "..." : "empty"})`);
+  log.info(`Auto-connect: ${autoConnect}`);
 
   const ollamaUrl = config.get<string>("ollamaUrl", "http://localhost:11434");
   const ollamaModel = config.get<string>("ollamaModel", "qwen2.5-coder:14b");
@@ -117,13 +125,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("beethoven.diagnose", async () => {
+      const lines = [
+        `API URL: ${apiUrl}`,
+        `API key source: ${secretKey ? "secrets" : configKey ? "settings" : envKey ? "env" : "NONE"}`,
+        `API key: ${apiKey ? apiKey.slice(0, 12) + "..." : "(empty)"}`,
+        `Connected: ${client.isConnected()}`,
+        `Auto-connect: ${autoConnect}`,
+      ];
+      try {
+        const projects = await client.getProjects();
+        lines.push(`API test: OK (${projects.length} projects)`);
+      } catch (err) {
+        lines.push(`API test: FAILED — ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const msg = lines.join("\n");
+      log.info(msg);
+      vscode.window.showInformationMessage(msg, { modal: true });
+    })
+  );
+
   // --- Auto-refresh ---
 
   if (autoConnect) {
     // Initial connection attempt
     client.getRunningTaskCount().then((count) => {
+      log.info(`Initial connect: OK (${count} running)`);
       updateStatusBar(statusBarItem, client.isConnected(), count);
-    }).catch(() => {
+    }).catch((err) => {
+      log.error(`Initial connect failed: ${err instanceof Error ? err.message : String(err)}`);
       updateStatusBar(statusBarItem, false, 0);
     });
 

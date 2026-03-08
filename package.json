@@ -66,6 +66,10 @@
       {
         "command": "beethoven.connect",
         "title": "Connect to Beethoven"
+      },
+      {
+        "command": "beethoven.diagnose",
+        "title": "Beethoven: Diagnose Connection"
       }
     ],
     "menus": {

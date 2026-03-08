@@ -50,7 +50,9 @@ const PROJECT_STATUS_ICONS: Record<ProjectStatus, StatusIcon> = {
 
 const SERVICE_STATUS_ICONS: Record<string, StatusIcon> = {
   available:   { icon: "circle-filled",  color: "charts.green" },
+  online:      { icon: "circle-filled",  color: "charts.green" },
   unavailable: { icon: "circle-slash",   color: "charts.red" },
+  offline:     { icon: "circle-slash",   color: "charts.red" },
   degraded:    { icon: "warning",        color: "charts.yellow" },
 };
 
