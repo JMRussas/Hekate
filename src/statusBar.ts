@@ -1,7 +1,7 @@
 // Beethoven Fleet Control - Status Bar
 //
 // Creates and updates the status bar item showing fleet connection state
-// and running task count.
+// and running task count. Uses VSCode theme colors for visual feedback.
 //
 // Depends on: (none)
 // Used by:    extension.ts
@@ -25,6 +25,11 @@ export function createStatusBar(): vscode.StatusBarItem {
 
 /**
  * Updates the status bar item based on connection state and running task count.
+ *
+ * States:
+ *   Disconnected — red background, circle-slash icon
+ *   Tasks running — blue text, spinning sync icon + count
+ *   Connected idle — green text, check icon
  */
 export function updateStatusBar(
   item: vscode.StatusBarItem,
@@ -32,13 +37,19 @@ export function updateStatusBar(
   runningCount: number
 ): void {
   if (!connected) {
-    item.text = "$(hubot) Beethoven $(circle-slash)";
-    item.tooltip = "Beethoven Fleet Control - Disconnected";
+    item.text = "$(circle-slash) Beethoven — Offline";
+    item.tooltip = "Beethoven Fleet Control — Disconnected";
+    item.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    item.color = undefined;
   } else if (runningCount > 0) {
-    item.text = `$(hubot) Beethoven $(sync~spin) ${runningCount}`;
-    item.tooltip = `Beethoven Fleet Control - ${runningCount} task${runningCount === 1 ? "" : "s"} running`;
+    item.text = `$(sync~spin) Beethoven — ${runningCount} task${runningCount === 1 ? "" : "s"}`;
+    item.tooltip = `Beethoven Fleet Control — ${runningCount} task${runningCount === 1 ? "" : "s"} running`;
+    item.backgroundColor = undefined;
+    item.color = new vscode.ThemeColor("charts.blue");
   } else {
-    item.text = "$(hubot) Beethoven $(check)";
-    item.tooltip = "Beethoven Fleet Control - Idle";
+    item.text = "$(check) Beethoven — Idle";
+    item.tooltip = "Beethoven Fleet Control — Connected";
+    item.backgroundColor = undefined;
+    item.color = new vscode.ThemeColor("charts.green");
   }
 }

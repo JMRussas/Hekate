@@ -2,6 +2,7 @@
 //
 //  TreeDataProvider for the sidebar tree. Shows projects (grouped by wave)
 //  and agent/service statuses in a two-root hierarchy.
+//  Uses ThemeIcon + ThemeColor for colored status indicators.
 //
 //  Depends on: ../api/types, ../api/client
 //  Used by:    extension.ts
@@ -17,36 +18,47 @@ import {
 import { BeethovenClient } from "../api/client";
 
 // ---------------------------------------------------------------------------
-//  Status icon maps
+//  Status → ThemeIcon mappings (icon id + color)
 // ---------------------------------------------------------------------------
 
-const TASK_STATUS_ICONS: Record<TaskStatus, string> = {
-  completed: "\u2713",   // ✓
-  running: "\u27F3",     // ⟳
-  failed: "\u2717",      // ✗
-  blocked: "\u2298",     // ⊘
-  pending: "\u25CB",     // ○
-  queued: "\u25CB",      // ○
-  cancelled: "\u2717",   // ✗
-  needs_review: "\u2049", // ⁉
+interface StatusIcon {
+  icon: string;
+  color: string;
+}
+
+const TASK_STATUS_ICONS: Record<TaskStatus, StatusIcon> = {
+  completed:    { icon: "pass-filled",     color: "charts.green" },
+  running:      { icon: "sync~spin",       color: "charts.blue" },
+  failed:       { icon: "error",           color: "charts.red" },
+  blocked:      { icon: "circle-slash",    color: "charts.yellow" },
+  pending:      { icon: "circle-outline",  color: "foreground" },
+  queued:       { icon: "circle-outline",  color: "foreground" },
+  cancelled:    { icon: "close",           color: "disabledForeground" },
+  needs_review: { icon: "warning",         color: "charts.yellow" },
 };
 
-const PROJECT_STATUS_ICONS: Record<ProjectStatus, string> = {
-  draft: "\u25CB",       // ○
-  planning: "\u25CB",    // ○
-  ready: "\u25CB",       // ○
-  executing: "\u27F3",   // ⟳
-  paused: "\u23F8",      // ⏸
-  completed: "\u2713",   // ✓
-  failed: "\u2717",      // ✗
-  cancelled: "\u2717",   // ✗
+const PROJECT_STATUS_ICONS: Record<ProjectStatus, StatusIcon> = {
+  draft:     { icon: "circle-outline",  color: "foreground" },
+  planning:  { icon: "circle-outline",  color: "foreground" },
+  ready:     { icon: "circle-filled",   color: "charts.green" },
+  executing: { icon: "sync~spin",       color: "charts.blue" },
+  paused:    { icon: "debug-pause",     color: "charts.yellow" },
+  completed: { icon: "pass-filled",     color: "charts.green" },
+  failed:    { icon: "error",           color: "charts.red" },
+  cancelled: { icon: "close",           color: "disabledForeground" },
 };
 
-const SERVICE_STATUS_ICONS: Record<string, string> = {
-  available: "\u2713",   // ✓
-  unavailable: "\u2717", // ✗
-  degraded: "\u26A0",   // ⚠
+const SERVICE_STATUS_ICONS: Record<string, StatusIcon> = {
+  available:   { icon: "circle-filled",  color: "charts.green" },
+  unavailable: { icon: "circle-slash",   color: "charts.red" },
+  degraded:    { icon: "warning",        color: "charts.yellow" },
 };
+
+const DEFAULT_ICON: StatusIcon = { icon: "circle-outline", color: "foreground" };
+
+function statusThemeIcon(si: StatusIcon): vscode.ThemeIcon {
+  return new vscode.ThemeIcon(si.icon, new vscode.ThemeColor(si.color));
+}
 
 // ---------------------------------------------------------------------------
 //  FleetItem — tree node
@@ -68,7 +80,7 @@ export class FleetItem extends vscode.TreeItem {
       taskId?: string;
       description?: string;
       contextValue?: string;
-      icon?: string;
+      themeIcon?: vscode.ThemeIcon;
     },
   ) {
     super(label, collapsible);
@@ -82,13 +94,8 @@ export class FleetItem extends vscode.TreeItem {
     if (options?.contextValue) {
       this.contextValue = options.contextValue;
     }
-    if (options?.icon) {
-      this.iconPath = new vscode.ThemeIcon(
-        itemType === "agent" ? "circle-filled" : "symbol-event",
-      );
-      // Prefer inline text label over ThemeIcon so Unicode status shows
-      this.label = `${options.icon} ${label}`;
-      this.iconPath = undefined;
+    if (options?.themeIcon) {
+      this.iconPath = options.themeIcon;
     }
   }
 }
@@ -193,7 +200,13 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
           "Not connected",
           "header",
           vscode.TreeItemCollapsibleState.None,
-          { description: "Backend unavailable — chat works without it" },
+          {
+            description: "Backend unavailable — chat works without it",
+            themeIcon: new vscode.ThemeIcon(
+              "circle-slash",
+              new vscode.ThemeColor("charts.red"),
+            ),
+          },
         ),
       ];
     }
@@ -203,13 +216,19 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
         "Projects",
         "header",
         vscode.TreeItemCollapsibleState.Expanded,
-        { contextValue: "header" },
+        {
+          contextValue: "header",
+          themeIcon: new vscode.ThemeIcon("project"),
+        },
       ),
       new FleetItem(
         "Agents",
         "header",
         vscode.TreeItemCollapsibleState.Expanded,
-        { contextValue: "header" },
+        {
+          contextValue: "header",
+          themeIcon: new vscode.ThemeIcon("server-environment"),
+        },
       ),
     ];
   }
@@ -223,12 +242,15 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
           "No projects",
           "header",
           vscode.TreeItemCollapsibleState.None,
+          {
+            themeIcon: new vscode.ThemeIcon("info"),
+          },
         ),
       ];
     }
 
     return this.cachedProjects.map((p) => {
-      const icon = PROJECT_STATUS_ICONS[p.status] ?? "\u25CB";
+      const si = PROJECT_STATUS_ICONS[p.status] ?? DEFAULT_ICON;
       const progress = `${p.completed_tasks}/${p.total_tasks} tasks`;
       const contextValue =
         p.status === "executing"
@@ -243,9 +265,9 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
         vscode.TreeItemCollapsibleState.Collapsed,
         {
           projectId: p.id,
-          description: `[${p.status}] (${progress})`,
+          description: `${p.status} · ${progress}`,
           contextValue,
-          icon,
+          themeIcon: statusThemeIcon(si),
         },
       );
     });
@@ -276,11 +298,33 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
 
     const sorted = [...waves.keys()].sort((a, b) => a - b);
     return sorted.map((waveNum) => {
+      const tasks = waves.get(waveNum)!;
+      const completed = tasks.filter((t) => t.status === "completed").length;
+      const failed = tasks.filter((t) => t.status === "failed").length;
+      const running = tasks.filter((t) => t.status === "running").length;
+
+      // Wave icon reflects aggregate state
+      let waveIcon: StatusIcon;
+      if (failed > 0) {
+        waveIcon = { icon: "warning", color: "charts.red" };
+      } else if (running > 0) {
+        waveIcon = { icon: "sync~spin", color: "charts.blue" };
+      } else if (completed === tasks.length) {
+        waveIcon = { icon: "pass-filled", color: "charts.green" };
+      } else {
+        waveIcon = { icon: "circle-outline", color: "foreground" };
+      }
+
       const item = new FleetItem(
         `Wave ${waveNum}`,
         "wave",
         vscode.TreeItemCollapsibleState.Collapsed,
-        { projectId, contextValue: "wave" },
+        {
+          projectId,
+          contextValue: "wave",
+          description: `${completed}/${tasks.length} done`,
+          themeIcon: statusThemeIcon(waveIcon),
+        },
       );
       // Stash wave number for child lookup
       (item as FleetItem & { waveNum: number }).waveNum = waveNum;
@@ -303,7 +347,7 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
     const tasks = project.tasks.filter((t) => (t.wave ?? 0) === waveNum);
 
     return tasks.map((t) => {
-      const icon = TASK_STATUS_ICONS[t.status] ?? "\u25CB";
+      const si = TASK_STATUS_ICONS[t.status] ?? DEFAULT_ICON;
       const contextValue = this.taskContextValue(t.status);
 
       return new FleetItem(
@@ -313,9 +357,9 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
         {
           projectId,
           taskId: t.id,
-          description: `[${t.status}]`,
+          description: t.status,
           contextValue,
-          icon,
+          themeIcon: statusThemeIcon(si),
         },
       );
     });
@@ -341,20 +385,23 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
           "No agents",
           "header",
           vscode.TreeItemCollapsibleState.None,
+          {
+            themeIcon: new vscode.ThemeIcon("info"),
+          },
         ),
       ];
     }
 
     return this.cachedServices.map((s) => {
-      const icon = SERVICE_STATUS_ICONS[s.status] ?? "\u25CB";
+      const si = SERVICE_STATUS_ICONS[s.status] ?? DEFAULT_ICON;
       return new FleetItem(
         s.name,
         "agent",
         vscode.TreeItemCollapsibleState.None,
         {
-          description: `[${s.status}]`,
+          description: s.status,
           contextValue: "agent",
-          icon,
+          themeIcon: statusThemeIcon(si),
         },
       );
     });
