@@ -2,15 +2,13 @@
   "name": "beethoven-fleet",
   "displayName": "Beethoven Fleet Control",
   "description": "Fleet control center for Beethoven AI agent orchestration",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "jmrussas",
   "engines": {
     "vscode": "^1.85.0"
   },
   "main": "./out/extension.js",
-  "activationEvents": [
-    "onView:beethovenTree"
-  ],
+  "activationEvents": [],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -94,18 +92,35 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "beethovenTree",
+        "contents": "Welcome to Beethoven Fleet Control.\n\nThis extension connects to your Orchestration API to manage AI agent projects, tasks, and providers.\n\n**Quick start:**\n1. Ensure the orchestration server is running\n2. Set the API URL in settings (default: 192.168.1.164:5200)\n3. Click Refresh or wait for auto-connect\n\n[Refresh Fleet](command:beethoven.refresh)\n[Set API Key](command:beethoven.connect)\n[Open Settings](command:workbench.action.openSettings?%5B%22beethoven%22%5D)\n\n**Chat commands:**\n`/status` — list all projects\n`/tasks` — show tasks for selected project\n`/start` — start selected project\n`/pause` — pause selected project",
+        "when": "!beethoven.connected"
+      }
+    ],
     "configuration": {
       "title": "Beethoven Fleet",
       "properties": {
         "beethoven.apiUrl": {
           "type": "string",
-          "default": "http://192.168.1.164:5200",
-          "description": "URL of the Beethoven orchestration API"
+          "default": "http://localhost:5200",
+          "description": "URL of the Beethoven orchestration API (e.g. http://192.168.1.164:5200)"
         },
         "beethoven.autoConnect": {
           "type": "boolean",
           "default": true,
           "description": "Automatically connect to the API on activation"
+        },
+        "beethoven.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama API URL for chat"
+        },
+        "beethoven.ollamaModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:14b",
+          "description": "Ollama model for chat"
         }
       }
     }
@@ -120,5 +135,8 @@
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.20",
     "typescript": "^5.3"
+  },
+  "dependencies": {
+    "claude-code-js": "^0.4.0"
   }
 }
