@@ -77,14 +77,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._abortController?.abort();
           break;
         case "providerChanged":
-          this._globalState.update("beethoven.lastProvider", msg.provider);
-          this._globalState.update("beethoven.lastModel", msg.model);
+          this._globalState.update("beethoven.lastSelection", msg.value);
           break;
         case "webviewReady": {
-          const savedProvider = this._globalState.get<string>("beethoven.lastProvider");
-          const savedModel = this._globalState.get<string>("beethoven.lastModel");
-          if (savedProvider) {
-            this.postMessage({ type: "restoreSelection", provider: savedProvider, model: savedModel });
+          const saved = this._globalState.get<string>("beethoven.lastSelection");
+          if (saved) {
+            this.postMessage({ type: "restoreSelection", value: saved });
           }
           break;
         }
@@ -725,13 +723,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div class="top-bar">
     <span class="project-name" id="projectName">No project selected</span>
     <span class="spacer"></span>
-    <select id="providerSelect">
-      <option value="gemini">Gemini</option>
-      <option value="claude">Claude</option>
-      <option value="codex">Codex</option>
-      <option value="ollama">Ollama (local)</option>
+    <select id="modelSelect">
+      <optgroup label="Gemini">
+        <option value="gemini:gemini-2.5-flash">Gemini Flash 2.5</option>
+        <option value="gemini:gemini-2.5-pro">Gemini Pro 2.5</option>
+        <option value="gemini:gemini-2.0-flash">Gemini Flash 2.0</option>
+      </optgroup>
+      <optgroup label="Claude">
+        <option value="claude:haiku">Claude Haiku</option>
+        <option value="claude:sonnet">Claude Sonnet</option>
+        <option value="claude:opus">Claude Opus</option>
+      </optgroup>
+      <optgroup label="Codex">
+        <option value="codex:gpt-4.1-mini">GPT-4.1 Mini</option>
+        <option value="codex:gpt-4.1">GPT-4.1</option>
+        <option value="codex:o3-mini">o3-mini</option>
+      </optgroup>
+      <optgroup label="Ollama (local)">
+        <option value="ollama:qwen2.5-coder:14b">Qwen 2.5 Coder 14B</option>
+        <option value="ollama:llama3.1:8b">Llama 3.1 8B</option>
+      </optgroup>
     </select>
-    <select id="modelSelect"></select>
   </div>
 
   <div class="messages" id="messages">
@@ -762,10 +774,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const sendBtn = document.getElementById('sendBtn');
       const stopBtn = document.getElementById('stopBtn');
       const projectNameEl = document.getElementById('projectName');
-      const providerSelect = document.getElementById('providerSelect');
       const thinkingEl = document.getElementById('thinking');
       const welcomeEl = document.getElementById('welcome');
-
       const modelSelect = document.getElementById('modelSelect');
 
       const PROVIDER_LABELS = {
@@ -775,53 +785,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         codex: 'Codex'
       };
 
-      const PROVIDER_MODELS = {
-        gemini: [
-          { value: 'gemini-2.5-flash', label: 'Flash 2.5 (fast)' },
-          { value: 'gemini-2.5-pro', label: 'Pro 2.5' },
-          { value: 'gemini-2.0-flash', label: 'Flash 2.0' }
-        ],
-        claude: [
-          { value: 'haiku', label: 'Haiku (fast)' },
-          { value: 'sonnet', label: 'Sonnet' },
-          { value: 'opus', label: 'Opus' }
-        ],
-        codex: [
-          { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (fast)' },
-          { value: 'gpt-4.1', label: 'GPT-4.1' },
-          { value: 'o3-mini', label: 'o3-mini' }
-        ],
-        ollama: [
-          { value: 'qwen2.5-coder:14b', label: 'Qwen 2.5 Coder 14B' },
-          { value: 'llama3.1:8b', label: 'Llama 3.1 8B' }
-        ]
-      };
-
-      function updateModelDropdown(preserveModel) {
-        var provider = providerSelect.value;
-        var models = PROVIDER_MODELS[provider] || [];
-        modelSelect.innerHTML = '';
-        models.forEach(function(m) {
-          var opt = document.createElement('option');
-          opt.value = m.value;
-          opt.textContent = m.label;
-          modelSelect.appendChild(opt);
-        });
-        if (preserveModel) {
-          var exists = models.some(function(m) { return m.value === preserveModel; });
-          if (exists) { modelSelect.value = preserveModel; }
-        }
+      function getSelection() {
+        var val = modelSelect ? modelSelect.value : '';
+        var idx = val.indexOf(':');
+        if (idx < 0) { return { provider: 'gemini', model: val }; }
+        return { provider: val.substring(0, idx), model: val.substring(idx + 1) };
       }
 
-      function notifySelectionChanged() {
-        vscode.postMessage({ type: 'providerChanged', provider: providerSelect.value, model: modelSelect.value });
+      if (modelSelect) {
+        modelSelect.onchange = function() {
+          vscode.postMessage({ type: 'providerChanged', value: modelSelect.value });
+        };
       }
-      providerSelect.addEventListener('change', function() {
-        updateModelDropdown();
-        notifySelectionChanged();
-      });
-      modelSelect.addEventListener('change', notifySelectionChanged);
-      updateModelDropdown();
 
       const SLASH_COMMANDS = ['status', 'tasks', 'start', 'pause', 'refresh', 'help'];
 
@@ -926,9 +901,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         setThinking(true);
-        const selectedProvider = providerSelect.value;
-        const selectedModel = modelSelect.value;
-        vscode.postMessage({ type: 'sendMessage', text: text, provider: selectedProvider, model: selectedModel });
+        var sel = getSelection();
+        vscode.postMessage({ type: 'sendMessage', text: text, provider: sel.provider, model: sel.model });
       }
 
       stopBtn.addEventListener('click', function() {
@@ -1003,9 +977,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             sendBtn.style.display = '';
             break;
           case 'restoreSelection':
-            if (msg.provider && PROVIDER_MODELS[msg.provider]) {
-              providerSelect.value = msg.provider;
-              updateModelDropdown(msg.model);
+            if (msg.value && modelSelect) {
+              modelSelect.value = msg.value;
             }
             break;
         }
