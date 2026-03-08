@@ -112,6 +112,11 @@
           "default": true,
           "description": "Automatically connect to the API on activation"
         },
+        "beethoven.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the Beethoven orchestration API (orch_... key)"
+        },
         "beethoven.ollamaUrl": {
           "type": "string",
           "default": "http://localhost:11434",

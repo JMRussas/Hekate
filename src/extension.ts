@@ -19,7 +19,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const autoConnect = config.get<boolean>("autoConnect", true);
 
   const secrets = context.secrets;
-  let apiKey = await secrets.get("beethoven.apiKey");
+  let apiKey = await secrets.get("beethoven.apiKey")
+    || config.get<string>("apiKey", "")
+    || process.env.BEETHOVEN_API_KEY;
 
   const ollamaUrl = config.get<string>("ollamaUrl", "http://localhost:11434");
   const ollamaModel = config.get<string>("ollamaModel", "qwen2.5-coder:14b");
@@ -118,9 +120,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // --- Auto-refresh ---
 
   if (autoConnect) {
-    refreshInterval = setInterval(() => {
-      treeProvider.refresh();
-      updateStatusBar(statusBarItem, client.isConnected(), 0);
+    // Initial connection attempt
+    client.getRunningTaskCount().then((count) => {
+      updateStatusBar(statusBarItem, client.isConnected(), count);
+    }).catch(() => {
+      updateStatusBar(statusBarItem, false, 0);
+    });
+
+    refreshInterval = setInterval(async () => {
+      try {
+        const count = await client.getRunningTaskCount();
+        updateStatusBar(statusBarItem, client.isConnected(), count);
+      } catch {
+        updateStatusBar(statusBarItem, false, 0);
+      }
     }, 30_000);
 
     context.subscriptions.push({

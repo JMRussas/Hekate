@@ -54,6 +54,7 @@ export class BeethovenClient {
     });
 
     if (!response.ok) {
+      this._connected = false;
       const body = await response.text().catch(() => "");
       throw new Error(
         `Beethoven API ${response.status}: ${response.statusText}${body ? ` — ${body}` : ""}`
@@ -111,6 +112,7 @@ export class BeethovenClient {
       );
       return details.reduce((sum, d) => sum + (d?.running_tasks ?? 0), 0);
     } catch {
+      this._connected = false;
       return 0;
     }
   }
