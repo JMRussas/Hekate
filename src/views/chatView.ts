@@ -22,6 +22,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _client: BeethovenClient;
   private _ollamaUrl: string;
   private _ollamaModel: string;
+  private static readonly MAX_HISTORY = 100;
   private _chatHistory: Array<{ role: string; content: string }> = [];
   private _abortController?: AbortController;
   private _claudeSDK: InstanceType<typeof ClaudeCode>;
@@ -222,10 +223,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private _addToHistory(entry: { role: string; content: string }): void {
+    this._chatHistory.push(entry);
+    if (this._chatHistory.length > ChatViewProvider.MAX_HISTORY) {
+      this._chatHistory.splice(0, this._chatHistory.length - ChatViewProvider.MAX_HISTORY);
+    }
+  }
+
   // ── Free-text chat ─────────────────────────────────────────────────
 
   private async _handleChatMessage(text: string, provider: string = "ollama", model?: string): Promise<void> {
-    this._chatHistory.push({ role: "user", content: text });
+    this._addToHistory({ role: "user", content: text });
 
     // Build system prompt with fleet context
     const systemMsg = this._activeProjectId
@@ -312,7 +320,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       this.postMessage({ type: "streamEnd", provider: "ollama" });
-      this._chatHistory.push({ role: "assistant", content: fullResponse });
+      this._addToHistory({ role: "assistant", content: fullResponse });
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") { return; }
       const message = err instanceof Error ? err.message : String(err);
@@ -355,7 +363,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           content: content + (cost > 0 ? `\n\n_Cost: $${cost.toFixed(4)}_` : ""),
           provider: "claude",
         });
-        this._chatHistory.push({ role: "assistant", content });
+        this._addToHistory({ role: "assistant", content });
       } else {
         const errorMsg = response.error?.result ?? "Unknown SDK error";
         throw new Error(errorMsg);
@@ -423,7 +431,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         content: result,
         provider: provider,
       });
-      this._chatHistory.push({ role: "assistant", content: result });
+      this._addToHistory({ role: "assistant", content: result });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       const isNotFound = message.includes("ENOENT") || message.includes("not found") || message.includes("not recognized");
@@ -832,7 +840,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       function trackUsage(provider) {
-        if (provider && usageCounts.hasOwnProperty(provider)) {
+        if (provider && provider in usageCounts) {
           usageCounts[provider]++;
           updateUsageBar();
         }
@@ -843,21 +851,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         var html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         var tick = String.fromCharCode(96);
         // Fenced code blocks (triple backtick)
-        var fenceRe = new RegExp(tick+tick+tick+'(\\\\w*)\\n([\\\\s\\\\S]*?)'+tick+tick+tick, 'g');
+        var fenceRe = new RegExp(tick+tick+tick+'(\\w*)\\n([\\s\\S]*?)'+tick+tick+tick, 'g');
         html = html.replace(fenceRe, function(m, lang, code) {
-          return '<pre><code>' + code.replace(/\\n$/, '') + '</code></pre>';
+          return '<pre><code>' + code.replace(/\n$/, '') + '</code></pre>';
         });
         // Inline code (single backtick)
         var inlineRe = new RegExp(tick+'([^'+tick+']+)'+tick, 'g');
         html = html.replace(inlineRe, '<code>$1</code>');
         // Bold
-        html = html.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
         // Italic (single asterisk, but not inside bold)
-        html = html.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
+        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
         // Line breaks (but not inside pre blocks)
-        var segments = html.split(/(<pre>[\\s\\S]*?<\\/pre>)/g);
+        var segments = html.split(/(<pre>[\s\S]*?<\/pre>)/g);
         html = segments.map(function(s) {
-          return s.indexOf('<pre>') === 0 ? s : s.replace(/\\n/g, '<br>');
+          return s.indexOf('<pre>') === 0 ? s : s.replace(/\n/g, '<br>');
         }).join('');
         return html;
       }
