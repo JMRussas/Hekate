@@ -20,7 +20,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _activeProjectName?: string;
 
   private _client: BeethovenClient;
-  private _apiUrl: string;
   private _ollamaUrl: string;
   private _ollamaModel: string;
   private _chatHistory: Array<{ role: string; content: string }> = [];
@@ -37,7 +36,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     globalState: vscode.Memento
   ) {
     this._client = client;
-    this._apiUrl = client.getApiUrl();
     this._ollamaUrl = ollamaUrl;
     this._ollamaModel = ollamaModel;
     this._claudeSDK = new ClaudeCode();
@@ -46,7 +44,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public updateClient(client: BeethovenClient): void {
     this._client = client;
-    this._apiUrl = client.getApiUrl();
   }
 
   public updateOllama(url: string, model: string): void {
@@ -434,7 +431,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: "addMessage",
         role: "assistant",
         content: isNotFound
-          ? `The "${cmd}" CLI was not found.\n\nInstall it first:\n${provider === "gemini" ? "  npm install -g @anthropic-ai/gemini-cli" : provider === "claude" ? "  npm install -g @anthropic-ai/claude-code" : "  npm install -g @openai/codex"}\n\nThen reload VS Code.`
+          ? `The "${cmd}" CLI was not found.\n\nInstall it first:\n${provider === "gemini" ? "  npm install -g @google/gemini-cli" : provider === "claude" ? "  npm install -g @anthropic-ai/claude-code" : "  npm install -g @openai/codex"}\n\nThen reload VS Code.`
           : `${provider} error: ${message}`,
         provider: provider,
       });
