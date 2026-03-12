@@ -11,6 +11,7 @@ import * as vscode from "vscode";
 import { spawn } from "child_process";
 import { ClaudeCode } from "claude-code-js";
 import { BeethovenClient } from "../api/client";
+import { redactSecrets } from "../redact";
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "beethovenChat";
@@ -228,6 +229,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Return history with secrets scrubbed — for sending to providers. */
+  private _getRedactedHistory(): Array<{ role: string; content: string }> {
+    return this._chatHistory.map((m) => ({ role: m.role, content: redactSecrets(m.content) }));
+  }
+
   // ── Free-text chat ─────────────────────────────────────────────────
 
   private async _handleChatMessage(text: string, provider: string = "ollama", model?: string): Promise<void> {
@@ -240,7 +246,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const messages = [
       { role: "system", content: systemMsg },
-      ...this._chatHistory.slice(-20), // Keep last 20 messages for context
+      ...this._getRedactedHistory().slice(-20), // Keep last 20 messages for context
     ];
 
     // Cancel any in-progress stream
@@ -391,15 +397,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Build prompt with conversation history
     const parts: string[] = [];
 
-    if (this._chatHistory.length > 0) {
-      const recent = this._chatHistory.slice(-20);
+    const redacted = this._getRedactedHistory();
+    if (redacted.length > 0) {
+      const recent = redacted.slice(-20);
       const historyLines = recent.map(
         (m) => `[${m.role}]: ${m.content}`
       );
       parts.push("Previous conversation:\n" + historyLines.join("\n"));
     }
 
-    parts.push(this._chatHistory.length > 0 ? `Current request:\n${text}` : text);
+    parts.push(redacted.length > 0 ? `Current request:\n${text}` : text);
     const fullPrompt = parts.join("\n\n");
 
     // Build CLI command — prompt goes via stdin to avoid shell escaping issues
@@ -821,6 +828,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
+      /** Scrub known secret patterns before display. */
+      function redactForDisplay(text) {
+        return text
+          .replace(/orch_[0-9a-fA-F]{16,}/g, '[REDACTED:api-key]')
+          .replace(/eyJ[A-Za-z0-9_-]{20,}\\.eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}/g, '[REDACTED:jwt]')
+          .replace(/Bearer\\s+[A-Za-z0-9_.-]{20,}/gi, 'Bearer [REDACTED:token]');
+      }
+
       /** Lightweight markdown to HTML — handles code blocks, inline code, bold, italic. */
       function renderMarkdown(text) {
         var html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -871,10 +886,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         if (role === 'assistant') {
           const contentSpan = document.createElement('span');
-          contentSpan.innerHTML = renderMarkdown(content);
+          contentSpan.innerHTML = renderMarkdown(redactForDisplay(content));
           div.appendChild(contentSpan);
         } else {
-          div.appendChild(document.createTextNode(content));
+          div.appendChild(document.createTextNode(redactForDisplay(content)));
         }
         messagesEl.appendChild(div);
         messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -964,7 +979,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'streamToken':
             if (streamDiv && streamContentSpan) {
               streamFullText += msg.content;
-              streamContentSpan.innerHTML = renderMarkdown(streamFullText);
+              streamContentSpan.innerHTML = renderMarkdown(redactForDisplay(streamFullText));
               messagesEl.scrollTop = messagesEl.scrollHeight;
             }
             break;
