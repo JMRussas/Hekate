@@ -1,0 +1,10 @@
+bin/
+obj/
+output/
+*.user
+.vs/
+node_modules/
+test-results/
+__pycache__/
+*.pyc
+.claude/settings.local.json

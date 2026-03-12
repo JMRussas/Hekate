@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "agent-context": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["tools/agent-context-mcp/server.py"],
+      "env": {}
+    }
+  }
+}

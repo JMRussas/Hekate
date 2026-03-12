@@ -1,0 +1,91 @@
+{
+  "version": 2,
+  "skills": [
+    {
+      "name": "route_to_model",
+      "description": "Send a message to another AI model and get its response. Use this when asked to communicate with, ask, or delegate to another model (e.g., 'tell sonnet to...', 'ask opus about...').",
+      "handler": "builtin",
+      "permissionLevel": 1,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "The model to route to: sonnet, opus, haiku, ollama",
+            "enum": ["sonnet", "opus", "haiku", "ollama"]
+          },
+          "message": {
+            "type": "string",
+            "description": "The message to send to the target model"
+          }
+        },
+        "required": ["model", "message"]
+      }
+    },
+    {
+      "name": "search_ideas",
+      "description": "Search the idea database for previously discussed ideas, questions, decisions, and action items. Use this when asked to recall, find, or look up past ideas or discussions.",
+      "handler": "mcp",
+      "permissionLevel": 0,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query — matches against idea names and descriptions"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results to return (default: 5)",
+            "default": 5
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "get_node_details",
+      "description": "Get full details of a specific node including its attributes and children. Use this to inspect a particular idea, thread, or conversation node in depth.",
+      "handler": "mcp",
+      "permissionLevel": 0,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "The UUID of the node to retrieve"
+          },
+          "include_children": {
+            "type": "boolean",
+            "description": "Whether to include child nodes (default: true)",
+            "default": true
+          }
+        },
+        "required": ["node_id"]
+      }
+    },
+    {
+      "name": "list_threads",
+      "description": "List open conversation threads with their status and recent activity. Use this when asked about ongoing conversations, active topics, or what's being discussed.",
+      "handler": "mcp",
+      "permissionLevel": 0,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Filter by status: open, parked, all (default: open)",
+            "enum": ["open", "parked", "all"],
+            "default": "open"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of threads to return (default: 10)",
+            "default": 10
+          }
+        },
+        "required": []
+      }
+    }
+  ]
+}

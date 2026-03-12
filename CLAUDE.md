@@ -1,46 +1,90 @@
-# VSCodeAIExtension
+# Beethoven
 
-<!-- One-line description of what this project does -->
+Unified AI agent platform: VSCode extension (fleet control) + orchestration backend (task execution) + context store (agent memory). Three components, one repo.
 
-## Build & Run
+## Components
 
-- **Install**: `TODO`
-- **Build**: `TODO`
-- **Run**: `TODO`
-- **Test**: `TODO`
+| Component | Path | Language | Build | Run |
+|-----------|------|----------|-------|-----|
+| **Extension** | `extension/` | TypeScript | `cd extension && npm run compile` | F5 in VSCode |
+| **Orchestration** | `orchestration/` | Python/FastAPI | `pip install -r orchestration/requirements.txt` | `cd orchestration && python run.py` (port 5200) |
+| **Context Store** | `context-store/` | C#/.NET 8 | `dotnet build context-store/Api/Api.csproj` | `dotnet run --project context-store/Api/Api.csproj` (port 5102) |
+| **Context Store UI** | `context-store/ui/` | React/Vite | `cd context-store/ui && npm install && npm run dev` | port 5179 |
 
 ## Project Structure
 
 ```
-TODO — fill in top-level directory layout
+beethoven/
+├── CLAUDE.md                    # This file
+├── extension/                   # VSCode extension — fleet control center
+│   ├── src/                     # TypeScript source (api/, views/, etc.)
+│   ├── package.json             # Extension manifest
+│   ├── esbuild.js               # Build script
+│   └── tsconfig.json
+├── orchestration/               # Task orchestration backend
+│   ├── backend/                 # FastAPI app (routes/, services/, tools/, db/)
+│   ├── tests/                   # pytest (unit/, integration/, e2e/, load/)
+│   ├── frontend/                # Orchestration dashboard (React)
+│   ├── run.py                   # Entry point (uvicorn)
+│   ├── Dockerfile               # Multi-stage build
+│   ├── requirements.txt
+│   └── CLAUDE.md                # Orchestration-specific docs
+├── context-store/               # Agent memory (Postgres + AGE + pgvector)
+│   ├── DbLayer/                 # Node CRUD, pgvector search
+│   ├── GraphLayer/              # AGE Cypher queries
+│   ├── ContextRouter/           # Intent-driven context assembly
+│   ├── Api/                     # .NET Minimal API (port 5102)
+│   ├── ui/                      # React frontend (port 5179)
+│   ├── tools/                   # MCP servers, scripts
+│   ├── docker-compose.yml       # Postgres + AGE + pgvector
+│   └── CLAUDE.md                # Context store-specific docs
+└── .claude/                     # Deep-dive docs
 ```
 
 ## Deep-Dive Documentation
 
-Read these **on-demand** when working in the relevant area. Do NOT read all of them upfront.
+Read these **on-demand** when working in the relevant area.
 
-| Doc | When to read | Size |
-|-----|-------------|------|
-| `.claude/architecture.md` | Understanding system design and component relationships | — |
+| Doc | When to read |
+|-----|-------------|
+| `context-store/CLAUDE.md` | Working on agent memory, context router, node types, DB schema |
+| `orchestration/CLAUDE.md` | Working on task execution, planning, wave dispatch, auth |
+| `extension/SETUP-BRYAN.md` | Installing/configuring the VSCode extension |
+| `.claude/architecture.md` | Understanding cross-component design |
 
-## Conventions
+## Infrastructure
 
-- **Namespace / module style**: TODO
-- **Naming**: TODO (PascalCase for X, camelCase for Y, etc.)
-- **Config**: TODO (where config lives, format)
-- **Logging**: TODO (how to log)
-- **Error handling**: TODO (patterns used)
+| Service | Port | Config |
+|---------|------|--------|
+| Postgres (AGE + pgvector) | 5433 | `context-store/docker-compose.yml` |
+| Context Store API | 5102 | `CODESTORAGE_CONNSTR` env var |
+| Context Store UI | 5179 | `context-store/ui/vite.config.ts` |
+| Orchestration API | 5200 | `orchestration/config.json` |
+| Ollama | 11434 | `OLLAMA_URL` env var |
+
+## Quick Start
+
+```bash
+# 1. Start Postgres
+cd context-store && docker compose up -d --build
+
+# 2. Start context store API
+dotnet run --project context-store/Api/Api.csproj
+
+# 3. Start orchestration backend
+cd orchestration && pip install -r requirements.txt && python run.py
+
+# 4. Start context store UI
+cd context-store/ui && npm install && npm run dev
+```
 
 ## Environment
 
-- **Runtime**: TODO (Node.js 20, Python 3.12, .NET 10, etc.)
-- **Key env vars**: TODO
-- **Ports**: TODO
+- **Runtime**: Node.js 20+, Python 3.11+, .NET 8, Docker
+- **Key env vars**: `ANTHROPIC_API_KEY`, `CODESTORAGE_CONNSTR`, `OLLAMA_URL`
+- **Platform**: Windows 11, bash shell
 
-## AI Agent Rules
+## Git Workflow
 
-- Keep docs updated after structural changes — update CLAUDE.md and relevant `.claude/*.md` files.
-- Keep file dependency headers updated (`// Depends on:` / `// Used by:`).
-- Config values go in config files, never hardcoded.
-- Read the right doc first — check the table above before working in an area.
-- Maintain Gotchas & Pitfalls in `.claude/` docs when discovering non-obvious behavior.
+- workflow: direct
+- base_branch: main

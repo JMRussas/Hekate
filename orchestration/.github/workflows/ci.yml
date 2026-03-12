@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Create test config
+        run: |
+          cp config.example.json config.json
+          # Override secret key for CI
+          python -c "
+          import json
+          c = json.load(open('config.json'))
+          c['auth']['secret_key'] = 'ci-test-secret-key-that-is-at-least-32-characters-long'
+          json.dump(c, open('config.json', 'w'))
+          "
+
+      - name: Run tests with coverage
+        run: python -m pytest tests/ --cov=backend --cov-report=term-missing --cov-fail-under=80 --tb=short -q -m "not slow"
+
+      - name: Validate single Alembic migration head
+        run: |
+          python -c "
+          from alembic.config import Config
+          from alembic.script import ScriptDirectory
+          cfg = Config('backend/migrations/alembic.ini')
+          heads = ScriptDirectory.from_config(cfg).get_heads()
+          assert len(heads) == 1, f'Multiple migration heads: {heads}'
+          print(f'Migration chain OK, head: {heads[0]}')
+          "
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install ruff
+
+      - name: Check formatting
+        run: ruff check backend/ tests/ --select=E,W,F --ignore=E501
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type check
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
