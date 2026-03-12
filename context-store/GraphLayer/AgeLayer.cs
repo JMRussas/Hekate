@@ -52,7 +52,7 @@ public class AgeLayer
     /// Escape a string value for use in Cypher string literals.
     /// Handles backslashes and single quotes.
     /// </summary>
-    private static string EscapeCypher(string value)
+    public static string EscapeCypher(string value)
     {
         return value.Replace("\\", "\\\\").Replace("'", "\\'");
     }
@@ -208,7 +208,7 @@ public class AgeLayer
     /// Run an arbitrary Cypher query that returns a single column.
     /// Used for ad-hoc graph queries in demos.
     /// </summary>
-    public async Task<List<string>> RunCypherQuery(string cypher)
+    internal async Task<List<string>> RunCypherQuery(string cypher)
     {
         return await ExecuteCypher(cypher, "result");
     }

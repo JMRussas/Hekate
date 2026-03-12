@@ -636,10 +636,14 @@ public class NodeRepository
         var (conn, owned) = await GetConnection();
         try
         {
-            // Try to find existing
-            await using (var cmd = new NpgsqlCommand(
-                "SELECT id FROM files WHERE project_id = @proj AND file_path = @path", conn))
+            // Atomic upsert — avoids TOCTOU race from SELECT-then-INSERT
+            var fileId = Guid.NewGuid();
+            await using (var cmd = new NpgsqlCommand(@"
+                INSERT INTO files (id, project_id, file_path) VALUES (@id, @proj, @path)
+                ON CONFLICT (project_id, file_path) DO NOTHING
+                RETURNING id", conn, _externalTx))
             {
+                cmd.Parameters.AddWithValue("id", fileId);
                 cmd.Parameters.AddWithValue("proj", projectId);
                 cmd.Parameters.AddWithValue("path", filePath);
                 var result = await cmd.ExecuteScalarAsync();
@@ -647,17 +651,14 @@ public class NodeRepository
                     return (Guid)result;
             }
 
-            // Insert new
-            var fileId = Guid.NewGuid();
+            // ON CONFLICT DO NOTHING returned no row — fetch existing
             await using (var cmd = new NpgsqlCommand(
-                "INSERT INTO files (id, project_id, file_path) VALUES (@id, @proj, @path)", conn, _externalTx))
+                "SELECT id FROM files WHERE project_id = @proj AND file_path = @path", conn))
             {
-                cmd.Parameters.AddWithValue("id", fileId);
                 cmd.Parameters.AddWithValue("proj", projectId);
                 cmd.Parameters.AddWithValue("path", filePath);
-                await cmd.ExecuteNonQueryAsync();
+                return (Guid)(await cmd.ExecuteScalarAsync())!;
             }
-            return fileId;
         }
         finally
         {

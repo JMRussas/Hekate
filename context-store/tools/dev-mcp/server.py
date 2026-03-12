@@ -376,9 +376,13 @@ async def verify_config() -> str:
         """)
         tables = [r[0] for r in cur.fetchall()]
         required = ["projects", "nodes"]
+        _ALLOWED_TABLES = {"projects", "nodes", "node_attributes", "files"}
         for t in required:
             if t in tables:
-                cur.execute(f"SELECT count(*) FROM {t}")
+                if t not in _ALLOWED_TABLES:
+                    checks.append({"check": f"table:{t}", "status": "SKIP", "detail": "Not in allowlist"})
+                    continue
+                cur.execute(f"SELECT count(*) FROM {t}")  # noqa: S608 — t is validated against allowlist above
                 count = cur.fetchone()[0]
                 checks.append({"check": f"table:{t}", "status": "PASS", "detail": f"{count} rows"})
             else:

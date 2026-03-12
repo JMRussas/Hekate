@@ -457,8 +457,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       let stdout = "";
       let stderr = "";
 
-      const proc = spawn(cmd, args, {
-        shell: true, // Required on Windows for .cmd resolution
+      // Resolve .cmd wrappers on Windows without using shell: true (avoids shell injection)
+      const resolvedCmd = process.platform === "win32" ? `${cmd}.cmd` : cmd;
+
+      const proc = spawn(resolvedCmd, args, {
         timeout: 120_000,
       });
 

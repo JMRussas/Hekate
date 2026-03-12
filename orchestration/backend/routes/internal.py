@@ -28,6 +28,9 @@ logger = logging.getLogger("orchestration.internal")
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
+# Allowed providers — reject unknown values to prevent command injection
+_ALLOWED_PROVIDERS = {"claude", "gemini", "codex", "ollama"}
+
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
@@ -85,6 +88,11 @@ async def chat(request: ChatRequest):
 
     # Determine provider (default to gemini)
     provider = (request.provider or "gemini").lower()
+    if provider not in _ALLOWED_PROVIDERS:
+        return ChatResponse(
+            response=f"Unknown provider: {provider}",
+            provider=provider,
+        )
 
     # Ollama: use HTTP API directly (supports messages natively)
     if provider == "ollama":
@@ -239,4 +247,4 @@ async def plan(
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("Plan failed: %s\n%s", e, tb)
-        return {"error": str(e), "traceback": tb}
+        return {"error": str(e)}

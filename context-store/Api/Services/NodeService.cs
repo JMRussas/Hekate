@@ -7,6 +7,7 @@
 // Used by:    Api/Program.cs endpoints
 
 using System.Text.Json;
+using CodeStoragePoc.GraphLayer;
 using Npgsql;
 
 namespace CodeStoragePoc.Api.Services;
@@ -132,8 +133,9 @@ public class NodeService
                 "SET search_path = ag_catalog, \"$user\", public;", conn);
             await path.ExecuteNonQueryAsync();
 
-            // Query outgoing edges
-            var outCypher = $"MATCH (a:CodeNode {{node_id: '{nodeId}'}})-[r]->(b:CodeNode) RETURN type(r), b.node_id, b.name, b.node_type";
+            // Query outgoing edges (sanitize nodeId for Cypher)
+            var safeId = AgeLayer.EscapeCypher(nodeId.ToString());
+            var outCypher = $"MATCH (a:CodeNode {{node_id: '{safeId}'}})-[r]->(b:CodeNode) RETURN type(r), b.node_id, b.name, b.node_type";
             var outSql = $"SELECT result::text FROM (SELECT * FROM cypher('code_graph', $$ {outCypher} $$) as (result agtype)) sub;";
             await using var outCmd = new NpgsqlCommand(outSql, conn);
             await using (var reader = await outCmd.ExecuteReaderAsync())
@@ -146,7 +148,7 @@ public class NodeService
             }
 
             // Query incoming edges
-            var inCypher = $"MATCH (a:CodeNode)-[r]->(b:CodeNode {{node_id: '{nodeId}'}}) RETURN type(r), a.node_id, a.name, a.node_type";
+            var inCypher = $"MATCH (a:CodeNode)-[r]->(b:CodeNode {{node_id: '{safeId}'}}) RETURN type(r), a.node_id, a.name, a.node_type";
             var inSql = $"SELECT result::text FROM (SELECT * FROM cypher('code_graph', $$ {inCypher} $$) as (result agtype)) sub;";
             await using var inCmd = new NpgsqlCommand(inSql, conn);
             await using (var reader = await inCmd.ExecuteReaderAsync())

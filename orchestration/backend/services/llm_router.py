@@ -78,9 +78,14 @@ async def _call_cli(provider: str, system_prompt: str, user_message: str,
         stderr=asyncio.subprocess.PIPE,
     )
 
-    stdout, stderr = await asyncio.wait_for(
-        proc.communicate(input=full_prompt.encode()), timeout=300,
-    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=full_prompt.encode()), timeout=300,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
     stdout_text = stdout.decode().strip()
     stderr_text = stderr.decode().strip()
 

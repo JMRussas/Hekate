@@ -20,6 +20,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using CodeStoragePoc.GraphLayer;
 using Npgsql;
 
 namespace CodeStoragePoc.ContextRouter;
@@ -742,8 +743,8 @@ Respond with ONLY valid JSON, no markdown fences, no explanation before or after
                 "SET search_path = ag_catalog, \"$user\", public;", conn);
             await path.ExecuteNonQueryAsync();
 
-            // Build IN list for batched query (UUIDs are safe — no injection risk)
-            var inList = string.Join(", ", topicIds.Select(id => $"'{id}'"));
+            // Build IN list for batched query — sanitize for defense-in-depth
+            var inList = string.Join(", ", topicIds.Select(id => $"'{AgeLayer.EscapeCypher(id.ToString())}'"));
             var cypher = $"MATCH (a)-[e]-(b) WHERE a.node_id IN [{inList}] RETURN a, e, b LIMIT 50";
             var inner = $"SELECT * FROM cypher('code_graph', $$ {cypher} $$) as (a agtype, e agtype, b agtype)";
             var sql = $"SELECT a::text, e::text, b::text FROM ({inner}) sub;";
