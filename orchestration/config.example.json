@@ -1,0 +1,117 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5200,
+    "reload": false,
+    "cors_origins": [
+      "http://localhost:5173",
+      "http://localhost:5200",
+      "http://127.0.0.1:5173",
+      "http://127.0.0.1:5200"
+    ],
+    "rate_limit": "60/minute",
+    "log_format": "json",
+    "log_level": "INFO"
+  },
+  "anthropic": {
+    "planning_model": "claude-sonnet-4-6",
+    "models": {
+      "haiku": "claude-haiku-4-5-20251001",
+      "sonnet": "claude-sonnet-4-6",
+      "opus": "claude-opus-4-6"
+    },
+    "max_concurrent": 3,
+    "timeout": 120
+  },
+  "ollama": {
+    "hosts": {
+      "local": "http://localhost:11434",
+      "server": "http://192.168.1.164:11434"
+    },
+    "default_model": "qwen2.5-coder:14b",
+    "embed_model": "nomic-embed-text",
+    "embed_timeout": 30.0,
+    "generate_timeout": 120.0
+  },
+  "comfyui": {
+    "hosts": {
+      "local": "http://localhost:8188",
+      "server": "http://192.168.1.164:8188"
+    },
+    "poll_interval": 2.0,
+    "timeout": 300,
+    "default_checkpoint": "sd_xl_base_1.0.safetensors"
+  },
+  "rag": {
+    "databases": {
+      "noz": "../noz-rag/data/noz_rag.db",
+      "verse": "../verse-rag/data/verse_rag.db",
+      "diagnostic": "../diagnostic-rag/data/rag.db"
+    },
+    "embed_dimensions": 768,
+    "default_top_k": 8,
+    "max_top_k": 20,
+    "diagnostic_ingest_path": "../diagnostic-rag/data/ingest.jsonl"
+  },
+  "budget": {
+    "daily_limit_usd": 5.00,
+    "monthly_limit_usd": 50.00,
+    "per_project_limit_usd": 10.00,
+    "warn_at_pct": 80
+  },
+  "execution": {
+    "max_concurrent_tasks": 3,
+    "tick_interval_sec": 2.0,
+    "max_tool_rounds": 10,
+    "default_max_tokens": 4096,
+    "max_task_retries": 5,
+    "wave_checkpoints": false,
+    "context_forward_max_chars": 2000,
+    "verification_enabled": true,
+    "verification_model": "claude-haiku-4-5-20251001",
+    "verification_max_tokens": 1024,
+    "checkpoint_on_retry_exhausted": true,
+    "shutdown_grace_seconds": 30,
+    "stale_task_threshold_seconds": 300,
+    "diagnostic_rag_enabled": false,
+    "knowledge_extraction_enabled": true,
+    "knowledge_extraction_model": "claude-haiku-4-5-20251001",
+    "knowledge_extraction_max_tokens": 1024,
+    "knowledge_injection_max_chars": 3000,
+    "knowledge_min_output_length": 200,
+    "max_history_rounds": 4,
+    "http_client_timeout": 300.0,
+    "external_claim_timeout_seconds": 3600
+  },
+  "model_pricing": {
+    "claude-haiku-4-5-20251001": { "input_per_mtok": 1.0, "output_per_mtok": 5.0 },
+    "claude-sonnet-4-6": { "input_per_mtok": 3.0, "output_per_mtok": 15.0 },
+    "claude-opus-4-6": { "input_per_mtok": 15.0, "output_per_mtok": 75.0 }
+  },
+  "git": {
+    "enabled": true,
+    "commit_author": "Orchestration Engine <orchestration@local>",
+    "branch_prefix": "orch",
+    "non_code_output_path": ".orchestration",
+    "auto_pr": true,
+    "pr_remote": "origin",
+    "command_timeout": 30
+  },
+  "resource_check_interval_sec": 30,
+  "auth": {
+    "secret_key": "CHANGE-ME-generate-a-random-64-char-string-here",
+    "algorithm": "HS256",
+    "access_token_expire_minutes": 30,
+    "refresh_token_expire_days": 7,
+    "sse_token_expire_seconds": 60,
+    "allow_registration": true,
+    "_note_first_user": "The first registered user automatically becomes admin. If deploying publicly, set allow_registration to false after initial setup.",
+    "login_lockout_threshold": 5,
+    "login_lockout_window_seconds": 300,
+    "oidc_providers": [],
+    "oidc_redirect_uris": [
+      "http://localhost:5173/auth/oidc/callback",
+      "http://localhost:5200/auth/oidc/callback"
+    ]
+  }
+}

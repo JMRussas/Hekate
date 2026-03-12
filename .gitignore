@@ -1,3 +1,29 @@
-out/
-node_modules/
+# Extension
+extension/out/
+extension/node_modules/
 *.vsix
+
+# Context Store (.NET)
+context-store/bin/
+context-store/obj/
+context-store/output/
+context-store/test-results/
+context-store/node_modules/
+context-store/ui/node_modules/
+*.user
+.vs/
+
+# Orchestration (Python)
+orchestration/.venv/
+orchestration/data/
+orchestration/frontend/node_modules/
+orchestration/frontend/dist/
+orchestration/config.json
+orchestration/l3_manifest.json
+__pycache__/
+*.pyc
+.coverage
+
+# Shared
+.claude/settings.local.json
+.env

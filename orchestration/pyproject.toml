@@ -1,0 +1,21 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: Fast, no I/O, no database",
+    "integration: Requires database",
+    "e2e: Full workflow (plan -> decompose -> execute)",
+    "slow: Load/stress tests (not run in CI)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+addopts = "-m 'not slow'"
+
+[tool.coverage.run]
+source = ["backend"]
+omit = ["backend/tools/comfyui.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80

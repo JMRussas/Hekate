@@ -1,0 +1,44 @@
+{
+  "triggers": [
+    {
+      "name": "Idea Reviewer",
+      "enabled": true,
+      "nodeTypes": ["idea"],
+      "conditions": {
+        "status": "^(mentioned|explored)$"
+      },
+      "agent": "gemini",
+      "promptTemplate": "You are a critical reviewer. A new idea was just captured in a brainstorming session.\n\nReview this idea briefly (2-3 sentences). Identify:\n- One strength or interesting angle\n- One weakness, assumption, or missing detail\n- One question the author should answer before going further\n\nBe constructive but honest. Don't pad with praise."
+    },
+    {
+      "name": "Plan Step Verifier",
+      "enabled": true,
+      "nodeTypes": ["plan_step", "task"],
+      "conditions": {
+        "status": "^completed$"
+      },
+      "agent": "claude",
+      "promptTemplate": "A plan step was just marked as completed. Based on the step description and context:\n\n1. Does the completion claim seem reasonable, or should someone verify the output?\n2. Are there obvious follow-up tasks that should be created?\n3. Does this unblock any other steps?\n\nRespond in 2-3 concise sentences."
+    },
+    {
+      "name": "Decision Logger",
+      "enabled": true,
+      "nodeTypes": ["decision"],
+      "conditions": {
+        "status": "^committed$"
+      },
+      "agent": "gemini",
+      "promptTemplate": "A decision was just committed. Summarize it in one sentence for the project log.\n\nThen flag if this decision might conflict with or affect any of these areas:\n- Database schema or migrations\n- API contracts or endpoints\n- Security or authentication\n- Performance or scalability\n\nIf no concerns, just say 'No cross-cutting concerns detected.'"
+    },
+    {
+      "name": "Stale Thread Nudge",
+      "enabled": false,
+      "nodeTypes": ["idea", "question"],
+      "conditions": {
+        "status": "^mentioned$"
+      },
+      "agent": "claude",
+      "promptTemplate": "This idea/question was mentioned but hasn't been explored yet. Write a brief nudge (1-2 sentences) that could be shown to the user to encourage them to either:\n- Explore it further\n- Park it explicitly\n- Connect it to an existing thread\n\nBe casual and helpful, not pushy."
+    }
+  ]
+}
