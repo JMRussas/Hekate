@@ -48,6 +48,7 @@ class ModelTier(str, Enum):
     SONNET = "sonnet"
     OPUS = "opus"
     OLLAMA = "ollama"
+    CLAUDE_CODE = "claude_code"
 
 
 class TaskType(str, Enum):

@@ -240,7 +240,7 @@ class Executor:
                 # Check per-project budget using reserve_spend (prevents TOCTOU race)
                 tier = ModelTier(task_row["model_tier"])
                 est_cost = 0.0
-                if tier != ModelTier.OLLAMA:
+                if tier not in (ModelTier.OLLAMA, ModelTier.CLAUDE_CODE):
                     est_cost = calculate_cost(get_model_id(tier), _EST_TASK_INPUT_TOKENS, task_row["max_tokens"])
                     if not await self._budget.reserve_spend(est_cost):
                         continue

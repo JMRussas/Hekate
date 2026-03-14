@@ -3,7 +3,8 @@
 #  Core task execution flow: dispatch, verify, checkpoint, context forwarding.
 #  Extracted from executor.py for modularity.
 #
-#  Depends on: config.py, services/claude_agent.py, services/ollama_agent.py,
+#  Depends on: config.py, services/claude_agent.py, services/claude_code_executor.py,
+#              services/ollama_agent.py,
 #              services/budget.py, services/progress.py, services/diagnostic_ingest.py,
 #              services/model_router.py, services/knowledge_extractor.py,
 #              tools/rag.py (_embed_query, RAGIndexCache)
@@ -29,6 +30,7 @@ from backend.config import (
 from backend.logging_config import set_task_id
 from backend.models.enums import ModelTier, TaskStatus
 from backend.services.claude_agent import run_claude_task
+from backend.services.claude_code_executor import run_claude_code_task
 from backend.services.ollama_agent import run_ollama_task
 
 logger = logging.getLogger("orchestration.executor")
@@ -347,6 +349,11 @@ async def execute_task(
                 if tier == ModelTier.OLLAMA:
                     result = await run_ollama_task(
                         task_row=task_row, http_client=http_client, budget=budget,
+                    )
+                elif tier == ModelTier.CLAUDE_CODE:
+                    result = await run_claude_code_task(
+                        task_row=task_row, db=db, budget=budget,
+                        progress=progress,
                     )
                 else:
                     result = await run_claude_task(

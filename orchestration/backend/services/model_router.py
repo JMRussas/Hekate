@@ -36,7 +36,9 @@ _DEFAULT_MODELS = {
 def get_model_id(tier: ModelTier) -> str:
     """Resolve a model tier to the actual model ID from config."""
     if tier == ModelTier.OLLAMA:
-        return cfg("ollama.default_model", "qwen2.5-coder:14b")
+        return cfg("ollama.default_model", "qwen3.5:latest")
+    if tier == ModelTier.CLAUDE_CODE:
+        return "claude-code-cli"
     return cfg(f"anthropic.models.{tier.value}", _DEFAULT_MODELS.get(tier.value, f"claude-{tier.value}"))
 
 
@@ -64,8 +66,8 @@ def estimate_task_cost(
     max_output_tokens: int,
 ) -> float:
     """Estimate the worst-case cost for a task before execution."""
-    if tier == ModelTier.OLLAMA:
-        return 0.0
+    if tier in (ModelTier.OLLAMA, ModelTier.CLAUDE_CODE):
+        return 0.0  # Ollama is local, Claude Code is subscription-billed
     model_id = get_model_id(tier)
     return calculate_cost(model_id, estimated_input_tokens, max_output_tokens)
 
@@ -100,6 +102,10 @@ _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     ("documentation", "simple"): ModelTier.OLLAMA,
     ("documentation", "medium"): ModelTier.HAIKU,
     ("documentation", "complex"): ModelTier.SONNET,
+    # Claude Code CLI — for tasks requiring file I/O, git, MCP tools
+    ("code_cli", "simple"): ModelTier.CLAUDE_CODE,
+    ("code_cli", "medium"): ModelTier.CLAUDE_CODE,
+    ("code_cli", "complex"): ModelTier.CLAUDE_CODE,
 }
 
 
