@@ -13,10 +13,10 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 
 from backend.config import cfg
+from backend.services.cli_common import build_prompt, resolve_cwd
 from backend.services.llm_router import _resolve_cmd
 
 logger = logging.getLogger("orchestration.executor")
@@ -42,6 +42,7 @@ async def run_claude_code_task(
     db,
     budget,
     progress,
+    model: str | None = None,
 ) -> dict:
     """Execute a task via the Claude Code CLI.
 
@@ -54,6 +55,7 @@ async def run_claude_code_task(
         db: Database instance (for looking up project repo_path).
         budget: BudgetManager instance.
         progress: ProgressManager instance.
+        model: Optional model override (e.g. "sonnet", "haiku", "opus").
 
     Returns:
         dict with keys: output, prompt_tokens, completion_tokens,
@@ -63,10 +65,10 @@ async def run_claude_code_task(
     project_id = task_row["project_id"]
 
     # Build the prompt from task description + context
-    prompt = _build_prompt(task_row)
+    prompt = build_prompt(task_row)
 
     # Resolve working directory from project repo_path
-    cwd = await _resolve_cwd(db, project_id)
+    cwd = await resolve_cwd(db, project_id)
 
     # Resolve the claude CLI command
     claude_cmd = _resolve_cmd("claude")
@@ -83,6 +85,8 @@ async def run_claude_code_task(
         "--output-format", "stream-json",
         "--allowedTools", CLAUDE_CODE_ALLOWED_TOOLS,
     ]
+    if model:
+        cmd_args.extend(["--model", model])
 
     # Strip only the env vars that cause Claude Code to detect a nested session.
     # Keep CLAUDE_API_KEY, ANTHROPIC_API_KEY, etc. — the subprocess needs those.
@@ -92,7 +96,10 @@ async def run_claude_code_task(
     clean_env = {k: v for k, v in os.environ.items()
                  if k not in _NESTED_SESSION_VARS}
 
-    # Launch subprocess — pipe prompt via stdin to avoid Windows cmd length limits
+    # Launch subprocess — pipe prompt via stdin to avoid Windows cmd length limits.
+    # limit=10MB prevents "Separator is found, but chunk is longer than limit"
+    # when Claude Code emits large stream-json lines (e.g., tool_result with
+    # full file contents).
     proc = await asyncio.create_subprocess_exec(
         *cmd_args,
         stdin=asyncio.subprocess.PIPE,
@@ -100,6 +107,7 @@ async def run_claude_code_task(
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=clean_env,
+        limit=10 * 1024 * 1024,  # 10 MB line buffer
     )
 
     text_parts: list[str] = []
@@ -199,46 +207,6 @@ async def run_claude_code_task(
         "cost_usd": total_cost_usd,
         "model_used": model_used,
     }
-
-
-def _build_prompt(task_row) -> str:
-    """Build the full prompt from task description and context."""
-    parts = []
-
-    # System prompt (sqlite3.Row doesn't support .get(), use [] with fallback)
-    system_prompt = task_row["system_prompt"] or ""
-    if system_prompt:
-        parts.append(system_prompt)
-
-    # Context from dependencies
-    context_json = task_row["context_json"] or "[]"
-    context = json.loads(context_json) if isinstance(context_json, str) else context_json
-    for ctx in context:
-        # Sanitize tag name to alphanumeric + underscore to prevent prompt injection
-        # via crafted context types (e.g., "system><malicious_instruction")
-        ctx_type = re.sub(r"[^a-zA-Z0-9_]", "_", ctx.get("type", "context"))
-        content = ctx.get("content", "")
-        if content:
-            parts.append(f"<{ctx_type}>\n{content}\n</{ctx_type}>")
-
-    # Task description (always last — this is the main instruction)
-    parts.append(task_row["description"])
-
-    return "\n\n".join(parts)
-
-
-async def _resolve_cwd(db, project_id: str) -> str | None:
-    """Look up the project's repo_path for use as working directory."""
-    try:
-        row = await db.fetchone(
-            "SELECT repo_path FROM projects WHERE id = ?",
-            (project_id,),
-        )
-        if row and row["repo_path"]:
-            return row["repo_path"]
-    except Exception as e:
-        logger.debug("Failed to resolve repo_path for project %s: %s", project_id, e)
-    return None
 
 
 async def _handle_stream_event(

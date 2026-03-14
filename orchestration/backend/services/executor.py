@@ -35,12 +35,25 @@ logger = logging.getLogger("orchestration.executor")
 # Token estimate for budget reservation before task execution
 _EST_TASK_INPUT_TOKENS = 1500  # system prompt + context + tool definitions
 
+# Maps ModelTier to the provider key used in provider_quotas config.
+# API tiers (haiku/sonnet/opus) share the claude_code provider (same Anthropic account).
+_TIER_TO_PROVIDER: dict[ModelTier, str] = {
+    ModelTier.CLAUDE_CODE: "claude_code",
+    ModelTier.HAIKU:       "claude_code",
+    ModelTier.SONNET:      "claude_code",
+    ModelTier.OPUS:        "claude_code",
+    ModelTier.GEMINI_CLI:  "gemini_cli",
+    ModelTier.CODEX_CLI:   "codex_cli",
+    ModelTier.OLLAMA:      "ollama",
+}
+
 
 class Executor:
     """Async task executor with concurrency control and tool support."""
 
     def __init__(self, db, budget, progress, resource_monitor, tool_registry,
-                 http_client=None, rag_cache=None, diagnostic_ingester=None):
+                 http_client=None, rag_cache=None, diagnostic_ingester=None,
+                 quota_manager=None):
         self._db = db
         self._budget = budget
         self._progress = progress
@@ -49,6 +62,7 @@ class Executor:
         self._http = http_client  # Shared httpx client for Ollama calls
         self._rag_cache = rag_cache
         self._diagnostic_ingester = diagnostic_ingester
+        self._quota_manager = quota_manager  # Optional; skips quota check when None
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
         self._task: asyncio.Task | None = None
         self._running = False
@@ -63,7 +77,7 @@ class Executor:
         if self._running:
             return
         self._running = True
-        self._client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        self._client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
         await self._recover_stale_tasks()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Executor started")
@@ -268,15 +282,26 @@ class Executor:
         for project in projects:
             pid = project["id"]
 
-            # Check budget — skip for projects with only free (Ollama/Claude Code) tasks remaining
+            # Check budget — skip for projects with only free/CLI tasks remaining.
+            # All CLI tiers are subscription-billed ($0). When no API key is set,
+            # haiku/sonnet/opus also route through CLI, making them effectively free.
             if not await self._budget.can_spend(0.001):
-                _FREE_TIERS = (ModelTier.OLLAMA.value, ModelTier.CLAUDE_CODE.value)
-                non_free = await self._db.fetchone(
-                    "SELECT COUNT(*) as cnt FROM tasks "
-                    "WHERE project_id = ? AND model_tier NOT IN (?, ?) AND status NOT IN (?, ?, ?, ?)",
-                    (pid, *_FREE_TIERS, *_TERMINAL),
+                _CLI_TIERS = (
+                    ModelTier.OLLAMA.value, ModelTier.CLAUDE_CODE.value,
+                    ModelTier.GEMINI_CLI.value, ModelTier.CODEX_CLI.value,
                 )
-                if non_free and non_free["cnt"] > 0:
+                if self._client is None:
+                    # No API key — all tiers route through CLI, all are free
+                    non_free_count = 0
+                else:
+                    non_free = await self._db.fetchone(
+                        "SELECT COUNT(*) as cnt FROM tasks "
+                        "WHERE project_id = ? AND model_tier NOT IN (?, ?, ?, ?) "
+                        "AND status NOT IN (?, ?, ?, ?)",
+                        (pid, *_CLI_TIERS, *_TERMINAL),
+                    )
+                    non_free_count = non_free["cnt"] if non_free else 0
+                if non_free_count > 0:
                     await self._progress.push_event(pid, "budget_warning", "Budget limit reached. Execution paused.")
                     await self._db.execute_write(
                         "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
@@ -296,36 +321,56 @@ class Executor:
             current_wave = wave_row["w"] if wave_row and wave_row["w"] is not None else 0
             logger.debug("TICK: project %s wave=%s", pid[:8], current_wave)
 
-            # Find ready tasks: pending with all deps completed, filtered to current wave
+            # Find ready tasks: pending with all deps resolved, filtered to current wave.
+            # A dep is "resolved" when completed or needs_review (output exists either way).
             ready = await self._db.fetchall(
                 "SELECT t.* FROM tasks t "
                 "LEFT JOIN task_deps d ON d.task_id = t.id "
-                "LEFT JOIN tasks dep ON dep.id = d.depends_on AND dep.status != ? "
+                "LEFT JOIN tasks dep ON dep.id = d.depends_on "
+                "  AND dep.status NOT IN (?, ?) "
                 "WHERE t.project_id = ? AND t.status = ? AND t.wave = ? "
                 "GROUP BY t.id HAVING COUNT(dep.id) = 0 "
                 "ORDER BY t.priority ASC",
-                (TaskStatus.COMPLETED, pid, TaskStatus.PENDING, current_wave),
+                (TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
+                 pid, TaskStatus.PENDING, current_wave),
             )
-            logger.debug("TICK: found %d ready tasks in wave %s", len(ready), current_wave)
+            logger.info("TICK: found %d ready tasks in wave %s for project %s", len(ready), current_wave, pid[:8])
 
             for task_row in ready:
                 task_id = task_row["id"]
-                logger.debug("TICK: evaluating task %s tier=%s", task_id[:8], task_row["model_tier"])
+                logger.info("TICK: evaluating task %s tier=%s title=%s", task_id[:8], task_row["model_tier"], task_row["title"])
 
                 # Skip tasks still in retry backoff
                 if task_id in self._retry_after and time.time() < self._retry_after[task_id]:
-                    logger.debug("TICK: task %s skipped (retry backoff)", task_id[:8])
+                    logger.info("TICK: task %s skipped (retry backoff)", task_id[:8])
                     continue
 
                 # Check resource availability for this task
                 if not self._resources_available(task_row):
-                    logger.debug("TICK: task %s skipped (resources unavailable)", task_id[:8])
+                    logger.info("TICK: task %s skipped (resources unavailable for tier %s)", task_id[:8], task_row["model_tier"])
                     continue
 
-                # Check per-project budget using reserve_spend (prevents TOCTOU race)
                 tier = ModelTier(task_row["model_tier"])
+
+                # Check provider quota before reserving budget
+                if self._quota_manager is not None:
+                    provider = _TIER_TO_PROVIDER.get(tier)
+                    if provider and not await self._quota_manager.is_provider_available(provider):
+                        logger.debug("TICK: task %s skipped (provider %s over quota)", task_id[:8], provider)
+                        continue
+
+                # Check per-project budget using reserve_spend (prevents TOCTOU race).
+                # CLI tiers are subscription-billed ($0/call) — skip budget reservation.
+                # When no API key is set, haiku/sonnet/opus route through CLI too.
                 est_cost = 0.0
-                if tier not in (ModelTier.OLLAMA, ModelTier.CLAUDE_CODE):
+                _FREE_EXECUTION = (
+                    ModelTier.OLLAMA, ModelTier.CLAUDE_CODE,
+                    ModelTier.GEMINI_CLI, ModelTier.CODEX_CLI,
+                )
+                api_tier_via_cli = (
+                    tier not in _FREE_EXECUTION and self._client is None
+                )
+                if tier not in _FREE_EXECUTION and not api_tier_via_cli:
                     est_cost = calculate_cost(get_model_id(tier), _EST_TASK_INPUT_TOKENS, task_row["max_tokens"])
                     if not await self._budget.reserve_spend(est_cost):
                         continue
@@ -439,7 +484,12 @@ class Executor:
                     )
 
     async def _update_blocked_tasks(self, project_id: str):
-        """Unblock tasks whose dependencies are now all completed (single query)."""
+        """Unblock tasks whose dependencies are all resolved.
+
+        A dependency is "resolved" when it's completed OR needs_review.
+        NEEDS_REVIEW means the task produced output but verification flagged it —
+        dependent tasks can still use that output and shouldn't be blocked.
+        """
         now = time.time()
         await self._db.execute_write(
             "UPDATE tasks SET status = ?, updated_at = ? "
@@ -447,9 +497,10 @@ class Executor:
             "AND id NOT IN ("
             "  SELECT d.task_id FROM task_deps d "
             "  JOIN tasks dep ON dep.id = d.depends_on "
-            "  WHERE dep.status != ?"
+            "  WHERE dep.status NOT IN (?, ?)"
             ")",
-            (TaskStatus.PENDING, now, project_id, TaskStatus.BLOCKED, TaskStatus.COMPLETED),
+            (TaskStatus.PENDING, now, project_id, TaskStatus.BLOCKED,
+             TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW),
         )
 
     def _check_resource(self, resource_name: str) -> bool:
@@ -457,10 +508,16 @@ class Executor:
 
         If a resource was recently found offline, skip re-checking for the
         configured skip period to avoid hammering health endpoints on every tick.
+        If the resource state is unknown (not yet checked), assume available
+        to avoid blocking dispatch on startup before the first health check.
         """
         now = time.time()
         if now < self._resource_skip_until.get(resource_name, 0):
             return False
+        state = self._resource_monitor.get(resource_name)
+        if state is None or state.status.value == "checking":
+            # Resource not yet checked — assume available rather than blocking
+            return True
         if not self._resource_monitor.is_available(resource_name):
             self._resource_skip_until[resource_name] = now + RESOURCE_SKIP_SECONDS
             return False

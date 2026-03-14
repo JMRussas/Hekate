@@ -117,30 +117,50 @@ async def _do_extract(
         f"### Output\n{output_text[:_MAX_OUTPUT_CHARS]}"
     )
 
-    response = await client.messages.create(
-        model=KNOWLEDGE_EXTRACTION_MODEL,
-        max_tokens=KNOWLEDGE_EXTRACTION_MAX_TOKENS,
-        system=_EXTRACTION_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-        timeout=API_TIMEOUT,
-    )
+    if client:
+        # Use Anthropic SDK directly when API key is available
+        response = await client.messages.create(
+            model=KNOWLEDGE_EXTRACTION_MODEL,
+            max_tokens=KNOWLEDGE_EXTRACTION_MAX_TOKENS,
+            system=_EXTRACTION_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+            timeout=API_TIMEOUT,
+        )
 
-    pt = response.usage.input_tokens
-    ct = response.usage.output_tokens
-    cost = calculate_cost(KNOWLEDGE_EXTRACTION_MODEL, pt, ct)
+        pt = response.usage.input_tokens
+        ct = response.usage.output_tokens
+        cost = calculate_cost(KNOWLEDGE_EXTRACTION_MODEL, pt, ct)
 
-    await budget.record_spend(
-        cost_usd=cost,
-        prompt_tokens=pt,
-        completion_tokens=ct,
-        provider="anthropic",
-        model=KNOWLEDGE_EXTRACTION_MODEL,
-        purpose="knowledge_extraction",
-        project_id=project_id,
-        task_id=task_id,
-    )
+        await budget.record_spend(
+            cost_usd=cost,
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            provider="anthropic",
+            model=KNOWLEDGE_EXTRACTION_MODEL,
+            purpose="knowledge_extraction",
+            project_id=project_id,
+            task_id=task_id,
+        )
 
-    raw = "".join(block.text for block in response.content if block.type == "text")
+        raw = "".join(block.text for block in response.content if block.type == "text")
+    else:
+        # No API key — fall back to CLI providers via llm_router
+        from backend.services.llm_router import call_llm
+        llm_response = await call_llm(
+            _EXTRACTION_PROMPT, user_msg, task_type="simple",
+        )
+        raw = llm_response.text
+
+        await budget.record_spend(
+            cost_usd=llm_response.cost_usd,
+            prompt_tokens=llm_response.prompt_tokens,
+            completion_tokens=llm_response.completion_tokens,
+            provider=llm_response.provider or "unknown",
+            model=llm_response.model or "default",
+            purpose="knowledge_extraction",
+            project_id=project_id,
+            task_id=task_id,
+        )
 
     try:
         parsed = json.loads(raw)

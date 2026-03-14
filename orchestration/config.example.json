@@ -61,6 +61,63 @@
     "per_project_limit_usd": 10.00,
     "warn_at_pct": 80
   },
+  "provider_quotas": {
+    "claude_code": {
+      "warn_pct": 80,
+      "windows": [
+        {
+          "name": "sliding_5h",
+          "duration_hours": 5,
+          "metric": "tokens",
+          "limit": 88000
+        },
+        {
+          "name": "weekly",
+          "duration_hours": 168,
+          "metric": "tokens",
+          "limit": 500000
+        }
+      ]
+    },
+    "gemini_cli": {
+      "warn_pct": 80,
+      "windows": [
+        {
+          "name": "daily",
+          "duration_hours": 24,
+          "metric": "requests",
+          "limit": 1000
+        },
+        {
+          "name": "per_minute",
+          "duration_minutes": 1,
+          "metric": "requests",
+          "limit": 60
+        }
+      ]
+    },
+    "codex_cli": {
+      "warn_pct": 80,
+      "windows": [
+        {
+          "name": "sliding_5h",
+          "duration_hours": 5,
+          "metric": "tokens",
+          "limit": 40000
+        },
+        {
+          "name": "weekly",
+          "duration_hours": 168,
+          "metric": "tokens",
+          "limit": 250000
+        }
+      ]
+    },
+    "ollama": {
+      "warn_pct": 80,
+      "windows": []
+    }
+  },
   "execution": {
     "max_concurrent_tasks": 3,
     "tick_interval_sec": 2.0,
@@ -84,6 +141,17 @@
     "max_history_rounds": 4,
     "http_client_timeout": 300.0,
     "external_claim_timeout_seconds": 3600
+  },
+  "context_enrichment": {
+    "enabled": true,
+    "context_store_url": "http://localhost:5102",
+    "max_context_tokens": 2000,
+    "include_prior_outcomes": true
+  },
+  "telemetry_feedback": {
+    "enabled": true,
+    "context_store_url": "http://localhost:5102",
+    "embed_outcomes": true
   },
   "model_pricing": {
     "claude-haiku-4-5-20251001": { "input_per_mtok": 1.0, "output_per_mtok": 5.0 },

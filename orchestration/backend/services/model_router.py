@@ -2,13 +2,20 @@
 #
 #  Selects the cheapest model that can handle a task, and calculates costs.
 #
-#  Depends on: backend/config.py
+#  Depends on: backend/config.py, backend/services/model_discovery.py, backend/services/provider_quota.py
 #  Used by:    services/planner.py, services/decomposer.py, services/executor.py
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 from backend.config import MODEL_PRICING, cfg
 from backend.models.enums import ModelTier
+
+if TYPE_CHECKING:
+    from backend.services.model_discovery import ModelDiscoveryService
+    from backend.services.provider_quota import ProviderQuotaManager
 
 logger = logging.getLogger("orchestration.model_router")
 
@@ -25,31 +32,79 @@ def _reset_warned_models():
 # Model ID resolution
 # ---------------------------------------------------------------------------
 
-# Fallback model IDs when config is missing — must be valid Anthropic model IDs
+# Hardcoded fallbacks — used only when config has no override and discovery
+# cache is empty (e.g. before startup discovery completes or on API failure).
 _DEFAULT_MODELS = {
     "haiku": "claude-haiku-4-5-20251001",
     "sonnet": "claude-sonnet-4-6",
     "opus": "claude-opus-4-6",
 }
 
-
-_DEFAULT_CLI_MODELS = {
+_DEFAULT_CLI_FALLBACKS = {
     "gemini_cli": "gemini-2.5-pro",
-    "codex_cli": "gpt-5.4",
+    "codex_cli": "gpt-4o",
+    "ollama": "qwen2.5-coder:14b",
 }
+
+# Injected at startup by app.py lifespan via set_discovery_service().
+_discovery: ModelDiscoveryService | None = None
+
+
+def set_discovery_service(svc: ModelDiscoveryService) -> None:
+    """Wire in the ModelDiscoveryService singleton. Called once at startup."""
+    global _discovery
+    _discovery = svc
 
 
 def get_model_id(tier: ModelTier) -> str:
-    """Resolve a model tier to the actual model ID from config."""
-    if tier == ModelTier.OLLAMA:
-        return cfg("ollama.default_model", "qwen3.5:latest")
+    """Resolve a model tier to the actual model ID.
+
+    Priority: 1) config.json override  2) discovery cache  3) hardcoded fallback
+    """
     if tier == ModelTier.CLAUDE_CODE:
         return "claude-code-cli"
+
+    # 1. Config override — explicit config values always win.
     if tier == ModelTier.GEMINI_CLI:
-        return cfg("gemini_cli.model", _DEFAULT_CLI_MODELS["gemini_cli"])
+        override = cfg("gemini_cli.model", "")
+    elif tier == ModelTier.CODEX_CLI:
+        override = cfg("codex_cli.model", "")
+    elif tier == ModelTier.OLLAMA:
+        override = cfg("ollama.default_model", "")
+    else:
+        override = cfg(f"anthropic.models.{tier.value}", "")
+    if override:
+        return override
+
+    # 2. Discovery cache — live model list from provider APIs.
+    if _discovery is not None:
+        available = _discovery.get_available_models()
+        if tier == ModelTier.GEMINI_CLI:
+            models = available.get("google", [])
+            if models:
+                return models[0]
+        elif tier == ModelTier.CODEX_CLI:
+            models = available.get("openai", [])
+            if models:
+                return models[0]
+        elif tier == ModelTier.OLLAMA:
+            models = available.get("ollama", [])
+            if models:
+                return models[0]
+        else:
+            # Anthropic — find first discovered model whose ID contains the tier name.
+            for m in available.get("anthropic", []):
+                if tier.value in m:
+                    return m
+
+    # 3. Hardcoded fallbacks.
+    if tier == ModelTier.GEMINI_CLI:
+        return _DEFAULT_CLI_FALLBACKS["gemini_cli"]
     if tier == ModelTier.CODEX_CLI:
-        return cfg("codex_cli.model", _DEFAULT_CLI_MODELS["codex_cli"])
-    return cfg(f"anthropic.models.{tier.value}", _DEFAULT_MODELS.get(tier.value, f"claude-{tier.value}"))
+        return _DEFAULT_CLI_FALLBACKS["codex_cli"]
+    if tier == ModelTier.OLLAMA:
+        return _DEFAULT_CLI_FALLBACKS["ollama"]
+    return _DEFAULT_MODELS.get(tier.value, f"claude-{tier.value}")
 
 
 # ---------------------------------------------------------------------------
@@ -87,31 +142,34 @@ def estimate_task_cost(
 # ---------------------------------------------------------------------------
 
 # Mapping: (task_type, complexity) -> recommended model tier
+# Default: CLI-first routing — subscription CLIs are $0/call vs API billing.
+# Ollama for simple tasks (free, local), CLI for medium/complex.
+# API tiers (haiku/sonnet) available but not default — use config override.
 _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     # Code tasks
-    ("code", "simple"): ModelTier.HAIKU,
-    ("code", "medium"): ModelTier.SONNET,
-    ("code", "complex"): ModelTier.SONNET,
+    ("code", "simple"): ModelTier.CODEX_CLI,
+    ("code", "medium"): ModelTier.CLAUDE_CODE,
+    ("code", "complex"): ModelTier.CLAUDE_CODE,
     # Research
     ("research", "simple"): ModelTier.OLLAMA,
-    ("research", "medium"): ModelTier.HAIKU,
-    ("research", "complex"): ModelTier.SONNET,
+    ("research", "medium"): ModelTier.GEMINI_CLI,
+    ("research", "complex"): ModelTier.GEMINI_CLI,
     # Analysis
     ("analysis", "simple"): ModelTier.OLLAMA,
-    ("analysis", "medium"): ModelTier.HAIKU,
-    ("analysis", "complex"): ModelTier.SONNET,
+    ("analysis", "medium"): ModelTier.GEMINI_CLI,
+    ("analysis", "complex"): ModelTier.CLAUDE_CODE,
     # Asset generation
     ("asset", "simple"): ModelTier.OLLAMA,
     ("asset", "medium"): ModelTier.OLLAMA,
     ("asset", "complex"): ModelTier.OLLAMA,
     # Integration
-    ("integration", "simple"): ModelTier.HAIKU,
-    ("integration", "medium"): ModelTier.HAIKU,
-    ("integration", "complex"): ModelTier.SONNET,
+    ("integration", "simple"): ModelTier.CODEX_CLI,
+    ("integration", "medium"): ModelTier.CLAUDE_CODE,
+    ("integration", "complex"): ModelTier.CLAUDE_CODE,
     # Documentation
     ("documentation", "simple"): ModelTier.OLLAMA,
-    ("documentation", "medium"): ModelTier.HAIKU,
-    ("documentation", "complex"): ModelTier.SONNET,
+    ("documentation", "medium"): ModelTier.GEMINI_CLI,
+    ("documentation", "complex"): ModelTier.GEMINI_CLI,
     # Claude Code CLI — for tasks requiring file I/O, git, MCP tools
     ("code_cli", "simple"): ModelTier.CLAUDE_CODE,
     ("code_cli", "medium"): ModelTier.CLAUDE_CODE,
@@ -137,7 +195,74 @@ _TIER_MAP: dict[tuple[str, str], ModelTier] = {
 
 def recommend_tier(task_type: str, complexity: str) -> ModelTier:
     """Get the recommended model tier for a task type and complexity."""
-    return _TIER_MAP.get((task_type, complexity), ModelTier.HAIKU)
+    return _TIER_MAP.get((task_type, complexity), ModelTier.CLAUDE_CODE)
+
+
+# Maps ModelTier to the provider name used in provider_quotas config.
+# API tiers (haiku/sonnet/opus) share the "claude_code" quota key since they
+# go through the same Anthropic account.
+_TIER_PROVIDER: dict[ModelTier, str] = {
+    ModelTier.CLAUDE_CODE: "claude_code",
+    ModelTier.GEMINI_CLI: "gemini_cli",
+    ModelTier.CODEX_CLI: "codex_cli",
+    ModelTier.HAIKU: "claude_code",
+    ModelTier.SONNET: "claude_code",
+    ModelTier.OPUS: "claude_code",
+    ModelTier.OLLAMA: "ollama",
+}
+
+# Fallback chain tried (in order) when the recommended cloud tier is hot.
+_CLOUD_FALLBACK_ORDER = [
+    ModelTier.CLAUDE_CODE,
+    ModelTier.GEMINI_CLI,
+    ModelTier.CODEX_CLI,
+]
+
+
+async def get_available_tiers(
+    task_type: str,
+    complexity: str,
+    quota_manager: ProviderQuotaManager | None = None,
+) -> ModelTier:
+    """Quota-aware tier selection.
+
+    Starts from recommend_tier() and checks provider availability.  If the
+    recommended tier's provider is warned (>= warn_pct), falls back through
+    the cloud fallback chain.  If all cloud providers are hot, returns Ollama.
+
+    When quota_manager is None, behaves identically to recommend_tier().
+    """
+    recommended = recommend_tier(task_type, complexity)
+
+    if quota_manager is None:
+        return recommended
+
+    # Ollama has no limits — always available.
+    if recommended == ModelTier.OLLAMA:
+        return recommended
+
+    provider = _TIER_PROVIDER.get(recommended, "")
+    if provider and await quota_manager.is_provider_available(provider):
+        return recommended
+
+    # Recommended provider is hot — try alternatives in fallback order.
+    for fallback in _CLOUD_FALLBACK_ORDER:
+        if fallback == recommended:
+            continue
+        fallback_provider = _TIER_PROVIDER.get(fallback, "")
+        if fallback_provider and await quota_manager.is_provider_available(fallback_provider):
+            logger.info(
+                "Provider '%s' warned — routing %s/%s to %s",
+                provider, task_type, complexity, fallback.value,
+            )
+            return fallback
+
+    # All cloud providers are hot — force Ollama.
+    logger.warning(
+        "All cloud providers warned — forcing Ollama fallback for %s/%s",
+        task_type, complexity,
+    )
+    return ModelTier.OLLAMA
 
 
 # ---------------------------------------------------------------------------

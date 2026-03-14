@@ -117,7 +117,10 @@ CREATE TABLE IF NOT EXISTS usage_log (
     completion_tokens INTEGER NOT NULL,
     cost_usd REAL NOT NULL,
     purpose TEXT NOT NULL DEFAULT '',
-    timestamp REAL NOT NULL
+    timestamp REAL NOT NULL,
+    context_tokens_injected INTEGER,
+    source_node_count INTEGER,
+    enrichment_latency_ms REAL
 );
 
 CREATE TABLE IF NOT EXISTS budget_periods (

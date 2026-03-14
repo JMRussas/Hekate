@@ -118,18 +118,18 @@ class TestRecommendTier:
     def test_research_simple_is_ollama(self):
         assert recommend_tier("research", "simple") == ModelTier.OLLAMA
 
-    def test_code_medium_is_sonnet(self):
-        assert recommend_tier("code", "medium") == ModelTier.SONNET
+    def test_code_medium_is_claude_code(self):
+        assert recommend_tier("code", "medium") == ModelTier.CLAUDE_CODE
 
     def test_asset_complex_is_ollama(self):
         """Asset tasks should use Ollama regardless of complexity."""
         assert recommend_tier("asset", "complex") == ModelTier.OLLAMA
 
-    def test_unknown_type_defaults_to_haiku(self):
-        assert recommend_tier("unknown_type", "medium") == ModelTier.HAIKU
+    def test_unknown_type_defaults_to_claude_code(self):
+        assert recommend_tier("unknown_type", "medium") == ModelTier.CLAUDE_CODE
 
-    def test_unknown_complexity_defaults_to_haiku(self):
-        assert recommend_tier("code", "extreme") == ModelTier.HAIKU
+    def test_unknown_complexity_defaults_to_claude_code(self):
+        assert recommend_tier("code", "extreme") == ModelTier.CLAUDE_CODE
 
 
 # ---------------------------------------------------------------------------

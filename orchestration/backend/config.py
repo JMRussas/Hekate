@@ -130,6 +130,17 @@ KNOWLEDGE_INJECTION_MAX_CHARS = cfg("execution.knowledge_injection_max_chars", 3
 KNOWLEDGE_MIN_OUTPUT_LENGTH = cfg("execution.knowledge_min_output_length", 200)
 EXTERNAL_CLAIM_TIMEOUT_SECONDS = cfg("execution.external_claim_timeout_seconds", 3600)
 
+# Context Enrichment
+CONTEXT_ENRICHMENT_ENABLED = cfg("context_enrichment.enabled", True)
+CONTEXT_ENRICHMENT_URL = cfg("context_enrichment.context_store_url", "http://localhost:5102")
+CONTEXT_ENRICHMENT_MAX_TOKENS = cfg("context_enrichment.max_context_tokens", 2000)
+CONTEXT_ENRICHMENT_INCLUDE_PRIOR_OUTCOMES = cfg("context_enrichment.include_prior_outcomes", True)
+
+# Telemetry Feedback
+TELEMETRY_FEEDBACK_ENABLED = cfg("telemetry_feedback.enabled", True)
+TELEMETRY_FEEDBACK_URL = cfg("telemetry_feedback.context_store_url", "http://localhost:5102")
+TELEMETRY_FEEDBACK_EMBED_OUTCOMES = cfg("telemetry_feedback.embed_outcomes", True)
+
 # Model pricing
 MODEL_PRICING = cfg("model_pricing", {})
 
@@ -261,11 +272,53 @@ def validate_config():
                 "git operations will fail"
             )
 
+    # Validation: context enrichment config when enabled
+    if CONTEXT_ENRICHMENT_ENABLED:
+        if not isinstance(CONTEXT_ENRICHMENT_URL, str) or not CONTEXT_ENRICHMENT_URL:
+            raise ConfigError(
+                f"context_enrichment.context_store_url must be a non-empty string, "
+                f"got {repr(CONTEXT_ENRICHMENT_URL)}"
+            )
+        if not CONTEXT_ENRICHMENT_URL.startswith(("http://", "https://")):
+            raise ConfigError(
+                f"context_enrichment.context_store_url must start with http:// or https://, "
+                f"got '{CONTEXT_ENRICHMENT_URL}'"
+            )
+        if not isinstance(CONTEXT_ENRICHMENT_MAX_TOKENS, int) or CONTEXT_ENRICHMENT_MAX_TOKENS <= 0:
+            raise ConfigError(
+                f"context_enrichment.max_context_tokens must be > 0, "
+                f"got {CONTEXT_ENRICHMENT_MAX_TOKENS}"
+            )
+        if not isinstance(CONTEXT_ENRICHMENT_INCLUDE_PRIOR_OUTCOMES, bool):
+            raise ConfigError(
+                f"context_enrichment.include_prior_outcomes must be a boolean, "
+                f"got {type(CONTEXT_ENRICHMENT_INCLUDE_PRIOR_OUTCOMES).__name__}"
+            )
+
+    # Validation: telemetry feedback config when enabled
+    if TELEMETRY_FEEDBACK_ENABLED:
+        if not isinstance(TELEMETRY_FEEDBACK_URL, str) or not TELEMETRY_FEEDBACK_URL:
+            raise ConfigError(
+                f"telemetry_feedback.context_store_url must be a non-empty string, "
+                f"got {repr(TELEMETRY_FEEDBACK_URL)}"
+            )
+        if not TELEMETRY_FEEDBACK_URL.startswith(("http://", "https://")):
+            raise ConfigError(
+                f"telemetry_feedback.context_store_url must start with http:// or https://, "
+                f"got '{TELEMETRY_FEEDBACK_URL}'"
+            )
+        if not isinstance(TELEMETRY_FEEDBACK_EMBED_OUTCOMES, bool):
+            raise ConfigError(
+                f"telemetry_feedback.embed_outcomes must be a boolean, "
+                f"got {type(TELEMETRY_FEEDBACK_EMBED_OUTCOMES).__name__}"
+            )
+
     # Warning: Anthropic API key not set (Ollama-only usage is valid)
     if not ANTHROPIC_API_KEY:
         _logger.warning(
-            "ANTHROPIC_API_KEY is not set. Claude API calls will fail. "
-            "Set the env var or use Ollama-only mode."
+            "ANTHROPIC_API_KEY is not set. Haiku/Sonnet tasks will be routed "
+            "through Claude Code CLI instead of the Anthropic API. "
+            "Set the env var to use direct API access."
         )
 
     # Warning: configured models without pricing entries

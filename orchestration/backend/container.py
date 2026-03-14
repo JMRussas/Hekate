@@ -17,8 +17,10 @@ from backend.services.budget import BudgetManager
 from backend.services.decomposer import DecomposerService
 from backend.services.executor import Executor
 from backend.services.git_service import GitService
+from backend.services.model_discovery import ModelDiscoveryService
 from backend.services.planner import PlannerService
 from backend.services.progress import ProgressManager
+from backend.services.provider_quota import ProviderQuotaManager
 from backend.services.resource_monitor import ResourceMonitor
 from backend.services.diagnostic_ingest import DiagnosticIngester
 from backend.tools.rag import RAGIndexCache
@@ -52,6 +54,7 @@ class Container(containers.DeclarativeContainer):
             "backend.routes.external",
             "backend.routes.internal",
             "backend.middleware.auth",
+            "backend.services.model_discovery",
         ]
     )
 
@@ -70,8 +73,10 @@ class Container(containers.DeclarativeContainer):
     oidc = providers.Singleton(OIDCService, db=db, auth=auth)
     budget = providers.Singleton(BudgetManager, db=db)
     progress = providers.Singleton(ProgressManager, db=db)
+    provider_quota = providers.Singleton(ProviderQuotaManager, db=db)
     resource_monitor = providers.Singleton(ResourceMonitor)
     diagnostic_ingester = providers.Singleton(DiagnosticIngester)
+    model_discovery = providers.Singleton(ModelDiscoveryService)
 
     # --- Git ---
     git_service = providers.Factory(GitService, db=db)
@@ -91,4 +96,5 @@ class Container(containers.DeclarativeContainer):
         http_client=http_client,
         rag_cache=rag_cache,
         diagnostic_ingester=diagnostic_ingester,
+        quota_manager=provider_quota,
     )

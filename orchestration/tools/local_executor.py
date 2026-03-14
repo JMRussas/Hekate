@@ -15,7 +15,7 @@ Usage:
     python orchestration/tools/local_executor.py --tier claude_code  # Only claim claude_code tasks
     python orchestration/tools/local_executor.py --status        # Show current task status
 
-Depends on: orchestration/data/orchestration.db
+Depends on: orchestration/data/orchestration.db, backend/config.py, backend/models/enums.py, backend/services/model_router.py
 Used by:    manual execution from 4090
 """
 
@@ -29,24 +29,43 @@ import sys
 import time
 from pathlib import Path
 
+# Add backend to path for config loading
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from backend.config import cfg
+from backend.models.enums import ModelTier
+from backend.services import model_router
+
 DB_PATH = Path(__file__).parent.parent / "data" / "orchestration.db"
 
 # CLI timeout (seconds)
 CLI_TIMEOUT = 600
-
-# Default models per tier
-DEFAULT_MODELS = {
-    "claude_code": None,  # Claude Code uses its own model selection
-    "gemini_cli": "gemini-2.5-pro",
-    "codex_cli": "gpt-5.4",
-    "ollama": "qwen2.5-coder:14b",
-}
 
 # Tiers this executor can handle
 SUPPORTED_TIERS = {"claude_code", "gemini_cli", "codex_cli", "ollama"}
 
 # Machine identifier for claimed_by
 MACHINE_ID = "4090-local"
+
+
+def get_model_id(tier: str) -> str:
+    """Resolve a model ID for a given tier.
+
+    Delegates to ModelRouter.get_model_id() which uses:
+    Priority: 1) config.json override  2) discovery cache  3) hardcoded fallback
+    """
+    # Convert string tier to ModelTier enum
+    tier_map = {
+        "claude_code": ModelTier.CLAUDE_CODE,
+        "gemini_cli": ModelTier.GEMINI_CLI,
+        "codex_cli": ModelTier.CODEX_CLI,
+        "ollama": ModelTier.OLLAMA,
+    }
+    if tier not in tier_map:
+        return "unknown"
+
+    model_tier = tier_map[tier]
+    return model_router.get_model_id(model_tier)
 
 
 def resolve_cmd(name):
@@ -173,9 +192,9 @@ def execute_claude(prompt, cwd):
 def execute_gemini(prompt, cwd):
     """Execute via Gemini CLI."""
     cmd = resolve_cmd("gemini")
-    model = DEFAULT_MODELS["gemini_cli"]
+    model = get_model_id("gemini_cli")
     args = [cmd, "-p", ""]
-    if model:
+    if model and model != "unknown":
         args.extend(["-m", model])
     return _run_cli(args, prompt, cwd)
 
@@ -183,9 +202,9 @@ def execute_gemini(prompt, cwd):
 def execute_codex(prompt, cwd):
     """Execute via Codex CLI."""
     cmd = resolve_cmd("codex")
-    model = DEFAULT_MODELS["codex_cli"]
+    model = get_model_id("codex_cli")
     args = [cmd, "exec", "--full-auto"]
-    if model:
+    if model and model != "unknown":
         args.extend(["--model", model])
     return _run_cli(args, prompt, cwd)
 
@@ -193,7 +212,7 @@ def execute_codex(prompt, cwd):
 def execute_ollama(prompt, cwd):
     """Execute via Ollama HTTP API (local)."""
     import urllib.request
-    model = DEFAULT_MODELS["ollama"]
+    model = get_model_id("ollama")
     payload = json.dumps({
         "model": model,
         "prompt": prompt,

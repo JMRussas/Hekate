@@ -2,8 +2,9 @@
 #
 #  Token usage, cost dashboard, and budget management endpoints.
 #  Project-scoped queries enforce ownership. Global budget is admin-only.
+#  Quota endpoint shows current utilization vs limits per provider.
 #
-#  Depends on: container.py, models/schemas.py, middleware/auth.py
+#  Depends on: container.py, models/schemas.py, middleware/auth.py, services/provider_quota.py, services/budget.py
 #  Used by:    app.py
 
 from dependency_injector.wiring import inject, Provide
@@ -12,8 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from backend.container import Container
 from backend.db.connection import Database
 from backend.middleware.auth import get_current_user, require_admin
-from backend.models.schemas import BudgetStatus, UsageSummary
+from backend.models.schemas import BudgetStatus, ProviderQuotasStatus, UsageSummary
 from backend.services.budget import BudgetManager
+from backend.services.provider_quota import ProviderQuotaManager
 
 router = APIRouter(prefix="/usage", tags=["usage"])
 
@@ -116,3 +118,14 @@ async def get_usage_by_project(
         }
         for r in rows
     ]
+
+
+@router.get("/quotas")
+@inject
+async def get_provider_quotas(
+    _admin: dict = Depends(require_admin),
+    quota_manager: ProviderQuotaManager = Depends(Provide[Container.provider_quota]),
+) -> ProviderQuotasStatus:
+    """Current provider quota utilization vs limits. Admin only."""
+    quotas = await quota_manager.get_provider_quotas()
+    return ProviderQuotasStatus(providers=quotas)

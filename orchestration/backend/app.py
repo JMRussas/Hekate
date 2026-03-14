@@ -33,6 +33,7 @@ from backend.exceptions import (
 from backend.logging_config import set_request_id
 from backend.middleware.auth import get_current_user
 from backend.rate_limit import limiter
+from backend.services.model_router import set_discovery_service
 from backend.routes.admin import router as admin_router
 from backend.routes.analytics import router as analytics_router
 from backend.routes.auth import router as auth_router
@@ -72,18 +73,28 @@ async def lifespan(app: FastAPI):
     db = container.db()
     http_client = container.http_client()
     resource_monitor = container.resource_monitor()
+    model_discovery = container.model_discovery()
     executor = container.executor()
 
     async with AsyncExitStack() as stack:
+        logger.info("Initializing database...")
         await db.init(DB_PATH, run_migrations=True)
         stack.push_async_callback(db.close)
+        logger.info("Database initialized")
 
         # Shared httpx client — close on shutdown
         stack.push_async_callback(http_client.aclose)
 
+        logger.info("Starting resource monitor...")
         await resource_monitor.start_background()
         stack.push_async_callback(resource_monitor.stop_background)
         logger.info("Resource monitor started")
+
+        # Discover available models from provider APIs
+        await model_discovery.discover()
+        set_discovery_service(model_discovery)  # Wire into model_router module
+        stack.push_async_callback(model_discovery.close)
+        logger.info("Model discovery completed")
 
         await executor.start()
         stack.push_async_callback(executor.stop)

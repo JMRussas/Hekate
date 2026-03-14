@@ -1,12 +1,15 @@
 #  Orchestration Engine - Task Lifecycle
 #
-#  Core task execution flow: dispatch, verify, checkpoint, context forwarding.
+#  Core task execution flow: dispatch, verify, checkpoint, context forwarding,
+#  telemetry feedback.
 #  Extracted from executor.py for modularity.
 #
 #  Depends on: config.py, services/claude_agent.py, services/claude_code_executor.py,
 #              services/ollama_agent.py,
 #              services/budget.py, services/progress.py, services/diagnostic_ingest.py,
 #              services/model_router.py, services/knowledge_extractor.py,
+#              services/enrichment_service.py (lazy, pre-dispatch),
+#              services/telemetry_feedback.py (push_execution_outcome),
 #              tools/rag.py (_embed_query, RAGIndexCache)
 #  Used by:    services/executor.py, routes/external.py
 
@@ -21,18 +24,21 @@ import anthropic
 import httpx
 
 from backend.config import (
+    ANTHROPIC_API_KEY,
     CHECKPOINT_ON_RETRY_EXHAUSTED,
+    CONTEXT_ENRICHMENT_ENABLED,
     CONTEXT_FORWARD_MAX_CHARS,
     DIAGNOSTIC_RAG_ENABLED,
     KNOWLEDGE_EXTRACTION_ENABLED,
     VERIFICATION_ENABLED,
 )
 from backend.logging_config import set_task_id
-from backend.models.enums import ModelTier, TaskStatus
+from backend.models.enums import ModelTier, TaskStatus, VerificationResult
 from backend.services.claude_agent import run_claude_task
 from backend.services.claude_code_executor import run_claude_code_task
 from backend.services.generic_cli_executor import run_gemini_cli_task, run_codex_cli_task
 from backend.services.ollama_agent import run_ollama_task
+from backend.services.telemetry_feedback import push_execution_outcome
 
 logger = logging.getLogger("orchestration.executor")
 
@@ -51,6 +57,45 @@ _MAX_VERIFICATION_FEEDBACKS = 3
 
 # Diagnostic RAG confidence threshold — only inject HIGH-confidence results
 _DIAGNOSTIC_CONFIDENCE_THRESHOLD = 0.80
+
+
+def _row_get(row, key: str, default=None):
+    """Safe .get() for sqlite3.Row which doesn't support .get()."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
+def _get_provider_from_tier(tier: ModelTier) -> str:
+    """Map ModelTier to provider name for telemetry."""
+    if tier in (ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS):
+        return "anthropic"
+    elif tier == ModelTier.OLLAMA:
+        return "ollama"
+    elif tier == ModelTier.CLAUDE_CODE:
+        return "claude_code"
+    elif tier == ModelTier.GEMINI_CLI:
+        return "gemini"
+    elif tier == ModelTier.CODEX_CLI:
+        return "codex"
+    else:
+        return tier.value
+
+
+def _get_provider_from_model_name(model: str) -> str:
+    """Infer provider from model name for external executions."""
+    if not model:
+        return "unknown"
+    model_lower = model.lower()
+    if "claude" in model_lower:
+        return "anthropic"
+    elif "gemini" in model_lower:
+        return "gemini"
+    elif "gpt" in model_lower or "openai" in model_lower:
+        return "openai"
+    else:
+        return "unknown"
 
 
 async def _search_diagnostic_rag(error_text: str, rag_cache, http_client) -> str | None:
@@ -127,8 +172,8 @@ async def _ingest_retry_success(task_row, output_text: str, db, ingester):
         await ingester.ingest_resolution(
             error_text=error_text,
             resolution_text=f"Task '{task_row['title']}' succeeded after retry: {resolution_text}",
-            error_context=f"Task type: {task_row.get('task_type', 'unknown')}, "
-                          f"model: {task_row.get('model_tier', 'unknown')}",
+            error_context=f"Task type: {_row_get(task_row,'task_type', 'unknown')}, "
+                          f"model: {_row_get(task_row,'model_tier', 'unknown')}",
             tags=["auto-captured", "retry-success"],
         )
     except Exception as e:
@@ -405,28 +450,96 @@ async def execute_task(
             )
 
             try:
+                # --- Context enrichment (pre-dispatch) ---
+                # Query the context store for relevant knowledge and append the
+                # XML block to the task description before handing off to the
+                # agent.  Enrichment is best-effort: any failure (disabled,
+                # unreachable store, empty result) leaves the description unchanged.
+                _dispatch_row = task_row
+                enrichment_tokens = 0
+                enrichment_nodes = 0
+                enrichment_latency_ms = 0.0
+
+                if CONTEXT_ENRICHMENT_ENABLED:
+                    from backend.services.enrichment_service import EnrichmentService
+                    _enrichment = EnrichmentService()
+                    _enrichment_result = await _enrichment.enrich(task_row["description"])
+                    if _enrichment_result:
+                        _dispatch_row = dict(task_row)
+                        _dispatch_row["description"] = (
+                            task_row["description"]
+                            + "\n\n"
+                            + _enrichment_result.xml_block
+                        )
+                        enrichment_tokens = _enrichment_result.tokens_used
+                        enrichment_nodes = _enrichment_result.node_count
+                        enrichment_latency_ms = _enrichment_result.latency_ms
+
+                        logger.info(
+                            "task %s enriched: tokens=%d nodes=%d latency=%.1fms",
+                            task_id,
+                            enrichment_tokens,
+                            enrichment_nodes,
+                            enrichment_latency_ms,
+                        )
+
+                # Persist enrichment metadata to usage_log for later analysis.
+                # Always recorded (even when enrichment is disabled/skipped) with zero
+                # values to enable downstream analytics on enrichment effectiveness.
+                # Written as a zero-cost row so it doesn't affect budget totals.
+                await db.execute_write(
+                    "INSERT INTO usage_log "
+                    "(project_id, task_id, provider, model, prompt_tokens, "
+                    "completion_tokens, cost_usd, purpose, timestamp, "
+                    "context_tokens_injected, source_node_count, enrichment_latency_ms) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        task_row["project_id"], task_id,
+                        "context_store", "preview",
+                        0, 0, 0.0, "context_enrichment",
+                        time.time(),
+                        enrichment_tokens,
+                        enrichment_nodes,
+                        enrichment_latency_ms,
+                    ),
+                )
+
                 if tier == ModelTier.OLLAMA:
                     result = await run_ollama_task(
-                        task_row=task_row, http_client=http_client, budget=budget,
+                        task_row=_dispatch_row, http_client=http_client, budget=budget,
                     )
                 elif tier == ModelTier.CLAUDE_CODE:
                     result = await run_claude_code_task(
-                        task_row=task_row, db=db, budget=budget,
+                        task_row=_dispatch_row, db=db, budget=budget,
                         progress=progress,
                     )
                 elif tier == ModelTier.GEMINI_CLI:
                     result = await run_gemini_cli_task(
-                        task_row=task_row, db=db, budget=budget,
+                        task_row=_dispatch_row, db=db, budget=budget,
                         progress=progress,
                     )
                 elif tier == ModelTier.CODEX_CLI:
                     result = await run_codex_cli_task(
-                        task_row=task_row, db=db, budget=budget,
+                        task_row=_dispatch_row, db=db, budget=budget,
                         progress=progress,
+                    )
+                elif not client:
+                    # No Anthropic API client — fall back to Claude Code CLI
+                    # for haiku/sonnet tasks. CLI uses its own subscription auth.
+                    # Pass the model tier name so CLI uses the correct model.
+                    from backend.services.model_router import get_model_id
+                    model_id = get_model_id(tier)
+                    logger.info(
+                        "No Anthropic client, routing %s task %s through Claude Code CLI (model=%s)",
+                        tier.value, task_id, model_id,
+                    )
+                    result = await run_claude_code_task(
+                        task_row=_dispatch_row, db=db, budget=budget,
+                        progress=progress, model=tier.value,
                     )
                 else:
                     result = await run_claude_task(
-                        task_row=task_row, est_cost=est_cost, client=client,
+                        task_row=_dispatch_row, est_cost=est_cost, client=client,
                         tool_registry=tool_registry, budget=budget, progress=progress,
                         db=db,
                     )
@@ -450,6 +563,27 @@ async def execute_task(
                         project_id, "task_needs_review",
                         f"{task_row['title']}: budget exhausted, partial output needs review",
                         task_id=task_id,
+                    )
+
+                    # Push telemetry for budget exhaustion
+                    started_at = _row_get(task_row,"started_at") or time.time()
+                    completed_at = time.time()
+                    duration = completed_at - started_at
+                    provider = _get_provider_from_tier(tier)
+                    await push_execution_outcome(
+                        task_id=task_id,
+                        project_id=project_id,
+                        task_title=task_row["title"],
+                        task_description=task_row["description"],
+                        task_type=task_row["task_type"],
+                        provider=provider,
+                        model=result["model_used"],
+                        prompt_tokens=result["prompt_tokens"],
+                        completion_tokens=result["completion_tokens"],
+                        duration_seconds=duration,
+                        status="failed",
+                        verification_outcome="budget_exhausted",
+                        http_client=http_client,
                     )
                     return
 
@@ -511,6 +645,37 @@ async def execute_task(
                         task_id=task_id,
                         db=db,
                     )
+
+                # Push execution telemetry (success)
+                started_at = _row_get(task_row,"started_at") or time.time()
+                completed_at = time.time()
+                duration = completed_at - started_at
+                provider = _get_provider_from_tier(tier)
+
+                # Get verification outcome from the database
+                verification_outcome_str = None
+                if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA:
+                    task_fresh = await db.fetchone(
+                        "SELECT verification_status FROM tasks WHERE id = ?", (task_id,)
+                    )
+                    if task_fresh and _row_get(task_fresh,"verification_status"):
+                        verification_outcome_str = task_fresh["verification_status"]
+
+                await push_execution_outcome(
+                    task_id=task_id,
+                    project_id=project_id,
+                    task_title=task_row["title"],
+                    task_description=task_row["description"],
+                    task_type=task_row["task_type"],
+                    provider=provider,
+                    model=result["model_used"],
+                    prompt_tokens=result["prompt_tokens"],
+                    completion_tokens=result["completion_tokens"],
+                    duration_seconds=duration,
+                    status="completed",
+                    verification_outcome=verification_outcome_str,
+                    http_client=http_client,
+                )
 
             except _TRANSIENT_ERRORS as e:
                 retry_count = task_row["retry_count"]
@@ -577,6 +742,27 @@ async def execute_task(
                             task_id=task_id,
                         )
 
+                    # Push telemetry for max retries exceeded
+                    started_at = _row_get(task_row,"started_at") or time.time()
+                    completed_at = time.time()
+                    duration = completed_at - started_at
+                    provider = _get_provider_from_tier(tier)
+                    await push_execution_outcome(
+                        task_id=task_id,
+                        project_id=project_id,
+                        task_title=task_row["title"],
+                        task_description=task_row["description"],
+                        task_type=task_row["task_type"],
+                        provider=provider,
+                        model=_row_get(task_row,"model_used", "unknown"),
+                        prompt_tokens=0,  # Not available for transient errors
+                        completion_tokens=0,
+                        duration_seconds=duration,
+                        status="failed",
+                        verification_outcome="max_retries_exceeded",
+                        http_client=http_client,
+                    )
+
             except asyncio.CancelledError:
                 retry_after.pop(task_id, None)
                 await db.execute_write(
@@ -600,6 +786,27 @@ async def execute_task(
                 await progress.push_event(
                     project_id, "task_failed", f"{task_row['title']}: {error_msg}",
                     task_id=task_id,
+                )
+
+                # Push telemetry for unexpected exception
+                started_at = _row_get(task_row,"started_at") or time.time()
+                completed_at = time.time()
+                duration = completed_at - started_at
+                provider = _get_provider_from_tier(tier)
+                await push_execution_outcome(
+                    task_id=task_id,
+                    project_id=project_id,
+                    task_title=task_row["title"],
+                    task_description=task_row["description"],
+                    task_type=task_row["task_type"],
+                    provider=provider,
+                    model=_row_get(task_row,"model_used", "unknown"),
+                    prompt_tokens=0,  # Not available for unexpected exceptions
+                    completion_tokens=0,
+                    duration_seconds=duration,
+                    status="failed",
+                    verification_outcome="exception",
+                    http_client=http_client,
                 )
     finally:
         set_task_id(None)
@@ -673,14 +880,17 @@ async def complete_task_external(
     # Extract knowledge (best-effort, non-blocking)
     if KNOWLEDGE_EXTRACTION_ENABLED:
         try:
-            import anthropic as anthropic_mod
-            client = anthropic_mod.AsyncAnthropic()
+            if ANTHROPIC_API_KEY:
+                import anthropic as anthropic_mod
+                ext_client = anthropic_mod.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+            else:
+                ext_client = None
             from backend.services.knowledge_extractor import extract_knowledge
             await extract_knowledge(
                 task_title=task_row["title"],
                 task_description=task_row["description"],
                 output_text=output_text,
-                client=client,
+                client=ext_client,
                 budget=budget,
                 project_id=project_id,
                 task_id=task_id,
@@ -688,6 +898,25 @@ async def complete_task_external(
             )
         except Exception as e:
             logger.warning("Knowledge extraction failed for external task %s: %s", task_id, e)
+
+    # Push telemetry for external task completion
+    started_at = _row_get(task_row,"started_at") or now
+    duration = now - started_at
+    provider = _get_provider_from_model_name(model_used)
+    await push_execution_outcome(
+        task_id=task_id,
+        project_id=project_id,
+        task_title=task_row["title"],
+        task_description=task_row["description"],
+        task_type=_row_get(task_row,"task_type", "unknown"),
+        provider=provider,
+        model=model_used,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        duration_seconds=duration,
+        status="completed",
+        verification_outcome=None,  # External tasks skip verification
+    )
 
     return {"status": TaskStatus.COMPLETED}
 

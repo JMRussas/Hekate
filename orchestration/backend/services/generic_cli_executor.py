@@ -7,43 +7,26 @@
 #  Unlike Claude Code, these CLIs don't emit stream-json events, so output
 #  is collected as plain text after completion.
 #
-#  Depends on: config.py, services/llm_router.py (_resolve_cmd)
+#  Depends on: config.py, services/cli_common.py, services/llm_router.py
 #  Used by:    services/task_lifecycle.py
 
 import asyncio
-import json
 import logging
-import os
-import time
 
 from backend.config import cfg
+from backend.models.enums import ModelTier
+from backend.services.cli_common import build_prompt, is_process_crash, resolve_cwd
 from backend.services.llm_router import _resolve_cmd
 from backend.services.model_router import get_model_id
-from backend.models.enums import ModelTier
 
 logger = logging.getLogger("orchestration.executor")
 
 # Timeout for CLI tasks (seconds). Defaults to 10 minutes.
 CLI_TIMEOUT = int(cfg("cli_executor.timeout_seconds", 600))
 
-# Gemini allowed tools — passed as --allowed-tools array entries
-GEMINI_ALLOWED_TOOLS = cfg(
-    "gemini_cli.allowed_tools",
-    "Edit,Write,Read,Glob,Grep,"
-    "Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),"
-    "Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),"
-    "mcp__hecate__*,mcp__ollama__*",
-)
-
-# Codex allowed tools — not passed as CLI flags (Codex uses --full-auto + sandbox),
-# but kept for config parity and potential future use
-CODEX_ALLOWED_TOOLS = cfg(
-    "codex_cli.allowed_tools",
-    "Edit,Write,Read,Glob,Grep,"
-    "Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),"
-    "Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),"
-    "mcp__hecate__*,mcp__ollama__*",
-)
+# Max retries for process crashes (access violations, OOM). Logical failures
+# are NOT retried here — task_lifecycle handles those via retry_count.
+CLI_CRASH_RETRIES = int(cfg("cli_executor.crash_retries", 2))
 
 
 async def run_gemini_cli_task(
@@ -53,15 +36,7 @@ async def run_gemini_cli_task(
     budget,
     progress,
 ) -> dict:
-    """Execute a task via the Gemini CLI.
-
-    Shells out to ``gemini -p "" < prompt``.
-    Gemini CLI handles its own tools (MCP servers, file operations, shell).
-
-    Returns:
-        dict with keys: output, prompt_tokens, completion_tokens,
-        cost_usd, model_used.
-    """
+    """Execute a task via the Gemini CLI."""
     return await _run_cli_task(
         provider="gemini",
         task_row=task_row,
@@ -78,15 +53,7 @@ async def run_codex_cli_task(
     budget,
     progress,
 ) -> dict:
-    """Execute a task via the Codex CLI.
-
-    Shells out to ``codex exec < prompt``.
-    Codex CLI handles its own tools (file operations, shell, web search).
-
-    Returns:
-        dict with keys: output, prompt_tokens, completion_tokens,
-        cost_usd, model_used.
-    """
+    """Execute a task via the Codex CLI."""
     return await _run_cli_task(
         provider="codex",
         task_row=task_row,
@@ -96,40 +63,21 @@ async def run_codex_cli_task(
     )
 
 
-async def _run_cli_task(
-    *,
-    provider: str,
-    task_row,
-    db,
-    budget,
-    progress,
-) -> dict:
-    """Generic CLI task execution for gemini and codex.
+def _build_cmd_args(provider: str) -> tuple[list[str], str]:
+    """Build CLI command args for the given provider.
 
-    Both CLIs read prompts from stdin and write results to stdout.
-    No stream-json — output collected after completion.
+    Returns (cmd_args, model_used).
     """
-    task_id = task_row["id"]
-    project_id = task_row["project_id"]
-
-    prompt = _build_prompt(task_row)
-    cwd = await _resolve_cwd(db, project_id)
-
     if provider == "gemini":
         cmd = _resolve_cmd("gemini")
         if not cmd:
             raise RuntimeError("Gemini CLI not found on PATH or in npm global bin")
         model = get_model_id(ModelTier.GEMINI_CLI)
         # --approval-mode yolo auto-approves all tool calls in headless mode.
-        # --allowed-tools specifies which tools are available (array flag).
-        cmd_args = [cmd, "-p", "", "--approval-mode", "yolo"]
+        # -o text reduces output overhead (no rich formatting).
+        cmd_args = [cmd, "-p", "", "--approval-mode", "yolo", "-o", "text"]
         if model:
             cmd_args.extend(["-m", model])
-        # Pass allowed tools as individual --allowed-tools entries
-        for tool in GEMINI_ALLOWED_TOOLS.split(","):
-            tool = tool.strip()
-            if tool:
-                cmd_args.extend(["--allowed-tools", tool])
     elif provider == "codex":
         cmd = _resolve_cmd("codex")
         if not cmd:
@@ -143,7 +91,29 @@ async def _run_cli_task(
     else:
         raise ValueError(f"Unknown CLI provider: {provider}")
 
-    model_used = model or f"{provider}-cli"
+    return cmd_args, model or f"{provider}-cli"
+
+
+async def _run_cli_task(
+    *,
+    provider: str,
+    task_row,
+    db,
+    budget,
+    progress,
+) -> dict:
+    """Generic CLI task execution for gemini and codex.
+
+    Both CLIs read prompts from stdin and write results to stdout.
+    Process crashes (access violations, OOM) are retried up to
+    CLI_CRASH_RETRIES times before propagating the error.
+    """
+    task_id = task_row["id"]
+    project_id = task_row["project_id"]
+
+    prompt = build_prompt(task_row)
+    cwd = await resolve_cwd(db, project_id)
+    cmd_args, model_used = _build_cmd_args(provider)
 
     await progress.push_event(
         project_id, "task_output",
@@ -151,6 +121,66 @@ async def _run_cli_task(
         task_id=task_id,
     )
 
+    last_error = None
+    for attempt in range(1 + CLI_CRASH_RETRIES):
+        if attempt > 0:
+            # Back off before retry — give OS time to reclaim resources
+            delay = 5 * attempt
+            logger.info(
+                "%s CLI process crashed (attempt %d/%d), retrying in %ds for task %s",
+                provider, attempt, CLI_CRASH_RETRIES, delay, task_id,
+            )
+            await progress.push_event(
+                project_id, "task_output",
+                f"{provider} CLI crashed, retrying ({attempt}/{CLI_CRASH_RETRIES})...",
+                task_id=task_id,
+            )
+            await asyncio.sleep(delay)
+
+        stdout_text, stderr_text, returncode = await _exec_process(
+            cmd_args, prompt, cwd, provider, task_id,
+        )
+
+        # Process crash — retry if we have attempts left
+        if is_process_crash(returncode) and not stdout_text:
+            last_error = (
+                f"{provider} CLI crashed (exit {returncode}) "
+                f"on attempt {attempt + 1}/{1 + CLI_CRASH_RETRIES}"
+            )
+            continue
+
+        # Logical failure (non-zero exit, no output) — don't retry here
+        if returncode != 0 and not stdout_text:
+            raise RuntimeError(
+                f"{provider} CLI failed (exit {returncode}): {stderr_text[:500]}"
+            )
+
+        # Success — got output
+        preview = stdout_text[:200] + "..." if len(stdout_text) > 200 else stdout_text
+        await progress.push_event(
+            project_id, "task_output", preview, task_id=task_id,
+        )
+
+        return {
+            "output": stdout_text,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cost_usd": 0.0,
+            "model_used": model_used,
+        }
+
+    # All crash retries exhausted
+    raise RuntimeError(last_error or f"{provider} CLI crashed after all retries")
+
+
+async def _exec_process(
+    cmd_args: list[str],
+    prompt: str,
+    cwd: str | None,
+    provider: str,
+    task_id: str,
+) -> tuple[str, str, int]:
+    """Run a CLI subprocess and return (stdout, stderr, returncode)."""
     proc = await asyncio.create_subprocess_exec(
         *cmd_args,
         stdin=asyncio.subprocess.PIPE,
@@ -171,13 +201,7 @@ async def _run_cli_task(
         )
         proc.kill()
         await proc.wait()
-        return {
-            "output": f"[{provider} CLI timed out after {CLI_TIMEOUT}s]",
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "cost_usd": 0.0,
-            "model_used": model_used,
-        }
+        return f"[{provider} CLI timed out after {CLI_TIMEOUT}s]", "", 0
     except Exception:
         proc.kill()
         await proc.wait()
@@ -185,57 +209,4 @@ async def _run_cli_task(
 
     stdout_text = stdout.decode("utf-8", errors="replace").strip()
     stderr_text = stderr.decode("utf-8", errors="replace").strip()
-
-    if proc.returncode != 0 and not stdout_text:
-        raise RuntimeError(
-            f"{provider} CLI failed (exit {proc.returncode}): {stderr_text[:500]}"
-        )
-
-    # Push completion event
-    preview = stdout_text[:200] + "..." if len(stdout_text) > 200 else stdout_text
-    await progress.push_event(
-        project_id, "task_output", preview, task_id=task_id,
-    )
-
-    # CLI is $0 on subscription — track for accounting only
-    return {
-        "output": stdout_text,
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "cost_usd": 0.0,
-        "model_used": model_used,
-    }
-
-
-def _build_prompt(task_row) -> str:
-    """Build the full prompt from task description and context."""
-    parts = []
-
-    system_prompt = task_row["system_prompt"] or ""
-    if system_prompt:
-        parts.append(system_prompt)
-
-    context_json = task_row["context_json"] or "[]"
-    context = json.loads(context_json) if isinstance(context_json, str) else context_json
-    for ctx in context:
-        ctx_type = ctx.get("type", "context")
-        content = ctx.get("content", "")
-        if content:
-            parts.append(f"<{ctx_type}>\n{content}\n</{ctx_type}>")
-
-    parts.append(task_row["description"])
-    return "\n\n".join(parts)
-
-
-async def _resolve_cwd(db, project_id: str) -> str | None:
-    """Look up the project's repo_path for use as working directory."""
-    try:
-        row = await db.fetchone(
-            "SELECT repo_path FROM projects WHERE id = ?",
-            (project_id,),
-        )
-        if row and row["repo_path"]:
-            return row["repo_path"]
-    except Exception as e:
-        logger.debug("Failed to resolve repo_path for project %s: %s", project_id, e)
-    return None
+    return stdout_text, stderr_text, proc.returncode
