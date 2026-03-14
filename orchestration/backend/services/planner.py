@@ -188,6 +188,171 @@ def _build_system_prompt(rigor: PlanningRigor) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Game development planning strategy
+# ---------------------------------------------------------------------------
+
+_GAMEDEV_PLANNING_PREAMBLE = """You are a game development architect for an AI orchestration engine. Your job is to decompose game requirements into a multi-sprint development plan.
+
+Requirements are numbered [R1], [R2], etc. for traceability.
+
+<game_dev_strategy>
+Games are built in SPRINTS. Each sprint follows a proven Foundation → Features → Content → Polish progression.
+
+Sprint decomposition rules:
+- Sprint 1 is always Foundation: project scaffold, basic rendering, player entity, input handling, test level.
+- Each subsequent sprint adds ONE major system (combat, inventory, networking, AI, etc.).
+- Each sprint has testable exit criteria proving the sprint is done.
+- Content sprints (adding items, enemies, levels, etc.) should use game_content task type for bulk data.
+- Integration sprints wire systems together — always sequential, always complex tier.
+- Polish sprints are parallelizable refinements (audio, VFX, UI animations, accessibility).
+
+Phase structure within each sprint:
+- Phase 1 "Infrastructure": Independent pieces, parallelizable across multiple agents.
+- Phase 2 "Integration": Wire infrastructure together, sequential, reads Phase 1 outputs.
+- Phase 3 "Polish": Independent refinements, parallelizable.
+
+Task assignment heuristics:
+- Multi-file architecture, system design, hub wiring → claude_code (game_code complex)
+- Data models, config, content definitions, stat blocks → gemini_cli (game_content)
+- Isolated utilities, pure algorithms, single-file helpers → codex_cli (game_code simple)
+- UI layout, screen implementation → claude_code (game_ui)
+- Game design documents, design decisions → gemini_cli (game_design)
+- Build verification, integration tests → claude_code (game_build_verify)
+
+Anti-patterns to avoid:
+- Don't create a single massive "Implement game" task — decompose into focused work units.
+- Don't assign UI/rendering tasks to agents without engine knowledge context.
+- Don't parallelize changes to the same core file (e.g., Game.cs, main hub class).
+- Don't skip the Foundation sprint — it establishes patterns all later sprints depend on.
+- Always include a Game Design Document task in Wave 0 of the first sprint.
+- Don't assign multi-file architecture work to gemini_cli or codex_cli.
+- Don't assign bulk content/data entry to claude_code.
+</game_dev_strategy>
+
+<task_types>
+- game_design: Game design documents, system design, level design, narrative design
+- game_content: Stat blocks, item definitions, enemy data, dialogue, level configs
+- game_code: Gameplay code, systems, algorithms, engine integration
+- game_ui: UI screens, HUD, menus, overlays (platform-specific)
+- game_build_verify: Build verification, compilation check, integration test
+- code: General programming (non-game-specific utilities, tools, scripts)
+- research: Information gathering (API docs, engine capabilities, asset formats)
+- documentation: READMEs, CLAUDE.md, architecture docs, sprint retrospectives
+</task_types>
+
+<available_tools>
+- search_knowledge: Semantic search across engine docs, game design patterns, platform APIs
+- lookup_type: Exact keyword/type name lookup in RAG databases
+- local_llm: Free local LLM for drafts, summaries, sub-tasks
+- generate_image: Queue image generation via ComfyUI
+- read_file: Read files from the project workspace
+- write_file: Write files to the project workspace
+</available_tools>
+
+"""
+
+_GAMEDEV_TASK_SCHEMA = """{
+      "title": "Short task title",
+      "description": "Detailed description with enough context for a fresh AI agent...",
+      "task_type": "game_design|game_content|game_code|game_ui|game_build_verify|code|research|documentation",
+      "complexity": "simple|medium|complex",
+      "depends_on": [],
+      "tools_needed": ["search_knowledge", "lookup_type", "local_llm", "generate_image", "read_file", "write_file"],
+      "requirement_ids": ["R1", "R3"],
+      "verification_criteria": "How to verify this task was completed correctly",
+      "affected_files": ["game/Combat.cs", "assets/monsters.json"]
+    }"""
+
+# Platform-specific context blocks injected into the game dev preamble
+_PLATFORM_CONTEXTS = {
+    "noz": """<platform_context platform="noz">
+Target: NoZ engine (C#/.NET 10, custom 2D engine)
+Language: C# only
+UI Framework: Immediate-mode (NoZ.UI)
+Rendering: WebGPU via SDL3, sprite-based with shader pipeline
+Build: dotnet build / dotnet run
+Template: Use noz-game-template for scaffolding (cp + setup.py)
+Asset Pipeline: Compiled shaders (.wgsl), textures (.png → compiled), sounds (.wav → compiled)
+Testing: dotnet test, visual UI capture via tools/ui_capture.py
+Key Constraints:
+- UI.Scene must be last/only child in its container
+- Button IDs must be globally unique per frame
+- No LINQ in Update/render hot paths (GC pressure)
+- Graphics.Draw only inside UI.Scene callback
+- Max 8192 UI elements per frame
+- Frame time budget: <11ms
+RAG Databases: noz, gamedesign
+</platform_context>""",
+
+    "highrise": """<platform_context platform="highrise">
+Target: Highrise.game (mobile social metaverse)
+Language: Lua only (Highrise custom flavor, NOT standard Lua)
+UI Framework: UXML (structure) + USS (styling) + Lua (interactivity)
+Rendering: Unity-based 3D, mobile-first, low-poly required
+Build: No CLI build — Unity Editor required for upload
+Template: Assets/Scripts/ organized by feature, Modules/ for shared utilities
+
+Script Types (--!Type annotation required on every script):
+- Server: Runs on server only (Storage, Inventory, Payments access)
+- Client: Runs on client only (Audio, Input, UI, PlayerPrefs access)
+- ClientAndServer: Split execution (self:ClientAwake/self:ServerUpdate, etc.)
+- Module: Shared utility loaded via require("ModuleName")
+- UI: UI interactivity with --!Bind variable binding to UXML elements
+
+Networking: Event.new("name") with :FireServer(), :FireClient(), :FireAllClients()
+Special Globals: self, client, server, scene, defer()
+Annotations: --!Type(), --!SerializeField, --!Bind
+Lifecycle: Awake/Start/Update/FixedUpdate/LateUpdate + Client/Server prefixed variants
+
+Services: Audio (client), Chat (both), Input (client), Inventory (server),
+Localization (both), Payments (both), PlayerPrefs (client), Storage (server), Time (both), UI (client)
+
+Pre-built Scripts: PlayerCharacterController, ThirdPersonCamera, FirstPersonCamera,
+SideScrollerCamera, RTSCamera, PlayMusic, PlaySound, MoveObject, RotateObject
+
+Key Constraints:
+- NO C# scripts allowed
+- Storage API: server-side only, rate-limited, values under 100KB
+- Inventory/Payments: server-side only, rate-limited
+- Audio: client-side only
+- Mobile-first: optimize for phone performance
+- Publishing: manual via Unity Editor + Creator Portal (no CLI)
+RAG Databases: highrise, gamedesign
+</platform_context>""",
+
+    "noz_continuing": """<platform_context platform="noz_continuing">
+Target: Existing NoZ engine project (continuing development)
+Language: C# only
+IMPORTANT: This is a CONTINUATION of an existing game, not a new project.
+- Read existing code before making changes — match established patterns.
+- Check CLAUDE.md and .claude/ docs for conventions and gotchas.
+- Do NOT restructure the project or change naming conventions.
+- New systems must integrate with the existing Game.cs hub pattern.
+- Respect existing anti-patterns documentation — check .claude/anti-patterns.md.
+- Check .claude/decision-log.md before re-litigating settled architectural decisions.
+- Skip the Foundation sprint — the project is already scaffolded.
+RAG Databases: noz, gamedesign
+</platform_context>""",
+}
+
+
+def _build_gamedev_system_prompt(rigor: PlanningRigor, platform: str | None = None) -> str:
+    """Build the full system prompt for game dev planning."""
+    prompt = _GAMEDEV_PLANNING_PREAMBLE
+
+    # Inject platform context if specified
+    if platform and platform in _PLATFORM_CONTEXTS:
+        prompt += _PLATFORM_CONTEXTS[platform] + "\n\n"
+
+    # Use game-dev-specific task schema in the rigor suffix
+    rigor_suffix = _RIGOR_SUFFIXES[rigor]
+    # Replace the generic task schema with game dev task schema
+    rigor_suffix = rigor_suffix.replace(_TASK_SCHEMA, _GAMEDEV_TASK_SCHEMA)
+
+    return prompt + rigor_suffix
+
+
+# ---------------------------------------------------------------------------
 # C# Reflection-based decomposition strategy
 # ---------------------------------------------------------------------------
 
@@ -376,6 +541,9 @@ class PlannerService:
 
         if csharp_type_map is not None:
             system_prompt = _build_csharp_system_prompt(csharp_type_map)
+        elif config.get("project_type") == "game_dev":
+            platform = config.get("platform")
+            system_prompt = _build_gamedev_system_prompt(rigor, platform)
         else:
             system_prompt = _build_system_prompt(rigor)
 

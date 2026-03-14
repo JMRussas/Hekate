@@ -193,12 +193,22 @@ async def verify_task_output(
 
     try:
         tools = json.loads(task_row["tools_json"]) if task_row["tools_json"] else []
+
+        # Extract platform verification context from task context if present
+        platform_ctx = None
+        ctx_entries = json.loads(task_row["context_json"]) if task_row["context_json"] else []
+        for entry in ctx_entries:
+            if entry.get("type") == "platform_knowledge":
+                platform_ctx = entry.get("content")
+                break
+
         verification = await verify_output(
             task_title=task_row["title"],
             task_description=task_row["description"],
             output_text=output_text,
             task_type=task_row["task_type"],
             tools=tools,
+            platform_context=platform_ctx,
             budget=budget,
             project_id=project_id,
             task_id=task_id,

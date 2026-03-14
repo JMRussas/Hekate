@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UXML
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns="UnityEngine.UIElements"
+    xmlns:hr="Highrise.UI"
+    xsi:noNamespaceSchemaLocation="../../../../UIElementsSchema/UIElements.xsd"
+>
+    <!-- Main game UI container -->
+    <hr:UILuaView class="game-ui">
+
+        <!-- Header / HUD -->
+        <VisualElement class="game-ui__header">
+            <hr:UILabel class="game-ui__title" name="_titleLabel" picking-mode="Ignore" />
+            <hr:UILabel class="game-ui__score" name="_scoreLabel" picking-mode="Ignore" />
+        </VisualElement>
+
+        <!-- Main content area -->
+        <VisualElement class="game-ui__content">
+            <!-- Game-specific content goes here -->
+        </VisualElement>
+
+        <!-- Footer / Action buttons -->
+        <VisualElement class="game-ui__footer">
+            <hr:UIButton class="game-ui__action-btn" name="_actionButton">
+                <Label text="Action" />
+            </hr:UIButton>
+            <hr:UIButton class="game-ui__menu-btn" name="_menuButton">
+                <Label text="Menu" />
+            </hr:UIButton>
+        </VisualElement>
+
+    </hr:UILuaView>
+</UXML>

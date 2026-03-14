@@ -9,6 +9,7 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 
 from backend.config import DEFAULT_MAX_TOKENS
 from backend.exceptions import CycleDetectedError, InvalidStateError, NotFoundError
@@ -19,6 +20,26 @@ logger = logging.getLogger("orchestration.decomposer")
 
 # Token estimate for budget estimation during decomposition
 _EST_DECOMPOSE_INPUT_TOKENS = 1500  # system prompt + context + tools
+
+# ---------------------------------------------------------------------------
+# Platform knowledge loading for game dev projects
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
+
+
+def _load_platform_knowledge(platform: str) -> str | None:
+    """Load platform knowledge document for injection into task context.
+
+    Returns the markdown content, or None if no document exists for the platform.
+    """
+    doc_path = _KNOWLEDGE_DIR / "platforms" / f"{platform}.md"
+    if doc_path.is_file():
+        try:
+            return doc_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed to load platform knowledge for '%s': %s", platform, e)
+    return None
 
 
 def _flatten_plan_tasks(plan_data: dict) -> tuple[list[dict], list[str | None]]:
@@ -143,6 +164,22 @@ class DecomposerService:
             if ctor_params:
                 content = ", ".join(ctor_params) if isinstance(ctor_params, list) else str(ctor_params)
                 context.append({"type": "constructor_params", "content": content})
+
+            # Game dev: inject platform knowledge into task context
+            config = json.loads(project_row["config_json"]) if project_row["config_json"] else {}
+            if config.get("project_type") == "game_dev":
+                platform = config.get("platform")
+                if platform:
+                    platform_knowledge = _load_platform_knowledge(platform)
+                    if platform_knowledge:
+                        context.append({"type": "platform_knowledge", "content": platform_knowledge})
+                # Inject RAG database hints so agents know which DBs to search
+                rag_dbs = config.get("rag_databases")
+                if rag_dbs:
+                    context.append({
+                        "type": "rag_databases",
+                        "content": f"Available RAG databases for search_knowledge: {', '.join(rag_dbs)}",
+                    })
 
             # Requirement traceability
             requirement_ids = task_def.get("requirement_ids", [])

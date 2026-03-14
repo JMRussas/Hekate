@@ -116,6 +116,22 @@ _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     ("code_cli", "simple"): ModelTier.CLAUDE_CODE,
     ("code_cli", "medium"): ModelTier.CLAUDE_CODE,
     ("code_cli", "complex"): ModelTier.CLAUDE_CODE,
+    # Game development task types
+    ("game_design", "simple"): ModelTier.GEMINI_CLI,
+    ("game_design", "medium"): ModelTier.GEMINI_CLI,
+    ("game_design", "complex"): ModelTier.CLAUDE_CODE,
+    ("game_content", "simple"): ModelTier.GEMINI_CLI,
+    ("game_content", "medium"): ModelTier.GEMINI_CLI,
+    ("game_content", "complex"): ModelTier.GEMINI_CLI,
+    ("game_code", "simple"): ModelTier.CODEX_CLI,
+    ("game_code", "medium"): ModelTier.CLAUDE_CODE,
+    ("game_code", "complex"): ModelTier.CLAUDE_CODE,
+    ("game_ui", "simple"): ModelTier.CLAUDE_CODE,
+    ("game_ui", "medium"): ModelTier.CLAUDE_CODE,
+    ("game_ui", "complex"): ModelTier.CLAUDE_CODE,
+    ("game_build_verify", "simple"): ModelTier.CLAUDE_CODE,
+    ("game_build_verify", "medium"): ModelTier.CLAUDE_CODE,
+    ("game_build_verify", "complex"): ModelTier.CLAUDE_CODE,
 }
 
 
@@ -135,6 +151,12 @@ _TOOLS_MAP: dict[str, list[str]] = {
     "asset": ["local_llm", "generate_image"],
     "integration": ["read_file", "write_file", "local_llm"],
     "documentation": ["search_knowledge", "local_llm", "read_file", "write_file"],
+    # Game development task types
+    "game_design": ["search_knowledge", "local_llm", "read_file", "write_file"],
+    "game_content": ["search_knowledge", "lookup_type", "local_llm", "write_file"],
+    "game_code": ["search_knowledge", "lookup_type", "local_llm", "read_file", "write_file"],
+    "game_ui": ["search_knowledge", "lookup_type", "read_file", "write_file"],
+    "game_build_verify": ["read_file"],
 }
 
 

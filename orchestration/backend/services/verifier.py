@@ -57,6 +57,7 @@ async def verify_output(
     *,
     task_type: str = "",
     tools: list[str] | None = None,
+    platform_context: str | None = None,
     budget,
     project_id: str,
     task_id: str,
@@ -94,10 +95,19 @@ async def verify_output(
     if tools:
         task_meta += f"\n**Tools**: {', '.join(tools)}"
 
+    platform_section = ""
+    if platform_context:
+        platform_section = (
+            f"\n### Platform Requirements\n"
+            f"Verify output correctness against these platform-specific rules:\n"
+            f"{platform_context}\n"
+        )
+
     user_msg = (
         f"## Task: {task_title}\n\n"
         f"{task_meta}\n\n"
-        f"### Description\n{task_description}\n\n"
+        f"### Description\n{task_description}\n"
+        f"{platform_section}\n"
         f"### Output\n{truncated}"
     )
 

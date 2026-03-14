@@ -46,7 +46,9 @@
     "databases": {
       "noz": "../noz-rag/data/noz_rag.db",
       "verse": "../verse-rag/data/verse_rag.db",
-      "diagnostic": "../diagnostic-rag/data/rag.db"
+      "diagnostic": "../diagnostic-rag/data/rag.db",
+      "highrise": "../highrise-rag/data/highrise_rag.db",
+      "gamedesign": "../gamedesign-rag/data/gamedesign_rag.db"
     },
     "embed_dimensions": 768,
     "default_top_k": 8,

@@ -1,0 +1,97 @@
+/* Highrise game UI base styles */
+/* Mobile-first: design for phone screens */
+
+.game-ui {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    padding: 16px;
+    -unity-font-definition: var(--font-regular);
+}
+
+/* Header / HUD */
+.game-ui__header {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 16px;
+    margin-bottom: 8px;
+}
+
+.game-ui__title {
+    font-size: 24px;
+    color: white;
+    -unity-font-style: bold;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.game-ui__score {
+    font-size: 20px;
+    color: #FFD700;
+    -unity-font-style: bold;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Main content area */
+.game-ui__content {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Footer / Action buttons */
+.game-ui__footer {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    padding: 8px;
+    gap: 16px;
+}
+
+.game-ui__action-btn {
+    padding: 12px 32px;
+    background-color: rgba(76, 175, 80, 0.9);
+    border-radius: 8px;
+    border-width: 0;
+    min-width: 120px;
+    min-height: 48px;
+}
+
+.game-ui__action-btn > Label {
+    font-size: 18px;
+    color: white;
+    -unity-text-align: middle-center;
+    -unity-font-style: bold;
+}
+
+.game-ui__action-btn:hover {
+    background-color: rgba(76, 175, 80, 1.0);
+}
+
+.game-ui__action-btn:active {
+    background-color: rgba(56, 142, 60, 1.0);
+}
+
+.game-ui__menu-btn {
+    padding: 12px 24px;
+    background-color: rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.3);
+    min-height: 48px;
+}
+
+.game-ui__menu-btn > Label {
+    font-size: 16px;
+    color: white;
+    -unity-text-align: middle-center;
+}
+
+.game-ui__menu-btn:hover {
+    background-color: rgba(255, 255, 255, 0.25);
+}
