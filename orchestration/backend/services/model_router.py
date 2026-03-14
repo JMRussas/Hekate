@@ -201,7 +201,8 @@ def recommend_tier(task_type: str, complexity: str) -> ModelTier:
 # Maps ModelTier to the provider name used in provider_quotas config.
 # API tiers (haiku/sonnet/opus) share the "claude_code" quota key since they
 # go through the same Anthropic account.
-_TIER_PROVIDER: dict[ModelTier, str] = {
+# Single source of truth — imported by executor.py, task_lifecycle.py.
+TIER_TO_PROVIDER: dict[ModelTier, str] = {
     ModelTier.CLAUDE_CODE: "claude_code",
     ModelTier.GEMINI_CLI: "gemini_cli",
     ModelTier.CODEX_CLI: "codex_cli",
@@ -210,6 +211,11 @@ _TIER_PROVIDER: dict[ModelTier, str] = {
     ModelTier.OPUS: "claude_code",
     ModelTier.OLLAMA: "ollama",
 }
+
+
+def get_provider_for_tier(tier: ModelTier) -> str:
+    """Get the provider name for a model tier."""
+    return TIER_TO_PROVIDER.get(tier, tier.value)
 
 # Fallback chain tried (in order) when the recommended cloud tier is hot.
 _CLOUD_FALLBACK_ORDER = [
@@ -241,7 +247,7 @@ async def get_available_tiers(
     if recommended == ModelTier.OLLAMA:
         return recommended
 
-    provider = _TIER_PROVIDER.get(recommended, "")
+    provider = TIER_TO_PROVIDER.get(recommended, "")
     if provider and await quota_manager.is_provider_available(provider):
         return recommended
 
@@ -249,7 +255,7 @@ async def get_available_tiers(
     for fallback in _CLOUD_FALLBACK_ORDER:
         if fallback == recommended:
             continue
-        fallback_provider = _TIER_PROVIDER.get(fallback, "")
+        fallback_provider = TIER_TO_PROVIDER.get(fallback, "")
         if fallback_provider and await quota_manager.is_provider_available(fallback_provider):
             logger.info(
                 "Provider '%s' warned — routing %s/%s to %s",

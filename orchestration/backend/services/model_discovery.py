@@ -250,10 +250,22 @@ class ModelDiscoveryService:
                 _fetch_google(self._http),
                 _fetch_openai(self._http),
                 _fetch_ollama(self._http),
-                return_exceptions=False,
+                return_exceptions=True,
             )
-            for result in results:
-                self._provider_cache[result.provider] = result
+            providers = ["anthropic", "google", "openai", "ollama"]
+            fallbacks = _config_fallbacks()
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    provider = providers[i]
+                    logger.warning("Discovery failed for %s: %s — using fallbacks", provider, result)
+                    self._provider_cache[provider] = ProviderResult(
+                        provider=provider,
+                        models=fallbacks[provider],
+                        available=False,
+                        error=str(result),
+                    )
+                else:
+                    self._provider_cache[result.provider] = result
 
             self._cli_cache = await asyncio.to_thread(_check_cli_availability)
         logger.info(

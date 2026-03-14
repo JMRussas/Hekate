@@ -69,18 +69,8 @@ def _row_get(row, key: str, default=None):
 
 def _get_provider_from_tier(tier: ModelTier) -> str:
     """Map ModelTier to provider name for telemetry."""
-    if tier in (ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS):
-        return "anthropic"
-    elif tier == ModelTier.OLLAMA:
-        return "ollama"
-    elif tier == ModelTier.CLAUDE_CODE:
-        return "claude_code"
-    elif tier == ModelTier.GEMINI_CLI:
-        return "gemini"
-    elif tier == ModelTier.CODEX_CLI:
-        return "codex"
-    else:
-        return tier.value
+    from backend.services.model_router import get_provider_for_tier
+    return get_provider_for_tier(tier)
 
 
 def _get_provider_from_model_name(model: str) -> str:
@@ -96,6 +86,38 @@ def _get_provider_from_model_name(model: str) -> str:
         return "openai"
     else:
         return "unknown"
+
+
+async def _push_telemetry(
+    *,
+    task_row,
+    tier: ModelTier,
+    project_id: str,
+    task_id: str,
+    status: str,
+    verification_outcome: str | None = None,
+    result: dict | None = None,
+    http_client=None,
+):
+    """Push execution telemetry — shared by all completion/failure paths."""
+    started_at = _row_get(task_row, "started_at") or time.time()
+    duration = time.time() - started_at
+    provider = _get_provider_from_tier(tier)
+    await push_execution_outcome(
+        task_id=task_id,
+        project_id=project_id,
+        task_title=task_row["title"],
+        task_description=task_row["description"],
+        task_type=task_row["task_type"],
+        provider=provider,
+        model=result["model_used"] if result else _row_get(task_row, "model_used", "unknown"),
+        prompt_tokens=result["prompt_tokens"] if result else 0,
+        completion_tokens=result["completion_tokens"] if result else 0,
+        duration_seconds=duration,
+        status=status,
+        verification_outcome=verification_outcome,
+        http_client=http_client,
+    )
 
 
 async def _search_diagnostic_rag(error_text: str, rag_cache, http_client) -> str | None:
@@ -483,26 +505,25 @@ async def execute_task(
                             enrichment_latency_ms,
                         )
 
-                # Persist enrichment metadata to usage_log for later analysis.
-                # Always recorded (even when enrichment is disabled/skipped) with zero
-                # values to enable downstream analytics on enrichment effectiveness.
-                # Written as a zero-cost row so it doesn't affect budget totals.
-                await db.execute_write(
-                    "INSERT INTO usage_log "
-                    "(project_id, task_id, provider, model, prompt_tokens, "
-                    "completion_tokens, cost_usd, purpose, timestamp, "
-                    "context_tokens_injected, source_node_count, enrichment_latency_ms) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        task_row["project_id"], task_id,
-                        "context_store", "preview",
-                        0, 0, 0.0, "context_enrichment",
-                        time.time(),
-                        enrichment_tokens,
-                        enrichment_nodes,
-                        enrichment_latency_ms,
-                    ),
-                )
+                # Persist enrichment metadata only when enrichment actually ran
+                # and returned results — avoids polluting usage_log with zero rows.
+                if enrichment_nodes > 0:
+                    await db.execute_write(
+                        "INSERT INTO usage_log "
+                        "(project_id, task_id, provider, model, prompt_tokens, "
+                        "completion_tokens, cost_usd, purpose, timestamp, "
+                        "context_tokens_injected, source_node_count, enrichment_latency_ms) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            task_row["project_id"], task_id,
+                            "context_store", "preview",
+                            0, 0, 0.0, "context_enrichment",
+                            time.time(),
+                            enrichment_tokens,
+                            enrichment_nodes,
+                            enrichment_latency_ms,
+                        ),
+                    )
 
                 if tier == ModelTier.OLLAMA:
                     result = await run_ollama_task(
@@ -565,25 +586,11 @@ async def execute_task(
                         task_id=task_id,
                     )
 
-                    # Push telemetry for budget exhaustion
-                    started_at = _row_get(task_row,"started_at") or time.time()
-                    completed_at = time.time()
-                    duration = completed_at - started_at
-                    provider = _get_provider_from_tier(tier)
-                    await push_execution_outcome(
-                        task_id=task_id,
-                        project_id=project_id,
-                        task_title=task_row["title"],
-                        task_description=task_row["description"],
-                        task_type=task_row["task_type"],
-                        provider=provider,
-                        model=result["model_used"],
-                        prompt_tokens=result["prompt_tokens"],
-                        completion_tokens=result["completion_tokens"],
-                        duration_seconds=duration,
-                        status="failed",
+                    await _push_telemetry(
+                        task_row=task_row, tier=tier, project_id=project_id,
+                        task_id=task_id, status="failed",
                         verification_outcome="budget_exhausted",
-                        http_client=http_client,
+                        result=result, http_client=http_client,
                     )
                     return
 
@@ -647,34 +654,19 @@ async def execute_task(
                     )
 
                 # Push execution telemetry (success)
-                started_at = _row_get(task_row,"started_at") or time.time()
-                completed_at = time.time()
-                duration = completed_at - started_at
-                provider = _get_provider_from_tier(tier)
-
-                # Get verification outcome from the database
                 verification_outcome_str = None
                 if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA:
                     task_fresh = await db.fetchone(
                         "SELECT verification_status FROM tasks WHERE id = ?", (task_id,)
                     )
-                    if task_fresh and _row_get(task_fresh,"verification_status"):
+                    if task_fresh and _row_get(task_fresh, "verification_status"):
                         verification_outcome_str = task_fresh["verification_status"]
 
-                await push_execution_outcome(
-                    task_id=task_id,
-                    project_id=project_id,
-                    task_title=task_row["title"],
-                    task_description=task_row["description"],
-                    task_type=task_row["task_type"],
-                    provider=provider,
-                    model=result["model_used"],
-                    prompt_tokens=result["prompt_tokens"],
-                    completion_tokens=result["completion_tokens"],
-                    duration_seconds=duration,
-                    status="completed",
+                await _push_telemetry(
+                    task_row=task_row, tier=tier, project_id=project_id,
+                    task_id=task_id, status="completed",
                     verification_outcome=verification_outcome_str,
-                    http_client=http_client,
+                    result=result, http_client=http_client,
                 )
 
             except _TRANSIENT_ERRORS as e:
@@ -742,23 +734,9 @@ async def execute_task(
                             task_id=task_id,
                         )
 
-                    # Push telemetry for max retries exceeded
-                    started_at = _row_get(task_row,"started_at") or time.time()
-                    completed_at = time.time()
-                    duration = completed_at - started_at
-                    provider = _get_provider_from_tier(tier)
-                    await push_execution_outcome(
-                        task_id=task_id,
-                        project_id=project_id,
-                        task_title=task_row["title"],
-                        task_description=task_row["description"],
-                        task_type=task_row["task_type"],
-                        provider=provider,
-                        model=_row_get(task_row,"model_used", "unknown"),
-                        prompt_tokens=0,  # Not available for transient errors
-                        completion_tokens=0,
-                        duration_seconds=duration,
-                        status="failed",
+                    await _push_telemetry(
+                        task_row=task_row, tier=tier, project_id=project_id,
+                        task_id=task_id, status="failed",
                         verification_outcome="max_retries_exceeded",
                         http_client=http_client,
                     )
@@ -788,23 +766,9 @@ async def execute_task(
                     task_id=task_id,
                 )
 
-                # Push telemetry for unexpected exception
-                started_at = _row_get(task_row,"started_at") or time.time()
-                completed_at = time.time()
-                duration = completed_at - started_at
-                provider = _get_provider_from_tier(tier)
-                await push_execution_outcome(
-                    task_id=task_id,
-                    project_id=project_id,
-                    task_title=task_row["title"],
-                    task_description=task_row["description"],
-                    task_type=task_row["task_type"],
-                    provider=provider,
-                    model=_row_get(task_row,"model_used", "unknown"),
-                    prompt_tokens=0,  # Not available for unexpected exceptions
-                    completion_tokens=0,
-                    duration_seconds=duration,
-                    status="failed",
+                await _push_telemetry(
+                    task_row=task_row, tier=tier, project_id=project_id,
+                    task_id=task_id, status="failed",
                     verification_outcome="exception",
                     http_client=http_client,
                 )

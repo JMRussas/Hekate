@@ -35,17 +35,7 @@ logger = logging.getLogger("orchestration.executor")
 # Token estimate for budget reservation before task execution
 _EST_TASK_INPUT_TOKENS = 1500  # system prompt + context + tool definitions
 
-# Maps ModelTier to the provider key used in provider_quotas config.
-# API tiers (haiku/sonnet/opus) share the claude_code provider (same Anthropic account).
-_TIER_TO_PROVIDER: dict[ModelTier, str] = {
-    ModelTier.CLAUDE_CODE: "claude_code",
-    ModelTier.HAIKU:       "claude_code",
-    ModelTier.SONNET:      "claude_code",
-    ModelTier.OPUS:        "claude_code",
-    ModelTier.GEMINI_CLI:  "gemini_cli",
-    ModelTier.CODEX_CLI:   "codex_cli",
-    ModelTier.OLLAMA:      "ollama",
-}
+from backend.services.model_router import TIER_TO_PROVIDER as _TIER_TO_PROVIDER
 
 
 class Executor:
