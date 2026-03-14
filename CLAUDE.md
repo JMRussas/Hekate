@@ -25,6 +25,7 @@ Nobody/
 │   ├── backend/                 # FastAPI app (routes/, services/, tools/, db/)
 │   ├── tests/                   # pytest (unit/, integration/, e2e/, load/)
 │   ├── frontend/                # Orchestration dashboard (React)
+│   ├── tools/                   # CLI executors (local_executor, supervisor, plan patches)
 │   ├── run.py                   # Entry point (uvicorn)
 │   ├── Dockerfile               # Multi-stage build
 │   ├── requirements.txt

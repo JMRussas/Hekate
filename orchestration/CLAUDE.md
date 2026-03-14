@@ -75,7 +75,10 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 | `Dockerfile` | Multi-stage build (frontend + backend) |
 | `.github/workflows/ci.yml` | GitHub Actions CI (tests, lint, frontend build+test, E2E) |
 | `tests/` | pytest suite (unit, integration, E2E) |
-| `data/orchestration.db` | SQLite database (auto-created) |
+| `data/orchestration.db` | SQLite database (auto-created, gitignored) |
+| `tools/local_executor.py` | CLI task executor — claims tasks from DB, runs via claude/gemini/codex/ollama |
+| `tools/supervisor.py` | Task monitor — detects failures (explicit + silent), auto-fixes or escalates |
+| `tools/patch_hecate_plan.py` | One-off plan patcher — reassign tiers, reset stuck tasks, add review gates |
 
 ## Deep-Dive Docs
 
@@ -93,7 +96,7 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 - **Auth**: JWT Bearer tokens for REST, API keys (`orch_` prefix) for MCP/external executors, short-lived SSE tokens for EventSource. First registered user becomes admin.
 - **Ownership**: projects have `owner_id`. Users see/modify only their own projects. Admins can access all.
 - **Budget**: every API call recorded in `usage_log`, checked against limits before execution. Budget endpoints are admin-only.
-- **Models**: Ollama (free) for simple tasks, Haiku ($) for medium, Sonnet ($$) for complex
+- **Models**: Ollama (free) for simple tasks, Haiku ($) for medium, Sonnet ($$) for complex. CLI tiers: `claude_code`, `gemini_cli`, `codex_cli` — subscription-billed, zero estimated cost
 - **Tools**: registered in `ToolRegistry` class, injected via DI container
 - **SSE**: short-lived token via `POST /api/events/{project_id}/token`, then stream via `GET /api/events/{project_id}?token=...`
 - **Health probe**: `GET /api/health` — unauthenticated, returns `{"status": "ok"}` for Docker/k8s liveness checks
@@ -107,6 +110,8 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 - **Checkpoints**: retry-exhausted tasks create structured checkpoints for human resolution
 - **Traceability**: requirements numbered [R1], [R2], mapped to tasks; coverage endpoint shows gaps
 - **External execution**: MCP server (`backend/mcp/server.py`) for Claude Code integration. Execution modes: auto (engine-only), hybrid (Ollama internal, Claude external), external (all external). Tasks claimed atomically via CAS, results submitted with cost tracking.
+- **Local executor**: `tools/local_executor.py` polls DB directly (no REST), claims and runs tasks via claude/gemini/codex CLI or Ollama. Designed for the 4090 dev machine.
+- **Supervisor**: `tools/supervisor.py` monitors completed tasks for silent failures (sandbox blocked, no code written) and re-queues or escalates.
 - **Git integration**: optional per-project (`repo_path` nullable). `GitService` wraps subprocess via `asyncio.to_thread()`. Config in `git.*` section. Phase 1 (foundation) complete; execution wiring (Phase 2+) pending.
 - **Tests**: Backend: pytest-asyncio (auto mode), 797 tests. Frontend: vitest + @testing-library/react, 211 tests. Load tests: 7 (excluded from CI via `slow` marker)
 

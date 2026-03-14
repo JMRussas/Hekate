@@ -99,7 +99,15 @@
   },
   "claude_code": {
     "timeout_seconds": 600,
-    "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet *),Bash(npm *),Bash(python *)"
+    "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),mcp__hecate__*,mcp__ollama__*"
+  },
+  "gemini_cli": {
+    "timeout_seconds": 600,
+    "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),mcp__hecate__*,mcp__ollama__*"
+  },
+  "codex_cli": {
+    "timeout_seconds": 600,
+    "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),mcp__hecate__*,mcp__ollama__*"
   },
   "resource_check_interval_sec": 30,
   "auth": {

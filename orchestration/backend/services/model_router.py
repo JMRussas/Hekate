@@ -33,12 +33,22 @@ _DEFAULT_MODELS = {
 }
 
 
+_DEFAULT_CLI_MODELS = {
+    "gemini_cli": "gemini-2.5-pro",
+    "codex_cli": "gpt-5.4",
+}
+
+
 def get_model_id(tier: ModelTier) -> str:
     """Resolve a model tier to the actual model ID from config."""
     if tier == ModelTier.OLLAMA:
         return cfg("ollama.default_model", "qwen3.5:latest")
     if tier == ModelTier.CLAUDE_CODE:
         return "claude-code-cli"
+    if tier == ModelTier.GEMINI_CLI:
+        return cfg("gemini_cli.model", _DEFAULT_CLI_MODELS["gemini_cli"])
+    if tier == ModelTier.CODEX_CLI:
+        return cfg("codex_cli.model", _DEFAULT_CLI_MODELS["codex_cli"])
     return cfg(f"anthropic.models.{tier.value}", _DEFAULT_MODELS.get(tier.value, f"claude-{tier.value}"))
 
 
@@ -66,8 +76,8 @@ def estimate_task_cost(
     max_output_tokens: int,
 ) -> float:
     """Estimate the worst-case cost for a task before execution."""
-    if tier in (ModelTier.OLLAMA, ModelTier.CLAUDE_CODE):
-        return 0.0  # Ollama is local, Claude Code is subscription-billed
+    if tier in (ModelTier.OLLAMA, ModelTier.CLAUDE_CODE, ModelTier.GEMINI_CLI, ModelTier.CODEX_CLI):
+        return 0.0  # Ollama is local, CLI tools are subscription-billed
     model_id = get_model_id(tier)
     return calculate_cost(model_id, estimated_input_tokens, max_output_tokens)
 

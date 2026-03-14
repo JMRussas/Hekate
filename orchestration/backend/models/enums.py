@@ -49,6 +49,8 @@ class ModelTier(str, Enum):
     OPUS = "opus"
     OLLAMA = "ollama"
     CLAUDE_CODE = "claude_code"
+    GEMINI_CLI = "gemini_cli"
+    CODEX_CLI = "codex_cli"
 
 
 class TaskType(str, Enum):
