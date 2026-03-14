@@ -295,7 +295,7 @@ class TestVerificationFeedbackCap:
             overridden = await verify_task_output(
                 task_row=task_row, output_text="some output",
                 project_id="proj1", task_id="task1",
-                db=tmp_db, client=MagicMock(), budget=mock_budget,
+                db=tmp_db, budget=mock_budget,
                 progress=mock_progress,
             )
 
@@ -508,7 +508,7 @@ class TestVerifierEnhancements:
 
         result = await verify_output(
             task_title="Test", task_description="Test",
-            output_text="output", client=MagicMock(),
+            output_text="output",
             budget=mock_budget, project_id="proj1", task_id="task1",
         )
 

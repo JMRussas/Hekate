@@ -173,8 +173,7 @@ async def _check_resource(
         cli_binaries = {"gemini_cli": "gemini", "codex_cli": "codex", "claude_code_cli": "claude"}
         binary = cli_binaries.get(res.id)
         resolved = _resolve_cmd(binary) if binary else None
-        # _resolve_cmd returns the bare name if not found — check it actually exists
-        if resolved and resolved != binary:
+        if resolved:
             state.status = ResourceStatus.ONLINE
             state.method = "cli"
             state.details = {"binary": binary, "path": resolved}

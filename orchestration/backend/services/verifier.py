@@ -47,7 +47,6 @@ async def verify_output(
     task_description: str,
     output_text: str,
     *,
-    client=None,  # Deprecated — kept for backward compat, ignored
     budget,
     project_id: str,
     task_id: str,
@@ -61,7 +60,6 @@ async def verify_output(
         task_title: The task's title.
         task_description: What the task was supposed to do.
         output_text: The actual output produced.
-        client: Deprecated, ignored. Kept for call-site backward compat.
         budget: BudgetManager for recording verification cost.
         project_id: For cost attribution.
         task_id: For cost attribution.

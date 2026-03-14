@@ -40,12 +40,14 @@ class LLMResponse:
     cost_usd: float = 0.0
 
 
-def _resolve_cmd(name: str) -> str:
+def _resolve_cmd(name: str) -> Optional[str]:
     """Resolve a CLI command name to full path (handles .cmd on Windows).
 
     Falls back to the npm global prefix bin directory when the command
     isn't on PATH — common in Git Bash / MSYS2 environments on Windows
     where the npm global bin isn't inherited.
+
+    Returns None if the command is not found anywhere.
     """
     resolved = shutil.which(name)
     if resolved:
@@ -57,7 +59,7 @@ def _resolve_cmd(name: str) -> str:
             candidate = os.path.join(npm_bin, f"{name}{ext}")
             if os.path.isfile(candidate):
                 return candidate
-    return name
+    return None
 
 
 async def _call_cli(provider: str, system_prompt: str, user_message: str,
@@ -72,20 +74,27 @@ async def _call_cli(provider: str, system_prompt: str, user_message: str,
     # role separation. Gemini and Codex CLIs have no equivalent yet.
     full_prompt = f"{system_prompt}\n\n---\n\n{user_message}"
 
+    cli_names = {"claude": "claude", "codex": "codex", "gemini": "gemini"}
+    binary = cli_names.get(provider)
+    if not binary:
+        raise ValueError(f"Unknown CLI provider: {provider}")
+
+    resolved = _resolve_cmd(binary)
+    if not resolved:
+        raise FileNotFoundError(f"{provider} CLI ({binary}) not found on PATH or in npm global bin")
+
     if provider == "claude":
         # Claude: -p is --print (non-interactive mode), reads prompt from stdin
-        cmd_args = [_resolve_cmd("claude"), "-p", "--output-format", "text"]
+        cmd_args = [resolved, "-p", "--output-format", "text"]
     elif provider == "codex":
-        cmd_args = [_resolve_cmd("codex"), "exec"]
+        cmd_args = [resolved, "exec"]
         if model:
             cmd_args.extend(["--model", model])
     elif provider == "gemini":
         # Gemini: -p "" triggers non-interactive mode, stdin is prepended to prompt
-        cmd_args = [_resolve_cmd("gemini"), "-p", ""]
+        cmd_args = [resolved, "-p", ""]
         if model:
             cmd_args.extend(["-m", model])
-    else:
-        raise ValueError(f"Unknown CLI provider: {provider}")
 
     proc = await asyncio.create_subprocess_exec(
         *cmd_args,

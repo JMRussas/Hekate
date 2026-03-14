@@ -204,26 +204,6 @@ class TestVerifyOutput:
 
         assert result["result"] == VerificationResult.SKIPPED
 
-    @patch("backend.services.verifier.call_llm", new_callable=AsyncMock)
-    async def test_backward_compat_client_arg_ignored(self, mock_call_llm):
-        """The deprecated client arg is accepted but ignored."""
-        mock_call_llm.return_value = _make_llm_response("passed")
-        budget = AsyncMock()
-        fake_client = object()  # Not a real Anthropic client
-
-        result = await verify_output(
-            task_title="Test",
-            task_description="Test",
-            output_text="Output",
-            client=fake_client,
-            budget=budget,
-            project_id="proj1",
-            task_id="task1",
-        )
-
-        assert result["result"] == VerificationResult.PASSED
-
-
 class TestClaudeCodeExecutorAllowedTools:
     """Tests that the Claude Code executor passes --allowedTools."""
 
@@ -252,7 +232,6 @@ class TestVerificationGate:
         }[key]
 
         db = AsyncMock()
-        client = AsyncMock()
         budget = AsyncMock()
         progress = AsyncMock()
 
@@ -266,7 +245,6 @@ class TestVerificationGate:
                 project_id="proj1",
                 task_id="task1",
                 db=db,
-                client=client,
                 budget=budget,
                 progress=progress,
             )

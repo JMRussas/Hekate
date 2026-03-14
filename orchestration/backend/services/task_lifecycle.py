@@ -31,6 +31,7 @@ from backend.logging_config import set_task_id
 from backend.models.enums import ModelTier, TaskStatus
 from backend.services.claude_agent import run_claude_task
 from backend.services.claude_code_executor import run_claude_code_task
+from backend.services.generic_cli_executor import run_gemini_cli_task, run_codex_cli_task
 from backend.services.ollama_agent import run_ollama_task
 
 logger = logging.getLogger("orchestration.executor")
@@ -182,7 +183,7 @@ async def create_checkpoint(
 
 
 async def verify_task_output(
-    *, task_row, output_text, project_id, task_id, db, client, budget, progress,
+    *, task_row, output_text, project_id, task_id, db, budget, progress,
 ) -> bool:
     """Run output verification. Returns True if the task status was overridden."""
     from backend.services.verifier import verify_output
@@ -193,7 +194,6 @@ async def verify_task_output(
             task_title=task_row["title"],
             task_description=task_row["description"],
             output_text=output_text,
-            client=client,
             budget=budget,
             project_id=project_id,
             task_id=task_id,
@@ -362,6 +362,16 @@ async def execute_task(
                         task_row=task_row, db=db, budget=budget,
                         progress=progress,
                     )
+                elif tier == ModelTier.GEMINI_CLI:
+                    result = await run_gemini_cli_task(
+                        task_row=task_row, db=db, budget=budget,
+                        progress=progress,
+                    )
+                elif tier == ModelTier.CODEX_CLI:
+                    result = await run_codex_cli_task(
+                        task_row=task_row, db=db, budget=budget,
+                        progress=progress,
+                    )
                 else:
                     result = await run_claude_task(
                         task_row=task_row, est_cost=est_cost, client=client,
@@ -404,14 +414,15 @@ async def execute_task(
                     ),
                 )
 
-                # Optional output verification (skip for Ollama — free tasks)
+                # Optional output verification (skip for Ollama — free tasks).
+                # Verifier uses call_llm (CLI/Ollama), not the Anthropic SDK client.
                 # Run BEFORE forwarding context to prevent dependents from
                 # receiving output that verification may reject.
-                if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA and client:
+                if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA:
                     verification_overridden = await verify_task_output(
                         task_row=task_row, output_text=result["output"],
                         project_id=project_id, task_id=task_id,
-                        db=db, client=client, budget=budget, progress=progress,
+                        db=db, budget=budget, progress=progress,
                     )
                     if verification_overridden:
                         return  # Task was reset to PENDING or NEEDS_REVIEW

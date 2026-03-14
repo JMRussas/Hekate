@@ -107,6 +107,28 @@ class TestBuildPrompt:
         prompt = _build_prompt(row)
         assert prompt.endswith("Do X")
 
+    def test_context_type_sanitized(self):
+        """Malicious context types should be sanitized to prevent prompt injection."""
+        context = [{"type": "foo><malicious><bar", "content": "some content"}]
+        row = _make_task_row(
+            description="Do X",
+            context_json=json.dumps(context),
+        )
+        prompt = _build_prompt(row)
+        # Angle brackets should be replaced with underscores
+        assert "<foo__malicious__bar>" in prompt
+        assert "foo><malicious>" not in prompt
+
+    def test_context_type_alphanumeric_preserved(self):
+        """Normal context types with underscores should pass through unchanged."""
+        context = [{"type": "dependency_output_v2", "content": "result"}]
+        row = _make_task_row(
+            description="Do X",
+            context_json=json.dumps(context),
+        )
+        prompt = _build_prompt(row)
+        assert "<dependency_output_v2>" in prompt
+
 
 # ---------------------------------------------------------------------------
 # _resolve_cwd
@@ -258,6 +280,10 @@ class TestRunClaudeCodeTask:
         assert "Done. Foo class created." in result["output"]
         assert result["model_used"] == "claude-opus-4-6"
         assert result["cost_usd"] == 0.0
+        # Verify audit trail is recorded even for $0 cost
+        budget.record_spend.assert_called_once()
+        assert budget.record_spend.call_args.kwargs["cost_usd"] == 0.0
+        assert budget.record_spend.call_args.kwargs["purpose"] == "execution"
 
     @pytest.mark.asyncio
     @patch("backend.services.claude_code_executor._resolve_cmd", return_value="claude")
@@ -324,3 +350,18 @@ class TestRunClaudeCodeTask:
             )
 
         assert "timed out" in result["output"]
+
+    @pytest.mark.asyncio
+    @patch("backend.services.claude_code_executor._resolve_cmd", return_value=None)
+    async def test_cli_not_found_raises(self, mock_resolve):
+        """When Claude CLI is not found, raises RuntimeError with clear message."""
+        task_row = _make_task_row()
+        db = AsyncMock()
+        db.fetchone = AsyncMock(return_value={"repo_path": None})
+        budget = AsyncMock()
+        progress = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="Claude Code CLI not found"):
+            await run_claude_code_task(
+                task_row=task_row, db=db, budget=budget, progress=progress,
+            )

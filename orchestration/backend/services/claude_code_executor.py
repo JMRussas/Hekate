@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 
 from backend.config import cfg
@@ -28,11 +29,11 @@ CLAUDE_CODE_TIMEOUT = int(cfg("claude_code.timeout_seconds", 600))
 # for code generation tasks.
 CLAUDE_CODE_ALLOWED_TOOLS = cfg(
     "claude_code.allowed_tools",
-    "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet *),Bash(npm *),Bash(python *)",
+    "Edit,Write,Read,Glob,Grep,"
+    "Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),"
+    "Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),"
+    "mcp__hecate__*,mcp__ollama__*",
 )
-
-# Max prompt length before switching to stdin pipe (Windows cmd line limit)
-_MAX_CMD_PROMPT_LEN = 4000
 
 
 async def run_claude_code_task(
@@ -69,6 +70,8 @@ async def run_claude_code_task(
 
     # Resolve the claude CLI command
     claude_cmd = _resolve_cmd("claude")
+    if not claude_cmd:
+        raise RuntimeError("Claude Code CLI not found on PATH or in npm global bin")
 
     # Build command args
     # --allowedTools grants write access in headless mode. Without it, Claude Code
@@ -81,9 +84,13 @@ async def run_claude_code_task(
         "--allowedTools", CLAUDE_CODE_ALLOWED_TOOLS,
     ]
 
-    # Strip Claude session env vars so the subprocess doesn't detect a nested session
+    # Strip only the env vars that cause Claude Code to detect a nested session.
+    # Keep CLAUDE_API_KEY, ANTHROPIC_API_KEY, etc. — the subprocess needs those.
+    _NESTED_SESSION_VARS = {
+        "CLAUDECODE", "CLAUDE_CODE_ENTRY_POINT", "CLAUDE_CODE_PARENT_SESSION_ID",
+    }
     clean_env = {k: v for k, v in os.environ.items()
-                 if not k.startswith("CLAUDE") and k != "CLAUDECODE"}
+                 if k not in _NESTED_SESSION_VARS}
 
     # Launch subprocess — pipe prompt via stdin to avoid Windows cmd length limits
     proc = await asyncio.create_subprocess_exec(
@@ -107,16 +114,15 @@ async def run_claude_code_task(
         await proc.stdin.drain()
         proc.stdin.close()
 
-        # Stream stdout line by line, parsing stream-json events
+        # Stream stdout line by line, parsing stream-json events.
+        # Timeout wraps the entire stream read — not individual lines —
+        # so a task that trickles output can't dodge the limit.
         async def read_stream():
             nonlocal total_cost_usd, model_used
             nonlocal total_prompt_tokens, total_completion_tokens
 
             while True:
-                line = await asyncio.wait_for(
-                    proc.stdout.readline(),
-                    timeout=CLAUDE_CODE_TIMEOUT,
-                )
+                line = await proc.stdout.readline()
                 if not line:
                     break
 
@@ -147,7 +153,7 @@ async def run_claude_code_task(
                     total_prompt_tokens = usage.get("input_tokens", 0)
                     total_completion_tokens = usage.get("output_tokens", 0)
 
-        await read_stream()
+        await asyncio.wait_for(read_stream(), timeout=CLAUDE_CODE_TIMEOUT)
         await proc.wait()
 
     except asyncio.TimeoutError:
@@ -171,18 +177,18 @@ async def run_claude_code_task(
             f"Claude Code CLI failed (exit {proc.returncode}): {stderr_text[:500]}"
         )
 
-    # Record spend (CLI is $0 on subscription, but track for accounting)
-    if total_cost_usd > 0:
-        await budget.record_spend(
-            cost_usd=total_cost_usd,
-            prompt_tokens=total_prompt_tokens,
-            completion_tokens=total_completion_tokens,
-            provider="claude_code_cli",
-            model=model_used,
-            purpose="execution",
-            project_id=project_id,
-            task_id=task_id,
-        )
+    # Always record spend for audit trail — even $0 on subscription billing.
+    # This ensures every execution appears in usage_log for traceability.
+    await budget.record_spend(
+        cost_usd=total_cost_usd,
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
+        provider="claude_code_cli",
+        model=model_used,
+        purpose="execution",
+        project_id=project_id,
+        task_id=task_id,
+    )
 
     output = "\n".join(text_parts).strip()
 
@@ -208,7 +214,9 @@ def _build_prompt(task_row) -> str:
     context_json = task_row["context_json"] or "[]"
     context = json.loads(context_json) if isinstance(context_json, str) else context_json
     for ctx in context:
-        ctx_type = ctx.get("type", "context")
+        # Sanitize tag name to alphanumeric + underscore to prevent prompt injection
+        # via crafted context types (e.g., "system><malicious_instruction")
+        ctx_type = re.sub(r"[^a-zA-Z0-9_]", "_", ctx.get("type", "context"))
         content = ctx.get("content", "")
         if content:
             parts.append(f"<{ctx_type}>\n{content}\n</{ctx_type}>")

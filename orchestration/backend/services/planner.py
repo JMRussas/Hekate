@@ -325,7 +325,6 @@ class PlannerService:
         self,
         project_id: str,
         provider: Optional[str] = None,
-        client=None,  # Deprecated — kept for backward compat, ignored
     ) -> dict:
         """Generate a structured plan for a project using CLI providers.
 
@@ -349,10 +348,10 @@ class PlannerService:
         project_name = row["name"]
 
         # Budget gate — refuse to plan if budget is already exhausted.
-        # Plan generation itself is $0 on CLI subscription billing, but
-        # generating a plan leads to task execution which costs money.
-        # Check with a nominal $0.01 estimate to trigger actual limit checks
-        # (can_spend short-circuits on 0.0).
+        # Plan generation itself is $0 (CLI subscription billing), but
+        # generating a plan leads to task execution which may use paid tiers
+        # (Haiku/Sonnet/Opus). Block early to avoid plans the user can't execute.
+        # Uses nominal $0.01 because can_spend short-circuits on 0.0.
         _BUDGET_CHECK_ESTIMATE = 0.01
         if not await self._budget.can_spend(_BUDGET_CHECK_ESTIMATE):
             raise BudgetExhaustedError("Global budget limit exceeded")
@@ -483,7 +482,6 @@ async def generate_plan(
     db,
     budget,
     provider: Optional[str] = None,
-    client=None,  # Deprecated — ignored
 ) -> dict:
     """Convenience wrapper for backward compatibility with tests and direct callers."""
     return await PlannerService(db=db, budget=budget).generate(project_id, provider=provider)

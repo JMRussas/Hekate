@@ -21,11 +21,11 @@ class TestResolveCmd:
         with patch("shutil.which", return_value="/usr/bin/gemini"):
             assert _resolve_cmd("gemini") == "/usr/bin/gemini"
 
-    def test_returns_name_when_not_found_on_linux(self):
-        """On non-Windows, falls through to returning the bare name."""
+    def test_returns_none_when_not_found_on_linux(self):
+        """On non-Windows, returns None when command is not found."""
         with patch("shutil.which", return_value=None), \
              patch.object(sys, "platform", "linux"):
-            assert _resolve_cmd("gemini") == "gemini"
+            assert _resolve_cmd("gemini") is None
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only fallback")
     def test_falls_back_to_npm_global_on_windows(self, tmp_path):
@@ -55,11 +55,11 @@ class TestResolveCmd:
             assert result.endswith(".cmd")
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only fallback")
-    def test_npm_fallback_returns_name_when_not_found(self, tmp_path):
-        """If the command isn't in npm global bin either, return the bare name."""
+    def test_npm_fallback_returns_none_when_not_found(self, tmp_path):
+        """If the command isn't in npm global bin either, return None."""
         npm_dir = tmp_path / "npm"
         npm_dir.mkdir()
 
         with patch("shutil.which", return_value=None), \
              patch.dict(os.environ, {"APPDATA": str(tmp_path)}):
-            assert _resolve_cmd("nonexistent") == "nonexistent"
+            assert _resolve_cmd("nonexistent") is None
