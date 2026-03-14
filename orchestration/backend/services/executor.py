@@ -22,6 +22,7 @@ from backend.config import (
     MAX_CONCURRENT_TASKS,
     RESOURCE_SKIP_SECONDS,
     SHUTDOWN_GRACE_SECONDS,
+    STALENESS_TIMEOUT,
     TICK_INTERVAL,
     WAVE_CHECKPOINTS,
 )
@@ -98,11 +99,12 @@ class Executor:
                 await asyncio.gather(*pending, return_exceptions=True)
             self._in_flight.clear()
 
-        # Reset any running/queued tasks to pending so they can be re-dispatched
-        # after restart, rather than being stuck in a non-terminal state.
+        # Reset internally-dispatched running/queued tasks to pending so they can
+        # be re-dispatched after restart. Exclude externally-claimed tasks — their
+        # executor is independent of this process lifecycle.
         reset_cursor = await self._db.execute_write(
             "UPDATE tasks SET status = ?, error = ?, updated_at = ? "
-            "WHERE status IN (?, ?)",
+            "WHERE status IN (?, ?) AND claimed_by IS NULL",
             (TaskStatus.PENDING, "Interrupted by shutdown", time.time(),
              TaskStatus.RUNNING, TaskStatus.QUEUED),
         )
@@ -137,7 +139,7 @@ class Executor:
         """
         stale = await self._db.fetchall(
             "SELECT id, title, status, project_id, retry_count FROM tasks "
-            "WHERE status IN (?, ?)",
+            "WHERE status IN (?, ?) AND claimed_by IS NULL",
             (TaskStatus.RUNNING, TaskStatus.QUEUED),
         )
         if not stale:
@@ -174,8 +176,84 @@ class Executor:
                 )
         logger.info("Recovered %d stale task(s) to pending/blocked", len(stale))
 
+    async def _sweep_stale_tasks(self):
+        """Detect and reset zombie tasks that are running but have no live coroutine.
+
+        A task is stale when:
+        - DB status is 'running'
+        - started_at + STALENESS_TIMEOUT has elapsed
+        - task_id is NOT in _dispatched (coroutine already exited)
+
+        Resets stale tasks to pending (or blocked if deps unmet) with retry_count + 1.
+        Runs every tick but short-circuits quickly when nothing is stale.
+        """
+        now = time.time()
+        cutoff = now - STALENESS_TIMEOUT
+
+        stale = await self._db.fetchall(
+            "SELECT id, title, project_id, retry_count, max_retries FROM tasks "
+            "WHERE status = ? AND started_at IS NOT NULL AND started_at < ? "
+            "AND claimed_by IS NULL",
+            (TaskStatus.RUNNING, cutoff),
+        )
+        if not stale:
+            return
+
+        for row in stale:
+            task_id = row["id"]
+
+            # If the coroutine is still tracked, it's alive but slow — don't touch it
+            if task_id in self._dispatched:
+                logger.debug("SWEEP: task %s still dispatched, skipping", task_id[:8])
+                continue
+
+            # Check if retry budget is exhausted
+            if row["retry_count"] >= row["max_retries"]:
+                await self._db.execute_write(
+                    "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    (TaskStatus.NEEDS_REVIEW,
+                     f"Zombie detected: running for >{STALENESS_TIMEOUT}s with no live coroutine "
+                     f"(retries exhausted: {row['retry_count']}/{row['max_retries']})",
+                     now, task_id),
+                )
+                await self._progress.push_event(
+                    row["project_id"], "task_needs_review",
+                    f"{row['title']}: zombie detected, retries exhausted",
+                    task_id=task_id,
+                )
+                logger.warning("SWEEP: task %s zombie, retries exhausted → needs_review", task_id[:8])
+                continue
+
+            # Check deps to decide pending vs blocked
+            dep_count = await self._db.fetchone(
+                "SELECT COUNT(*) as cnt FROM task_deps d "
+                "JOIN tasks dep ON dep.id = d.depends_on "
+                "WHERE d.task_id = ? AND dep.status != ?",
+                (task_id, TaskStatus.COMPLETED),
+            )
+            has_unmet_deps = dep_count and dep_count["cnt"] > 0
+            new_status = TaskStatus.BLOCKED if has_unmet_deps else TaskStatus.PENDING
+
+            await self._db.execute_write(
+                "UPDATE tasks SET status = ?, retry_count = retry_count + 1, "
+                "error = ?, output_text = NULL, started_at = NULL, updated_at = ? WHERE id = ?",
+                (new_status,
+                 f"Zombie detected: running for >{STALENESS_TIMEOUT}s with no live coroutine",
+                 now, task_id),
+            )
+            await self._progress.push_event(
+                row["project_id"], "task_zombie_recovered",
+                f"{row['title']}: zombie task recovered, retrying",
+                task_id=task_id,
+            )
+            logger.warning("SWEEP: task %s zombie → %s (retry %d)",
+                           task_id[:8], new_status, row["retry_count"] + 1)
+
     async def _tick(self):
         """One executor tick: find ready tasks and dispatch them."""
+        # Sweep for zombie tasks before dispatching new ones
+        await self._sweep_stale_tasks()
+
         # Find projects that are executing
         projects = await self._db.fetchall(
             "SELECT id FROM projects WHERE status = ?",
@@ -399,12 +477,22 @@ class Executor:
             if not self._check_resource("ollama_local"):
                 return False
 
-        # Claude tasks need API key OR any CLI available (subscriptions cover all tiers)
+        # Claude API tasks need API key OR any CLI available (subscriptions cover all tiers)
         if tier in (ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS):
             if not (self._check_resource("anthropic_api") or
                     self._check_resource("claude_code_cli") or
                     self._check_resource("gemini_cli") or
                     self._check_resource("codex_cli")):
+                return False
+
+        # Gemini CLI tasks need gemini CLI available
+        if tier == ModelTier.GEMINI_CLI:
+            if not self._check_resource("gemini_cli"):
+                return False
+
+        # Codex CLI tasks need codex CLI available
+        if tier == ModelTier.CODEX_CLI:
+            if not self._check_resource("codex_cli"):
                 return False
 
         # ComfyUI tool needs ComfyUI online
