@@ -26,10 +26,18 @@ assess whether the output is acceptable.
 3. Completeness: Does the output cover the key aspects of what was asked?
 </criteria>
 
+<scoping>
+- Evaluate ONLY against the stated task description. Ignore unrelated content in the output.
+- If the output contains test results, only failures directly related to the task's scope matter.
+  Pre-existing failures in unrelated modules are NOT gaps.
+- Consider the task type and tools when judging completeness. A code task that produces
+  working code with passing tests for its scope is complete, even if other tests in the repo fail.
+</scoping>
+
 <verdict_rules>
-- "passed": Output is substantive, relevant, and reasonably complete.
-- "gaps_found": Output is empty, a stub, placeholder, off-topic, or missing key aspects.
-  The task should be retried with feedback.
+- "passed": Output is substantive, relevant, and reasonably complete for the stated task.
+- "gaps_found": Output is empty, a stub, placeholder, off-topic, or missing key aspects
+  OF THE STATED TASK. Pre-existing failures outside the task scope are not gaps.
 - "human_needed": Output has fundamental issues that require human judgment
   (e.g., ambiguous requirements, conflicting instructions, needs domain expertise).
 </verdict_rules>
@@ -47,6 +55,8 @@ async def verify_output(
     task_description: str,
     output_text: str,
     *,
+    task_type: str = "",
+    tools: list[str] | None = None,
     budget,
     project_id: str,
     task_id: str,
@@ -60,6 +70,8 @@ async def verify_output(
         task_title: The task's title.
         task_description: What the task was supposed to do.
         output_text: The actual output produced.
+        task_type: Task type (e.g., "code", "research") for scoped evaluation.
+        tools: Tools available to the task, for context.
         budget: BudgetManager for recording verification cost.
         project_id: For cost attribution.
         task_id: For cost attribution.
@@ -78,8 +90,13 @@ async def verify_output(
     if output_text and len(output_text) > _MAX_OUTPUT_CHARS:
         truncated += "\n\n[... output truncated for verification ...]"
 
+    task_meta = f"**Task type**: {task_type or 'unknown'}"
+    if tools:
+        task_meta += f"\n**Tools**: {', '.join(tools)}"
+
     user_msg = (
         f"## Task: {task_title}\n\n"
+        f"{task_meta}\n\n"
         f"### Description\n{task_description}\n\n"
         f"### Output\n{truncated}"
     )

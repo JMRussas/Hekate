@@ -160,7 +160,7 @@ async def run_claude_code_task(
         logger.warning("Claude Code timed out after %ds for task %s", CLAUDE_CODE_TIMEOUT, task_id)
         proc.kill()
         await proc.wait()
-        text_parts.append(f"\n[Claude Code timed out after {CLAUDE_CODE_TIMEOUT}s]")
+        raise  # Let task_lifecycle handle as transient error → auto-retry
 
     except Exception:
         proc.kill()

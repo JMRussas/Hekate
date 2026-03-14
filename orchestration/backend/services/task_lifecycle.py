@@ -43,6 +43,7 @@ _TRANSIENT_ERRORS = (
     anthropic.InternalServerError,
     httpx.ConnectError,
     httpx.ReadTimeout,
+    asyncio.TimeoutError,
 )
 
 # Maximum verification feedback entries kept in context to prevent unbounded growth
@@ -190,10 +191,13 @@ async def verify_task_output(
     from backend.models.enums import VerificationResult
 
     try:
+        tools = json.loads(task_row["tools_json"]) if task_row["tools_json"] else []
         verification = await verify_output(
             task_title=task_row["title"],
             task_description=task_row["description"],
             output_text=output_text,
+            task_type=task_row["task_type"],
+            tools=tools,
             budget=budget,
             project_id=project_id,
             task_id=task_id,
@@ -228,10 +232,40 @@ async def verify_task_output(
     if v_result == VerificationResult.GAPS_FOUND:
         retry_count = task_row["retry_count"]
         max_retries = task_row["max_retries"]
+
+        # Loop-breaker: if this output is identical to a previously rejected
+        # output, retrying won't help — escalate to human review.
+        import hashlib
+        output_hash = hashlib.md5((output_text or "").encode()).hexdigest()[:16]
+        ctx = json.loads(task_row["context_json"]) if task_row["context_json"] else []
+        prev_feedbacks = [e for e in ctx if e.get("type") == "verification_feedback"]
+        if prev_feedbacks and retry_count > 0:
+            prev_hash = None
+            for fb in reversed(prev_feedbacks):
+                if "output_hash" in fb:
+                    prev_hash = fb["output_hash"]
+                    break
+            if prev_hash and prev_hash == output_hash:
+                logger.warning(
+                    "Task %s produced identical output after retry, escalating to human review",
+                    task_id,
+                )
+                await db.execute_write(
+                    "UPDATE tasks SET status = ?, verification_notes = ?, updated_at = ? WHERE id = ?",
+                    (TaskStatus.NEEDS_REVIEW,
+                     f"Identical output after retry — likely false positive: {v_notes}",
+                     time.time(), task_id),
+                )
+                await progress.push_event(
+                    project_id, "task_needs_review",
+                    f"{task_row['title']}: identical output on retry, likely false positive",
+                    task_id=task_id,
+                )
+                return True
+
         if retry_count < max_retries:
             # Auto-retry with verification feedback appended to context.
             # Sliding window: keep the most recent feedbacks up to the cap.
-            ctx = json.loads(task_row["context_json"]) if task_row["context_json"] else []
             non_feedbacks = [e for e in ctx if e.get("type") != "verification_feedback"]
             feedbacks = [e for e in ctx if e.get("type") == "verification_feedback"]
             if len(feedbacks) >= _MAX_VERIFICATION_FEEDBACKS:
@@ -239,6 +273,7 @@ async def verify_task_output(
             feedbacks.append({
                 "type": "verification_feedback",
                 "content": f"Previous attempt had gaps: {v_notes}. Address these issues.",
+                "output_hash": output_hash,
             })
             ctx = non_feedbacks + feedbacks
             await db.execute_write(
@@ -523,6 +558,19 @@ async def execute_task(
                             project_id, "task_failed", f"{task_row['title']}: {error_msg}",
                             task_id=task_id,
                         )
+
+            except asyncio.CancelledError:
+                retry_after.pop(task_id, None)
+                await db.execute_write(
+                    "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    (TaskStatus.PENDING, "Cancelled by shutdown", time.time(), task_id),
+                )
+                await progress.push_event(
+                    project_id, "task_cancelled",
+                    f"{task_row['title']}: cancelled, will retry on restart",
+                    task_id=task_id,
+                )
+                raise  # Re-raise — swallowing breaks asyncio cancellation protocol
 
             except Exception as e:
                 retry_after.pop(task_id, None)
