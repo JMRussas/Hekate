@@ -1,15 +1,24 @@
 #  Orchestration Engine - Service Health Routes
 #
-#  Resource health check endpoints.
+#  Resource health check endpoints, model discovery state.
 #
-#  Depends on: container.py, models/schemas.py
+#  Depends on: container.py, models/schemas.py, services/model_discovery.py
 #  Used by:    app.py
+
+import time
 
 from dependency_injector.wiring import inject, Provide
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.container import Container
-from backend.models.schemas import ResourceOut
+from backend.models.schemas import (
+    CliAvailabilityOut,
+    ModelOut,
+    ModelsDiscoveryOut,
+    ProviderModelsOut,
+    ResourceOut,
+)
+from backend.services.model_discovery import ModelDiscoveryService
 from backend.services.resource_monitor import ResourceMonitor
 
 router = APIRouter(prefix="/services", tags=["services"])
@@ -57,6 +66,61 @@ async def list_services(
         )
         for s in states
     ]
+
+
+# IMPORTANT: /models must come before /{resource_id} to prevent resource_id from capturing "models"
+@router.get("/models", tags=["models"])
+@inject
+async def get_discovered_models(
+    model_discovery: ModelDiscoveryService = Depends(Provide[Container.model_discovery]),
+) -> ModelsDiscoveryOut:
+    """Get discovered models grouped by provider with availability status.
+
+    Returns:
+    - Models discovered from each provider's API
+    - Availability status (from actual API queries or config fallbacks)
+    - CLI tool availability (claude, gemini, codex)
+    - Cache age (seconds since last discovery for each provider)
+    """
+    provider_results = []
+    current_time = time.time()
+    earliest_discovery = None
+
+    for provider in ("anthropic", "google", "openai", "ollama"):
+        result = model_discovery.get_provider_result(provider)
+        cache_age = model_discovery.cache_age_seconds(provider)
+
+        # Track earliest discovery time for overall last_discovery_at
+        if result and result.cached_at:
+            discovery_time = current_time - (cache_age or 0)
+            if earliest_discovery is None or discovery_time < earliest_discovery:
+                earliest_discovery = discovery_time
+
+        provider_out = ProviderModelsOut(
+            provider=provider,
+            models=[ModelOut(id=m, provider=provider) for m in (result.models if result else [])],
+            available=result.available if result else False,
+            cached_at=result.cached_at if result else 0,
+            cache_age_seconds=cache_age,
+            error=result.error if result else None,
+        )
+        provider_results.append(provider_out)
+
+    cli_results = [
+        CliAvailabilityOut(
+            name=c.name,
+            tier=c.tier,
+            available=c.available,
+            path=c.path,
+        )
+        for c in model_discovery.get_cli_availability()
+    ]
+
+    return ModelsDiscoveryOut(
+        providers=provider_results,
+        cli_tools=cli_results,
+        last_discovery_at=earliest_discovery,
+    )
 
 
 @router.get("/{resource_id}")

@@ -48,6 +48,9 @@ class ModelTier(str, Enum):
     SONNET = "sonnet"
     OPUS = "opus"
     OLLAMA = "ollama"
+    CLAUDE_CODE = "claude_code"
+    GEMINI_CLI = "gemini_cli"
+    CODEX_CLI = "codex_cli"
 
 
 class TaskType(str, Enum):
@@ -57,6 +60,12 @@ class TaskType(str, Enum):
     ASSET = "asset"
     INTEGRATION = "integration"
     DOCUMENTATION = "documentation"
+    # Game development task types
+    GAME_DESIGN = "game_design"
+    GAME_CONTENT = "game_content"
+    GAME_CODE = "game_code"
+    GAME_UI = "game_ui"
+    GAME_BUILD_VERIFY = "game_build_verify"
 
 
 class TaskSortField(str, Enum):

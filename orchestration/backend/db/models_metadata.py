@@ -127,6 +127,9 @@ usage_log = Table(
     Column("cost_usd", Float, nullable=False),
     Column("purpose", Text, nullable=False, server_default=""),
     Column("timestamp", Float, nullable=False),
+    Column("context_tokens_injected", Integer, nullable=True),
+    Column("source_node_count", Integer, nullable=True),
+    Column("enrichment_latency_ms", Float, nullable=True),
 )
 
 budget_periods = Table(

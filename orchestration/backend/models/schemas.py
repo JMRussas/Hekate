@@ -216,6 +216,24 @@ class BudgetStatus(BaseModel):
     monthly_pct: float
 
 
+class ProviderQuotaStatus(BaseModel):
+    """Current quota utilization for a single provider."""
+    provider: str
+    utilization_pct: float
+    warning: bool
+    tokens_or_requests: str  # "tokens" or "requests"
+    used: int
+    limit: int
+    remaining: int
+    window_type: str  # "5h_sliding", "weekly", "daily", "60_requests_per_minute", etc.
+    window_reset_at: str | None = None  # ISO 8601 timestamp
+
+
+class ProviderQuotasStatus(BaseModel):
+    """All provider quota statuses."""
+    providers: dict[str, ProviderQuotaStatus]
+
+
 # ---------------------------------------------------------------------------
 # Services / Resources
 # ---------------------------------------------------------------------------
@@ -227,6 +245,37 @@ class ResourceOut(BaseModel):
     method: str = ""
     details: dict = Field(default_factory=dict)
     category: str = "ai"
+
+
+class ModelOut(BaseModel):
+    """A single discovered model."""
+    id: str
+    provider: str
+
+
+class ProviderModelsOut(BaseModel):
+    """Discovered models for a single provider with availability status."""
+    provider: str
+    models: list[ModelOut]
+    available: bool
+    cached_at: float
+    cache_age_seconds: float | None = None
+    error: str | None = None
+
+
+class CliAvailabilityOut(BaseModel):
+    """CLI tool availability status."""
+    name: str
+    tier: str
+    available: bool
+    path: str | None = None
+
+
+class ModelsDiscoveryOut(BaseModel):
+    """Complete discovery state: all providers, models, and CLI availability."""
+    providers: list[ProviderModelsOut]
+    cli_tools: list[CliAvailabilityOut]
+    last_discovery_at: float | None = None
 
 
 # ---------------------------------------------------------------------------

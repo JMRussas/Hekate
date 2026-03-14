@@ -16,6 +16,7 @@ context-store/ui/node_modules/
 # Orchestration (Python)
 orchestration/.venv/
 orchestration/data/
+orchestration/backend/orchestration.db
 orchestration/frontend/node_modules/
 orchestration/frontend/dist/
 orchestration/config.json
@@ -23,6 +24,9 @@ orchestration/l3_manifest.json
 __pycache__/
 *.pyc
 .coverage
+
+# Design files
+*.pen
 
 # Shared
 .claude/settings.local.json

@@ -1,11 +1,15 @@
 #  Orchestration Engine - Task Lifecycle
 #
-#  Core task execution flow: dispatch, verify, checkpoint, context forwarding.
+#  Core task execution flow: dispatch, verify, checkpoint, context forwarding,
+#  telemetry feedback.
 #  Extracted from executor.py for modularity.
 #
-#  Depends on: config.py, services/claude_agent.py, services/ollama_agent.py,
+#  Depends on: config.py, services/claude_agent.py, services/claude_code_executor.py,
+#              services/ollama_agent.py,
 #              services/budget.py, services/progress.py, services/diagnostic_ingest.py,
 #              services/model_router.py, services/knowledge_extractor.py,
+#              services/enrichment_service.py (lazy, pre-dispatch),
+#              services/telemetry_feedback.py (push_execution_outcome),
 #              tools/rag.py (_embed_query, RAGIndexCache)
 #  Used by:    services/executor.py, routes/external.py
 
@@ -20,16 +24,21 @@ import anthropic
 import httpx
 
 from backend.config import (
+    ANTHROPIC_API_KEY,
     CHECKPOINT_ON_RETRY_EXHAUSTED,
+    CONTEXT_ENRICHMENT_ENABLED,
     CONTEXT_FORWARD_MAX_CHARS,
     DIAGNOSTIC_RAG_ENABLED,
     KNOWLEDGE_EXTRACTION_ENABLED,
     VERIFICATION_ENABLED,
 )
 from backend.logging_config import set_task_id
-from backend.models.enums import ModelTier, TaskStatus
+from backend.models.enums import ModelTier, TaskStatus, VerificationResult
 from backend.services.claude_agent import run_claude_task
+from backend.services.claude_code_executor import run_claude_code_task
+from backend.services.generic_cli_executor import run_gemini_cli_task, run_codex_cli_task
 from backend.services.ollama_agent import run_ollama_task
+from backend.services.telemetry_feedback import push_execution_outcome
 
 logger = logging.getLogger("orchestration.executor")
 
@@ -40,6 +49,7 @@ _TRANSIENT_ERRORS = (
     anthropic.InternalServerError,
     httpx.ConnectError,
     httpx.ReadTimeout,
+    asyncio.TimeoutError,
 )
 
 # Maximum verification feedback entries kept in context to prevent unbounded growth
@@ -47,6 +57,67 @@ _MAX_VERIFICATION_FEEDBACKS = 3
 
 # Diagnostic RAG confidence threshold — only inject HIGH-confidence results
 _DIAGNOSTIC_CONFIDENCE_THRESHOLD = 0.80
+
+
+def _row_get(row, key: str, default=None):
+    """Safe .get() for sqlite3.Row which doesn't support .get()."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
+def _get_provider_from_tier(tier: ModelTier) -> str:
+    """Map ModelTier to provider name for telemetry."""
+    from backend.services.model_router import get_provider_for_tier
+    return get_provider_for_tier(tier)
+
+
+def _get_provider_from_model_name(model: str) -> str:
+    """Infer provider from model name for external executions."""
+    if not model:
+        return "unknown"
+    model_lower = model.lower()
+    if "claude" in model_lower:
+        return "anthropic"
+    elif "gemini" in model_lower:
+        return "gemini"
+    elif "gpt" in model_lower or "openai" in model_lower:
+        return "openai"
+    else:
+        return "unknown"
+
+
+async def _push_telemetry(
+    *,
+    task_row,
+    tier: ModelTier,
+    project_id: str,
+    task_id: str,
+    status: str,
+    verification_outcome: str | None = None,
+    result: dict | None = None,
+    http_client=None,
+):
+    """Push execution telemetry — shared by all completion/failure paths."""
+    started_at = _row_get(task_row, "started_at") or time.time()
+    duration = time.time() - started_at
+    provider = _get_provider_from_tier(tier)
+    await push_execution_outcome(
+        task_id=task_id,
+        project_id=project_id,
+        task_title=task_row["title"],
+        task_description=task_row["description"],
+        task_type=task_row["task_type"],
+        provider=provider,
+        model=result["model_used"] if result else _row_get(task_row, "model_used", "unknown"),
+        prompt_tokens=result["prompt_tokens"] if result else 0,
+        completion_tokens=result["completion_tokens"] if result else 0,
+        duration_seconds=duration,
+        status=status,
+        verification_outcome=verification_outcome,
+        http_client=http_client,
+    )
 
 
 async def _search_diagnostic_rag(error_text: str, rag_cache, http_client) -> str | None:
@@ -123,8 +194,8 @@ async def _ingest_retry_success(task_row, output_text: str, db, ingester):
         await ingester.ingest_resolution(
             error_text=error_text,
             resolution_text=f"Task '{task_row['title']}' succeeded after retry: {resolution_text}",
-            error_context=f"Task type: {task_row.get('task_type', 'unknown')}, "
-                          f"model: {task_row.get('model_tier', 'unknown')}",
+            error_context=f"Task type: {_row_get(task_row,'task_type', 'unknown')}, "
+                          f"model: {_row_get(task_row,'model_tier', 'unknown')}",
             tags=["auto-captured", "retry-success"],
         )
     except Exception as e:
@@ -180,32 +251,52 @@ async def create_checkpoint(
 
 
 async def verify_task_output(
-    *, task_row, output_text, project_id, task_id, db, client, budget, progress,
+    *, task_row, output_text, project_id, task_id, db, budget, progress,
+    retry_after: dict | None = None,
 ) -> bool:
     """Run output verification. Returns True if the task status was overridden."""
     from backend.services.verifier import verify_output
     from backend.models.enums import VerificationResult
 
     try:
+        tools = json.loads(task_row["tools_json"]) if task_row["tools_json"] else []
+
+        # Extract platform verification context from task context if present
+        platform_ctx = None
+        ctx_entries = json.loads(task_row["context_json"]) if task_row["context_json"] else []
+        for entry in ctx_entries:
+            if entry.get("type") == "platform_knowledge":
+                platform_ctx = entry.get("content")
+                break
+
         verification = await verify_output(
             task_title=task_row["title"],
             task_description=task_row["description"],
             output_text=output_text,
-            client=client,
+            task_type=task_row["task_type"],
+            tools=tools,
+            platform_context=platform_ctx,
             budget=budget,
             project_id=project_id,
             task_id=task_id,
         )
     except Exception as e:
-        # Verification failure should not block task completion
+        # Verification infrastructure failure — the task output is unverified.
+        # Mark as NEEDS_REVIEW so dependents don't proceed on unverified output.
+        # This prevents cascading hollow completions when the verifier is misconfigured.
         logger.warning("Verification failed for task %s: %s", task_id, e)
         await db.execute_write(
-            "UPDATE tasks SET verification_status = ?, verification_notes = ?, "
+            "UPDATE tasks SET status = ?, verification_status = ?, verification_notes = ?, "
             "updated_at = ? WHERE id = ?",
-            (VerificationResult.SKIPPED, f"Verification error: {e}",
-             time.time(), task_id),
+            (TaskStatus.NEEDS_REVIEW, VerificationResult.SKIPPED,
+             f"Verification error: {e}", time.time(), task_id),
         )
-        return False
+        await progress.push_event(
+            project_id, "task_needs_review",
+            f"{task_row['title']}: verification infrastructure failed, blocking dependents",
+            task_id=task_id,
+        )
+        return True
 
     v_result = verification["result"]
     v_notes = verification["notes"]
@@ -219,10 +310,46 @@ async def verify_task_output(
     if v_result == VerificationResult.GAPS_FOUND:
         retry_count = task_row["retry_count"]
         max_retries = task_row["max_retries"]
+
+        # Loop-breaker: if this output is identical to a previously rejected
+        # output, retrying won't help — escalate to human review.
+        import hashlib
+        output_hash = hashlib.md5((output_text or "").encode()).hexdigest()[:16]
+        ctx = json.loads(task_row["context_json"]) if task_row["context_json"] else []
+        prev_feedbacks = [e for e in ctx if e.get("type") == "verification_feedback"]
+        if prev_feedbacks and retry_count > 0:
+            prev_hash = None
+            for fb in reversed(prev_feedbacks):
+                if "output_hash" in fb:
+                    prev_hash = fb["output_hash"]
+                    break
+            if prev_hash and prev_hash == output_hash:
+                logger.warning(
+                    "Task %s produced identical output after retry, escalating to human review",
+                    task_id,
+                )
+                await db.execute_write(
+                    "UPDATE tasks SET status = ?, verification_notes = ?, updated_at = ? WHERE id = ?",
+                    (TaskStatus.NEEDS_REVIEW,
+                     f"Identical output after retry — likely false positive: {v_notes}",
+                     time.time(), task_id),
+                )
+                await progress.push_event(
+                    project_id, "task_needs_review",
+                    f"{task_row['title']}: identical output on retry, likely false positive",
+                    task_id=task_id,
+                )
+                return True
+
         if retry_count < max_retries:
+            # Clear any lingering retry backoff so the task re-dispatches
+            # immediately. Without this, a stale retry_after entry from a
+            # prior transient error can block dispatch indefinitely.
+            if retry_after is not None:
+                retry_after.pop(task_id, None)
+
             # Auto-retry with verification feedback appended to context.
             # Sliding window: keep the most recent feedbacks up to the cap.
-            ctx = json.loads(task_row["context_json"]) if task_row["context_json"] else []
             non_feedbacks = [e for e in ctx if e.get("type") != "verification_feedback"]
             feedbacks = [e for e in ctx if e.get("type") == "verification_feedback"]
             if len(feedbacks) >= _MAX_VERIFICATION_FEEDBACKS:
@@ -230,6 +357,7 @@ async def verify_task_output(
             feedbacks.append({
                 "type": "verification_feedback",
                 "content": f"Previous attempt had gaps: {v_notes}. Address these issues.",
+                "output_hash": output_hash,
             })
             ctx = non_feedbacks + feedbacks
             await db.execute_write(
@@ -344,13 +472,95 @@ async def execute_task(
             )
 
             try:
+                # --- Context enrichment (pre-dispatch) ---
+                # Query the context store for relevant knowledge and append the
+                # XML block to the task description before handing off to the
+                # agent.  Enrichment is best-effort: any failure (disabled,
+                # unreachable store, empty result) leaves the description unchanged.
+                _dispatch_row = task_row
+                enrichment_tokens = 0
+                enrichment_nodes = 0
+                enrichment_latency_ms = 0.0
+
+                if CONTEXT_ENRICHMENT_ENABLED:
+                    from backend.services.enrichment_service import EnrichmentService
+                    _enrichment = EnrichmentService()
+                    _enrichment_result = await _enrichment.enrich(task_row["description"])
+                    if _enrichment_result:
+                        _dispatch_row = dict(task_row)
+                        _dispatch_row["description"] = (
+                            task_row["description"]
+                            + "\n\n"
+                            + _enrichment_result.xml_block
+                        )
+                        enrichment_tokens = _enrichment_result.tokens_used
+                        enrichment_nodes = _enrichment_result.node_count
+                        enrichment_latency_ms = _enrichment_result.latency_ms
+
+                        logger.info(
+                            "task %s enriched: tokens=%d nodes=%d latency=%.1fms",
+                            task_id,
+                            enrichment_tokens,
+                            enrichment_nodes,
+                            enrichment_latency_ms,
+                        )
+
+                # Persist enrichment metadata only when enrichment actually ran
+                # and returned results — avoids polluting usage_log with zero rows.
+                if enrichment_nodes > 0:
+                    await db.execute_write(
+                        "INSERT INTO usage_log "
+                        "(project_id, task_id, provider, model, prompt_tokens, "
+                        "completion_tokens, cost_usd, purpose, timestamp, "
+                        "context_tokens_injected, source_node_count, enrichment_latency_ms) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            task_row["project_id"], task_id,
+                            "context_store", "preview",
+                            0, 0, 0.0, "context_enrichment",
+                            time.time(),
+                            enrichment_tokens,
+                            enrichment_nodes,
+                            enrichment_latency_ms,
+                        ),
+                    )
+
                 if tier == ModelTier.OLLAMA:
                     result = await run_ollama_task(
-                        task_row=task_row, http_client=http_client, budget=budget,
+                        task_row=_dispatch_row, http_client=http_client, budget=budget,
+                    )
+                elif tier == ModelTier.CLAUDE_CODE:
+                    result = await run_claude_code_task(
+                        task_row=_dispatch_row, db=db, budget=budget,
+                        progress=progress,
+                    )
+                elif tier == ModelTier.GEMINI_CLI:
+                    result = await run_gemini_cli_task(
+                        task_row=_dispatch_row, db=db, budget=budget,
+                        progress=progress,
+                    )
+                elif tier == ModelTier.CODEX_CLI:
+                    result = await run_codex_cli_task(
+                        task_row=_dispatch_row, db=db, budget=budget,
+                        progress=progress,
+                    )
+                elif not client:
+                    # No Anthropic API client — fall back to Claude Code CLI
+                    # for haiku/sonnet tasks. CLI uses its own subscription auth.
+                    # Pass the model tier name so CLI uses the correct model.
+                    from backend.services.model_router import get_model_id
+                    model_id = get_model_id(tier)
+                    logger.info(
+                        "No Anthropic client, routing %s task %s through Claude Code CLI (model=%s)",
+                        tier.value, task_id, model_id,
+                    )
+                    result = await run_claude_code_task(
+                        task_row=_dispatch_row, db=db, budget=budget,
+                        progress=progress, model=tier.value,
                     )
                 else:
                     result = await run_claude_task(
-                        task_row=task_row, est_cost=est_cost, client=client,
+                        task_row=_dispatch_row, est_cost=est_cost, client=client,
                         tool_registry=tool_registry, budget=budget, progress=progress,
                         db=db,
                     )
@@ -375,6 +585,13 @@ async def execute_task(
                         f"{task_row['title']}: budget exhausted, partial output needs review",
                         task_id=task_id,
                     )
+
+                    await _push_telemetry(
+                        task_row=task_row, tier=tier, project_id=project_id,
+                        task_id=task_id, status="failed",
+                        verification_outcome="budget_exhausted",
+                        result=result, http_client=http_client,
+                    )
                     return
 
                 # Mark completed
@@ -390,14 +607,16 @@ async def execute_task(
                     ),
                 )
 
-                # Optional output verification (skip for Ollama — free tasks)
+                # Optional output verification (skip for Ollama — free tasks).
+                # Verifier uses call_llm (CLI/Ollama), not the Anthropic SDK client.
                 # Run BEFORE forwarding context to prevent dependents from
                 # receiving output that verification may reject.
-                if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA and client:
+                if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA:
                     verification_overridden = await verify_task_output(
                         task_row=task_row, output_text=result["output"],
                         project_id=project_id, task_id=task_id,
-                        db=db, client=client, budget=budget, progress=progress,
+                        db=db, budget=budget, progress=progress,
+                        retry_after=retry_after,
                     )
                     if verification_overridden:
                         return  # Task was reset to PENDING or NEEDS_REVIEW
@@ -433,6 +652,22 @@ async def execute_task(
                         task_id=task_id,
                         db=db,
                     )
+
+                # Push execution telemetry (success)
+                verification_outcome_str = None
+                if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA:
+                    task_fresh = await db.fetchone(
+                        "SELECT verification_status FROM tasks WHERE id = ?", (task_id,)
+                    )
+                    if task_fresh and _row_get(task_fresh, "verification_status"):
+                        verification_outcome_str = task_fresh["verification_status"]
+
+                await _push_telemetry(
+                    task_row=task_row, tier=tier, project_id=project_id,
+                    task_id=task_id, status="completed",
+                    verification_outcome=verification_outcome_str,
+                    result=result, http_client=http_client,
+                )
 
             except _TRANSIENT_ERRORS as e:
                 retry_count = task_row["retry_count"]
@@ -499,6 +734,26 @@ async def execute_task(
                             task_id=task_id,
                         )
 
+                    await _push_telemetry(
+                        task_row=task_row, tier=tier, project_id=project_id,
+                        task_id=task_id, status="failed",
+                        verification_outcome="max_retries_exceeded",
+                        http_client=http_client,
+                    )
+
+            except asyncio.CancelledError:
+                retry_after.pop(task_id, None)
+                await db.execute_write(
+                    "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    (TaskStatus.PENDING, "Cancelled by shutdown", time.time(), task_id),
+                )
+                await progress.push_event(
+                    project_id, "task_cancelled",
+                    f"{task_row['title']}: cancelled, will retry on restart",
+                    task_id=task_id,
+                )
+                raise  # Re-raise — swallowing breaks asyncio cancellation protocol
+
             except Exception as e:
                 retry_after.pop(task_id, None)
                 error_msg = str(e)
@@ -509,6 +764,13 @@ async def execute_task(
                 await progress.push_event(
                     project_id, "task_failed", f"{task_row['title']}: {error_msg}",
                     task_id=task_id,
+                )
+
+                await _push_telemetry(
+                    task_row=task_row, tier=tier, project_id=project_id,
+                    task_id=task_id, status="failed",
+                    verification_outcome="exception",
+                    http_client=http_client,
                 )
     finally:
         set_task_id(None)
@@ -582,14 +844,17 @@ async def complete_task_external(
     # Extract knowledge (best-effort, non-blocking)
     if KNOWLEDGE_EXTRACTION_ENABLED:
         try:
-            import anthropic as anthropic_mod
-            client = anthropic_mod.AsyncAnthropic()
+            if ANTHROPIC_API_KEY:
+                import anthropic as anthropic_mod
+                ext_client = anthropic_mod.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+            else:
+                ext_client = None
             from backend.services.knowledge_extractor import extract_knowledge
             await extract_knowledge(
                 task_title=task_row["title"],
                 task_description=task_row["description"],
                 output_text=output_text,
-                client=client,
+                client=ext_client,
                 budget=budget,
                 project_id=project_id,
                 task_id=task_id,
@@ -597,6 +862,25 @@ async def complete_task_external(
             )
         except Exception as e:
             logger.warning("Knowledge extraction failed for external task %s: %s", task_id, e)
+
+    # Push telemetry for external task completion
+    started_at = _row_get(task_row,"started_at") or now
+    duration = now - started_at
+    provider = _get_provider_from_model_name(model_used)
+    await push_execution_outcome(
+        task_id=task_id,
+        project_id=project_id,
+        task_title=task_row["title"],
+        task_description=task_row["description"],
+        task_type=_row_get(task_row,"task_type", "unknown"),
+        provider=provider,
+        model=model_used,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        duration_seconds=duration,
+        status="completed",
+        verification_outcome=None,  # External tasks skip verification
+    )
 
     return {"status": TaskStatus.COMPLETED}
 

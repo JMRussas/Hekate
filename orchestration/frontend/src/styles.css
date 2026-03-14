@@ -71,6 +71,7 @@ a:hover { text-decoration: underline; }
 .badge.haiku { background: #2a1b3a; color: #ab47bc; }
 .badge.sonnet { background: #1b2a3a; color: var(--accent); }
 .badge.opus { background: #3a2a1b; color: #ffa726; }
+.badge.claude_code { background: #1b3a3a; color: #4dd0e1; }
 .badge.checking { background: #2a2d3a; color: var(--text-dim); }
 
 /* Buttons */
@@ -328,6 +329,7 @@ pre { background: var(--bg); padding: 0.75rem; border-radius: var(--radius); ove
 [data-theme="light"] .badge.haiku { background: #f3e5f5; color: #7b1fa2; }
 [data-theme="light"] .badge.sonnet { background: #e3f2fd; color: #1565c0; }
 [data-theme="light"] .badge.opus { background: #fff3e0; color: #e65100; }
+[data-theme="light"] .badge.claude_code { background: #e0f7fa; color: #00695c; }
 [data-theme="light"] .badge.rigor-l1 { background: #e8f5e9; color: #2e7d32; }
 [data-theme="light"] .badge.rigor-l2 { background: #e3f2fd; color: #1565c0; }
 [data-theme="light"] .badge.rigor-l3 { background: #fff3e0; color: #e65100; }

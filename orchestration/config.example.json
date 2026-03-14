@@ -26,7 +26,7 @@
   "ollama": {
     "hosts": {
       "local": "http://localhost:11434",
-      "server": "http://192.168.1.164:11434"
+      "server": "http://192.168.1.154:11434"
     },
     "default_model": "qwen2.5-coder:14b",
     "embed_model": "nomic-embed-text",
@@ -36,7 +36,7 @@
   "comfyui": {
     "hosts": {
       "local": "http://localhost:8188",
-      "server": "http://192.168.1.164:8188"
+      "server": "http://192.168.1.154:8188"
     },
     "poll_interval": 2.0,
     "timeout": 300,
@@ -46,7 +46,9 @@
     "databases": {
       "noz": "../noz-rag/data/noz_rag.db",
       "verse": "../verse-rag/data/verse_rag.db",
-      "diagnostic": "../diagnostic-rag/data/rag.db"
+      "diagnostic": "../diagnostic-rag/data/rag.db",
+      "highrise": "../highrise-rag/data/highrise_rag.db",
+      "gamedesign": "../gamedesign-rag/data/gamedesign_rag.db"
     },
     "embed_dimensions": 768,
     "default_top_k": 8,
@@ -58,6 +60,63 @@
     "monthly_limit_usd": 50.00,
     "per_project_limit_usd": 10.00,
     "warn_at_pct": 80
+  },
+  "provider_quotas": {
+    "claude_code": {
+      "warn_pct": 80,
+      "windows": [
+        {
+          "name": "sliding_5h",
+          "duration_hours": 5,
+          "metric": "tokens",
+          "limit": 88000
+        },
+        {
+          "name": "weekly",
+          "duration_hours": 168,
+          "metric": "tokens",
+          "limit": 500000
+        }
+      ]
+    },
+    "gemini_cli": {
+      "warn_pct": 80,
+      "windows": [
+        {
+          "name": "daily",
+          "duration_hours": 24,
+          "metric": "requests",
+          "limit": 1000
+        },
+        {
+          "name": "per_minute",
+          "duration_minutes": 1,
+          "metric": "requests",
+          "limit": 60
+        }
+      ]
+    },
+    "codex_cli": {
+      "warn_pct": 80,
+      "windows": [
+        {
+          "name": "sliding_5h",
+          "duration_hours": 5,
+          "metric": "tokens",
+          "limit": 40000
+        },
+        {
+          "name": "weekly",
+          "duration_hours": 168,
+          "metric": "tokens",
+          "limit": 250000
+        }
+      ]
+    },
+    "ollama": {
+      "warn_pct": 80,
+      "windows": []
+    }
   },
   "execution": {
     "max_concurrent_tasks": 3,
@@ -83,6 +142,17 @@
     "http_client_timeout": 300.0,
     "external_claim_timeout_seconds": 3600
   },
+  "context_enrichment": {
+    "enabled": true,
+    "context_store_url": "http://localhost:5102",
+    "max_context_tokens": 2000,
+    "include_prior_outcomes": true
+  },
+  "telemetry_feedback": {
+    "enabled": true,
+    "context_store_url": "http://localhost:5102",
+    "embed_outcomes": true
+  },
   "model_pricing": {
     "claude-haiku-4-5-20251001": { "input_per_mtok": 1.0, "output_per_mtok": 5.0 },
     "claude-sonnet-4-6": { "input_per_mtok": 3.0, "output_per_mtok": 15.0 },
@@ -96,6 +166,18 @@
     "auto_pr": true,
     "pr_remote": "origin",
     "command_timeout": 30
+  },
+  "claude_code": {
+    "timeout_seconds": 600,
+    "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),mcp__hecate__*,mcp__ollama__*"
+  },
+  "gemini_cli": {
+    "timeout_seconds": 600,
+    "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),mcp__hecate__*,mcp__ollama__*"
+  },
+  "codex_cli": {
+    "timeout_seconds": 600,
+    "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),mcp__hecate__*,mcp__ollama__*"
   },
   "resource_check_interval_sec": 30,
   "auth": {

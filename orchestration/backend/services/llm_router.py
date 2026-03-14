@@ -4,7 +4,7 @@
 #  the Anthropic API. Supports Claude, Gemini, Codex CLIs and Ollama HTTP.
 #
 #  Depends on: backend/config.py
-#  Used by:    planner.py, decomposer.py, verifier.py, knowledge_extractor.py
+#  Used by:    planner.py
 
 import asyncio
 import logging
@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import httpx
+
+from backend.config import cfg
 
 logger = logging.getLogger("orchestration.llm_router")
 
@@ -38,13 +40,26 @@ class LLMResponse:
     cost_usd: float = 0.0
 
 
-def _resolve_cmd(name: str) -> str:
-    """Resolve a CLI command name to full path (handles .cmd on Windows)."""
+def _resolve_cmd(name: str) -> Optional[str]:
+    """Resolve a CLI command name to full path (handles .cmd on Windows).
+
+    Falls back to the npm global prefix bin directory when the command
+    isn't on PATH — common in Git Bash / MSYS2 environments on Windows
+    where the npm global bin isn't inherited.
+
+    Returns None if the command is not found anywhere.
+    """
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
     if sys.platform == "win32":
-        resolved = shutil.which(name)
-        if resolved:
-            return resolved
-    return name
+        # npm global bin often missing from Git Bash PATH
+        npm_bin = os.path.join(os.environ.get("APPDATA", ""), "npm")
+        for ext in (".cmd", ".exe", ""):
+            candidate = os.path.join(npm_bin, f"{name}{ext}")
+            if os.path.isfile(candidate):
+                return candidate
+    return None
 
 
 async def _call_cli(provider: str, system_prompt: str, user_message: str,
@@ -54,22 +69,32 @@ async def _call_cli(provider: str, system_prompt: str, user_message: str,
     Pipes the prompt via stdin to avoid Windows command line length limits.
     All CLIs support reading prompts from stdin.
     """
+    # CLI providers don't support separate system/user roles — flatten into one prompt.
+    # TODO: Claude CLI supports --system-prompt flag; use it when available to preserve
+    # role separation. Gemini and Codex CLIs have no equivalent yet.
     full_prompt = f"{system_prompt}\n\n---\n\n{user_message}"
+
+    cli_names = {"claude": "claude", "codex": "codex", "gemini": "gemini"}
+    binary = cli_names.get(provider)
+    if not binary:
+        raise ValueError(f"Unknown CLI provider: {provider}")
+
+    resolved = _resolve_cmd(binary)
+    if not resolved:
+        raise FileNotFoundError(f"{provider} CLI ({binary}) not found on PATH or in npm global bin")
 
     if provider == "claude":
         # Claude: -p is --print (non-interactive mode), reads prompt from stdin
-        cmd_args = [_resolve_cmd("claude"), "-p", "--output-format", "text"]
+        cmd_args = [resolved, "-p", "--output-format", "text"]
     elif provider == "codex":
-        cmd_args = [_resolve_cmd("codex"), "exec"]
+        cmd_args = [resolved, "exec"]
         if model:
             cmd_args.extend(["--model", model])
     elif provider == "gemini":
         # Gemini: -p "" triggers non-interactive mode, stdin is prepended to prompt
-        cmd_args = [_resolve_cmd("gemini"), "-p", ""]
+        cmd_args = [resolved, "-p", ""]
         if model:
             cmd_args.extend(["-m", model])
-    else:
-        raise ValueError(f"Unknown CLI provider: {provider}")
 
     proc = await asyncio.create_subprocess_exec(
         *cmd_args,
@@ -99,7 +124,7 @@ async def _call_ollama(system_prompt: str, user_message: str,
                        model: Optional[str] = None) -> LLMResponse:
     """Call Ollama HTTP API."""
     ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-    ollama_model = model or os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b")
+    ollama_model = model or os.environ.get("OLLAMA_MODEL", cfg("ollama.default_model", "qwen3.5:latest"))
 
     messages = [
         {"role": "system", "content": system_prompt},

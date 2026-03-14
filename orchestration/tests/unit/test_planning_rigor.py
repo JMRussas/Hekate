@@ -1,7 +1,7 @@
 #  Orchestration Engine - Planning Rigor Tests
 #
 #  Tests for planning rigor levels (L1/L2/L3): prompt selection,
-#  max_tokens, decomposer phase flattening, and phase-aware task creation.
+#  decomposer phase flattening, and phase-aware task creation.
 #
 #  Depends on: backend/services/planner.py, backend/services/decomposer.py,
 #              backend/db/connection.py
@@ -9,15 +9,15 @@
 
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from backend.models.enums import PlanningRigor
+from backend.services.llm_router import LLMResponse
 from backend.services.planner import (
     PlannerService,
     _build_system_prompt,
-    _MAX_TOKENS_BY_RIGOR,
     _RIGOR_SUFFIXES,
 )
 from backend.services.decomposer import _flatten_plan_tasks, decompose_plan
@@ -51,10 +51,6 @@ class TestBuildSystemPrompt:
             assert rigor in _RIGOR_SUFFIXES
             prompt = _build_system_prompt(rigor)
             assert len(prompt) > 100
-
-    def test_max_tokens_increase_with_rigor(self):
-        assert _MAX_TOKENS_BY_RIGOR[PlanningRigor.L1] < _MAX_TOKENS_BY_RIGOR[PlanningRigor.L2]
-        assert _MAX_TOKENS_BY_RIGOR[PlanningRigor.L2] < _MAX_TOKENS_BY_RIGOR[PlanningRigor.L3]
 
 
 # ---------------------------------------------------------------------------
@@ -161,17 +157,14 @@ class TestFlattenPlanTasks:
 # PlannerService rigor from project config
 # ---------------------------------------------------------------------------
 
-def _make_plan_response(plan_text=None, pt=100, ct=200):
-    if plan_text is None:
-        plan_text = json.dumps({
+def _make_llm_response(text=None):
+    if text is None:
+        text = json.dumps({
             "summary": "Test plan",
             "tasks": [{"title": "T1", "description": "Do it", "task_type": "code",
                         "complexity": "simple", "depends_on": [], "tools_needed": []}],
         })
-    response = MagicMock()
-    response.content = [MagicMock(text=plan_text, type="text")]
-    response.usage = MagicMock(input_tokens=pt, output_tokens=ct)
-    return response
+    return LLMResponse(text=text, provider="test", model="test-model")
 
 
 @pytest.fixture
@@ -190,65 +183,45 @@ async def rigor_db(tmp_db):
 
 class TestPlannerRigorConfig:
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_l1_uses_flat_prompt(self, _mock_cost, rigor_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_l1_uses_flat_prompt(self, mock_call_llm, rigor_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
 
         svc = PlannerService(db=rigor_db, budget=mock_budget)
-        await svc.generate("proj_l1", client=mock_client)
+        await svc.generate("proj_l1")
 
-        call_kwargs = mock_client.messages.create.call_args.kwargs
-        system = call_kwargs["system"]
-        assert '"tasks"' in system
-        assert '"phases"' not in system
-        assert call_kwargs["max_tokens"] == _MAX_TOKENS_BY_RIGOR[PlanningRigor.L1]
+        # call_llm(system_prompt, user_msg, ...)
+        system_prompt = mock_call_llm.call_args[0][0]
+        assert '"tasks"' in system_prompt
+        assert '"phases"' not in system_prompt
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_l3_uses_thorough_prompt(self, _mock_cost, rigor_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_l3_uses_thorough_prompt(self, mock_call_llm, rigor_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
 
         svc = PlannerService(db=rigor_db, budget=mock_budget)
-        await svc.generate("proj_l3", client=mock_client)
+        await svc.generate("proj_l3")
 
-        call_kwargs = mock_client.messages.create.call_args.kwargs
-        system = call_kwargs["system"]
-        assert '"risk_assessment"' in system
-        assert '"test_strategy"' in system
-        assert call_kwargs["max_tokens"] == _MAX_TOKENS_BY_RIGOR[PlanningRigor.L3]
+        system_prompt = mock_call_llm.call_args[0][0]
+        assert '"risk_assessment"' in system_prompt
+        assert '"test_strategy"' in system_prompt
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_missing_rigor_defaults_to_l2(self, _mock_cost, rigor_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_missing_rigor_defaults_to_l2(self, mock_call_llm, rigor_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
 
         svc = PlannerService(db=rigor_db, budget=mock_budget)
-        await svc.generate("proj_none", client=mock_client)
+        await svc.generate("proj_none")
 
-        call_kwargs = mock_client.messages.create.call_args.kwargs
-        system = call_kwargs["system"]
-        assert '"phases"' in system
-        assert '"open_questions"' in system
-        assert call_kwargs["max_tokens"] == _MAX_TOKENS_BY_RIGOR[PlanningRigor.L2]
+        system_prompt = mock_call_llm.call_args[0][0]
+        assert '"phases"' in system_prompt
+        assert '"open_questions"' in system_prompt
 
 
 # ---------------------------------------------------------------------------

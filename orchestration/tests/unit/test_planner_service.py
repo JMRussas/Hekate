@@ -2,17 +2,18 @@
 #
 #  Tests for _extract_json_object and PlannerService.generate().
 #
-#  Depends on: backend/services/planner.py, backend/db/connection.py
+#  Depends on: backend/services/planner.py, backend/services/llm_router.py
 #  Used by:    pytest
 
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from backend.exceptions import BudgetExhaustedError, NotFoundError, PlanParseError
 from backend.models.enums import PlanStatus, ProjectStatus
+from backend.services.llm_router import LLMResponse
 from backend.services.planner import PlannerService, _extract_json_object, generate_plan
 
 
@@ -56,18 +57,15 @@ class TestExtractJsonObject:
 # TestPlannerServiceGenerate
 # ---------------------------------------------------------------------------
 
-def _make_plan_response(plan_text=None, pt=100, ct=200):
-    """Build a mock Claude response for planning."""
-    if plan_text is None:
-        plan_text = json.dumps({
+def _make_llm_response(text=None):
+    """Build a mock LLMResponse for planning."""
+    if text is None:
+        text = json.dumps({
             "summary": "Test plan",
             "tasks": [{"title": "Task 1", "description": "Do it", "task_type": "code",
                         "complexity": "simple", "depends_on": [], "tools_needed": []}],
         })
-    response = MagicMock()
-    response.content = [MagicMock(text=plan_text, type="text")]
-    response.usage = MagicMock(input_tokens=pt, output_tokens=ct)
-    return response
+    return LLMResponse(text=text, provider="test", model="test-model")
 
 
 @pytest.fixture
@@ -84,20 +82,14 @@ async def planner_db(tmp_db):
 
 class TestPlannerServiceGenerate:
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_success_stores_plan(self, _mock_cost, planner_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_success_stores_plan(self, mock_call_llm, planner_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
-        mock_client.close = AsyncMock()
 
         svc = PlannerService(db=planner_db, budget=mock_budget)
-        result = await svc.generate("proj_plan_001", client=mock_client)
+        result = await svc.generate("proj_plan_001")
 
         assert result["plan"]["summary"] == "Test plan"
         assert result["version"] == 1
@@ -113,127 +105,100 @@ class TestPlannerServiceGenerate:
         )
         assert proj["status"] == ProjectStatus.DRAFT
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_requirement_numbering(self, _mock_cost, planner_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_requirement_numbering(self, mock_call_llm, planner_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
 
         svc = PlannerService(db=planner_db, budget=mock_budget)
-        await svc.generate("proj_plan_001", client=mock_client)
+        await svc.generate("proj_plan_001")
 
-        call_kwargs = mock_client.messages.create.call_args.kwargs
-        user_msg = call_kwargs["messages"][0]["content"]
+        # call_llm(system_prompt, user_msg, ...)
+        user_msg = mock_call_llm.call_args[0][1]
         assert "[R1]" in user_msg
         assert "[R2]" in user_msg
         assert "[R3]" in user_msg
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    async def test_budget_exhausted_raises(self, _mock_cost, planner_db):
-        mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=False)
-
-        svc = PlannerService(db=planner_db, budget=mock_budget)
-        with pytest.raises(BudgetExhaustedError):
-            await svc.generate("proj_plan_001")
-
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    async def test_project_not_found(self, _mock_cost, planner_db):
+    async def test_project_not_found(self, planner_db):
         mock_budget = AsyncMock()
         svc = PlannerService(db=planner_db, budget=mock_budget)
         with pytest.raises(NotFoundError):
             await svc.generate("nonexistent")
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_empty_response_raises(self, _mock_cost, planner_db):
+    async def test_global_budget_exhausted_raises(self, planner_db):
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
-        mock_budget.release_reservation = AsyncMock()
+        mock_budget.can_spend = AsyncMock(return_value=False)
 
-        response = MagicMock()
-        response.content = []
+        svc = PlannerService(db=planner_db, budget=mock_budget)
+        with pytest.raises(BudgetExhaustedError, match="Global budget"):
+            await svc.generate("proj_plan_001")
 
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=response)
-        mock_client.close = AsyncMock()
+    async def test_project_budget_exhausted_raises(self, planner_db):
+        mock_budget = AsyncMock()
+        mock_budget.can_spend = AsyncMock(return_value=True)
+        mock_budget.can_spend_project = AsyncMock(return_value=False)
+
+        svc = PlannerService(db=planner_db, budget=mock_budget)
+        with pytest.raises(BudgetExhaustedError, match="per-project budget"):
+            await svc.generate("proj_plan_001")
+
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_empty_response_raises(self, mock_call_llm, planner_db):
+        mock_call_llm.return_value = LLMResponse(text="", provider="test", model="test-model")
+        mock_budget = AsyncMock()
 
         svc = PlannerService(db=planner_db, budget=mock_budget)
         with pytest.raises(PlanParseError, match="empty response"):
-            await svc.generate("proj_plan_001", client=mock_client)
+            await svc.generate("proj_plan_001")
 
         # Project reset to draft
         proj = await planner_db.fetchone(
             "SELECT status FROM projects WHERE id = ?", ("proj_plan_001",)
         )
         assert proj["status"] == ProjectStatus.DRAFT
-        mock_budget.release_reservation.assert_awaited_once()
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_non_json_falls_back_to_extract(self, _mock_cost, planner_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_non_json_falls_back_to_extract(self, mock_call_llm, planner_db):
         """Response with prose + JSON falls back to _extract_json_object."""
         plan_json = '{"summary": "extracted", "tasks": []}'
         text = f"Here is the plan:\n{plan_json}\nHope that helps!"
 
+        mock_call_llm.return_value = _make_llm_response(text)
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response(text))
 
         svc = PlannerService(db=planner_db, budget=mock_budget)
-        result = await svc.generate("proj_plan_001", client=mock_client)
+        result = await svc.generate("proj_plan_001")
 
         assert result["plan"]["summary"] == "extracted"
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_unparseable_raises_and_resets(self, _mock_cost, planner_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_unparseable_raises_and_resets(self, mock_call_llm, planner_db):
+        mock_call_llm.return_value = _make_llm_response("totally not json at all")
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(
-            return_value=_make_plan_response("totally not json at all")
-        )
-        mock_client.close = AsyncMock()
 
         svc = PlannerService(db=planner_db, budget=mock_budget)
         with pytest.raises(PlanParseError):
-            await svc.generate("proj_plan_001", client=mock_client)
+            await svc.generate("proj_plan_001")
 
         proj = await planner_db.fetchone(
             "SELECT status FROM projects WHERE id = ?", ("proj_plan_001",)
         )
         assert proj["status"] == ProjectStatus.DRAFT
-        mock_budget.release_reservation.assert_awaited_once()
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_supersedes_previous_draft(self, _mock_cost, planner_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_supersedes_previous_draft(self, mock_call_llm, planner_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
 
         svc = PlannerService(db=planner_db, budget=mock_budget)
 
         # First plan
-        result1 = await svc.generate("proj_plan_001", client=mock_client)
+        result1 = await svc.generate("proj_plan_001")
         # Second plan
-        result2 = await svc.generate("proj_plan_001", client=mock_client)
+        result2 = await svc.generate("proj_plan_001")
 
         assert result2["version"] == 2
 
@@ -243,54 +208,39 @@ class TestPlannerServiceGenerate:
         )
         assert old_plan["status"] == PlanStatus.SUPERSEDED
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_records_spend_and_releases(self, _mock_cost, planner_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_records_spend(self, mock_call_llm, planner_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
 
         svc = PlannerService(db=planner_db, budget=mock_budget)
-        await svc.generate("proj_plan_001", client=mock_client)
+        await svc.generate("proj_plan_001")
 
         mock_budget.record_spend.assert_awaited_once()
-        mock_budget.release_reservation.assert_awaited_once()
+        call_kwargs = mock_budget.record_spend.call_args.kwargs
+        assert call_kwargs["cost_usd"] == 0.0
+        assert call_kwargs["purpose"] == "plan_generation"
 
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    @patch("backend.services.planner.ANTHROPIC_API_KEY", "test-key")
-    async def test_creates_own_client(self, _mock_cost, planner_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_passes_provider_to_call_llm(self, mock_call_llm, planner_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
 
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
-        mock_client.close = AsyncMock()
+        svc = PlannerService(db=planner_db, budget=mock_budget)
+        await svc.generate("proj_plan_001", provider="gemini")
 
-        with patch("backend.services.planner.anthropic.AsyncAnthropic", return_value=mock_client):
-            svc = PlannerService(db=planner_db, budget=mock_budget)
-            await svc.generate("proj_plan_001")  # No client argument
+        call_kwargs = mock_call_llm.call_args.kwargs
+        assert call_kwargs["provider"] == "gemini"
 
-        mock_client.close.assert_awaited_once()
-
-    @patch("backend.services.planner.calculate_cost", return_value=0.01)
-    @patch("backend.services.planner.PLANNING_MODEL", "test-model")
-    async def test_backward_compat_wrapper(self, _mock_cost, planner_db):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_backward_compat_wrapper(self, mock_call_llm, planner_db):
+        mock_call_llm.return_value = _make_llm_response()
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
         mock_budget.record_spend = AsyncMock()
-        mock_budget.release_reservation = AsyncMock()
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=_make_plan_response())
 
         result = await generate_plan(
-            "proj_plan_001", db=planner_db, budget=mock_budget, client=mock_client,
+            "proj_plan_001", db=planner_db, budget=mock_budget,
         )
         assert result["plan"]["summary"] == "Test plan"

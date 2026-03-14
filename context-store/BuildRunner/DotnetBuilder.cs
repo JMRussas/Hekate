@@ -12,8 +12,11 @@ namespace CodeStoragePoc.BuildRunner;
 
 public static class DotnetBuilder
 {
+    private static readonly TimeSpan BuildTimeout = TimeSpan.FromMinutes(5);
+
     /// <summary>
     /// Run dotnet build in the given directory. Returns (success, output).
+    /// Times out after 5 minutes to prevent hung builds.
     /// </summary>
     public static async Task<(bool Success, string Output)> Build(string projectDir)
     {
@@ -29,11 +32,20 @@ public static class DotnetBuilder
         };
 
         using var proc = Process.Start(psi)!;
+        using var cts = new CancellationTokenSource(BuildTimeout);
         // Read stdout and stderr concurrently to avoid deadlock when one buffer fills
         var stdoutTask = proc.StandardOutput.ReadToEndAsync();
         var stderrTask = proc.StandardError.ReadToEndAsync();
         await Task.WhenAll(stdoutTask, stderrTask);
-        await proc.WaitForExitAsync();
+        try
+        {
+            await proc.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            proc.Kill(entireProcessTree: true);
+            return (false, $"Build timed out after {BuildTimeout.TotalMinutes} minutes");
+        }
 
         var stdout = stdoutTask.Result;
         var stderr = stderrTask.Result;

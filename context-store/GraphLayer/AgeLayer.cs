@@ -43,7 +43,9 @@ public class AgeLayer
         // Research & roadmap domain
         "INFORMS",
         // Agent action domain
-        "PRODUCED", "TRIGGERED", "FORKED_FROM", "OBSERVED", "INFORMED"
+        "PRODUCED", "TRIGGERED", "FORKED_FROM", "OBSERVED", "INFORMED",
+        // Hecate semantic edges (code analysis)
+        "IMPLEMENTS", "DEFINES", "ALLOCATES"
     };
 
     public AgeLayer(string connectionString) => _connStr = connectionString;

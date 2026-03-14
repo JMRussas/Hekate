@@ -381,6 +381,14 @@ public class NodeRepository
         var (conn, owned) = await GetConnection();
         try
         {
+            // Lock the parent row to prevent concurrent sibling_order races
+            await using (var lockCmd = new NpgsqlCommand(
+                "SELECT id FROM nodes WHERE id = @parent FOR UPDATE", conn, _externalTx))
+            {
+                lockCmd.Parameters.AddWithValue("parent", parentId);
+                await lockCmd.ExecuteNonQueryAsync();
+            }
+
             await using var cmd = new NpgsqlCommand("""
                 SELECT COALESCE(MAX(sibling_order), 0) + 100 FROM nodes WHERE parent_id = @parent
             """, conn);
@@ -398,6 +406,11 @@ public class NodeRepository
     /// <summary>Set the embedding vector on a node (768-dim float array as text).</summary>
     public async Task SetEmbedding(Guid nodeId, float[] vector)
     {
+        if (vector.Length != 768)
+            throw new ArgumentException($"Embedding vector must be 768 dimensions, got {vector.Length}.");
+        if (vector.Any(v => float.IsNaN(v) || float.IsInfinity(v)))
+            throw new ArgumentException("Embedding vector contains NaN or Infinity values.");
+
         var (conn, owned) = await GetConnection();
         try
         {
@@ -746,6 +759,24 @@ public class NodeRepository
                 await LoadAttributes(conn, nodes);
 
             return nodes;
+        }
+        finally
+        {
+            if (owned) await conn.DisposeAsync();
+        }
+    }
+
+    /// <summary>Delete all nodes in a project with a specific modified_by provenance. Returns count deleted.</summary>
+    public async Task<int> DeleteNodesByProvenance(Guid projectId, string provenance)
+    {
+        var (conn, owned) = await GetConnection();
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                "DELETE FROM nodes WHERE project_id = @proj AND modified_by = @prov", conn, _externalTx);
+            cmd.Parameters.AddWithValue("proj", projectId);
+            cmd.Parameters.AddWithValue("prov", provenance);
+            return await cmd.ExecuteNonQueryAsync();
         }
         finally
         {

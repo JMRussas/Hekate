@@ -39,11 +39,14 @@ public class RoslynValidator
 
         if (errors.Count > 0)
         {
+            var details = string.Join("\n", errors.Select(e =>
+                $"  {e.GetMessage()} at {e.Location.GetLineSpan()}"));
+
             foreach (var error in errors)
                 Console.WriteLine($"[VALIDATE]   ERROR: {error.GetMessage()} at {error.Location.GetLineSpan()}");
 
             throw new InvalidOperationException(
-                $"Generated code has {errors.Count} Roslyn errors. See output above.");
+                $"Generated code has {errors.Count} Roslyn errors:\n{details}");
         }
     }
 }

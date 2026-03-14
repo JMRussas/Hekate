@@ -1,0 +1,150 @@
+{
+  "version": "1.0",
+  "description": "Reusable sprint decomposition patterns for game development planning. The planner selects and sequences these patterns based on project requirements.",
+  "patterns": [
+    {
+      "id": "foundation",
+      "name": "Foundation",
+      "description": "Project scaffold, basic rendering pipeline, player entity, input handling, camera system, and a test level to validate the loop.",
+      "prerequisites": [],
+      "typical_sprint_number": 1,
+      "task_types": ["code", "integration"],
+      "exit_criteria_template": "Game launches, renders a test scene, player entity responds to input, camera follows player, build passes with zero errors.",
+      "parallelizable": false,
+      "estimated_tasks": 6,
+      "tags": ["required", "boot"]
+    },
+    {
+      "id": "world_generation",
+      "name": "World Generation",
+      "description": "Procedural or manual level generation, fog of war or visibility system, level transitions and loading between areas.",
+      "prerequisites": ["foundation"],
+      "typical_sprint_number": 2,
+      "task_types": ["code", "research"],
+      "exit_criteria_template": "At least two distinct levels are generated/loaded, player can transition between them, fog of war obscures unexplored areas.",
+      "parallelizable": true,
+      "estimated_tasks": 6,
+      "tags": ["world"]
+    },
+    {
+      "id": "character_system",
+      "name": "Character System",
+      "description": "Character data model, creation flow, stat definitions, progression/leveling, and character UI screens.",
+      "prerequisites": ["foundation"],
+      "typical_sprint_number": 2,
+      "task_types": ["code", "documentation"],
+      "exit_criteria_template": "Characters can be created with stats, stats display in UI, leveling up modifies stats correctly.",
+      "parallelizable": true,
+      "estimated_tasks": 6,
+      "tags": ["rpg", "core"]
+    },
+    {
+      "id": "combat_system",
+      "name": "Combat System",
+      "description": "Enemy entities, basic AI, pathfinding, turn-based or real-time combat resolution, XP and rewards on kill.",
+      "prerequisites": ["foundation", "character_system"],
+      "typical_sprint_number": 3,
+      "task_types": ["code", "research"],
+      "exit_criteria_template": "Player can encounter enemies, engage in combat, take and deal damage, defeat enemies yields XP, game over on player death.",
+      "parallelizable": true,
+      "estimated_tasks": 8,
+      "tags": ["rpg", "core"]
+    },
+    {
+      "id": "items_economy",
+      "name": "Items & Economy",
+      "description": "Item data model, inventory system, equipment slots, loot drops from enemies/chests, shop buy/sell flow.",
+      "prerequisites": ["foundation", "character_system"],
+      "typical_sprint_number": 3,
+      "task_types": ["code", "documentation"],
+      "exit_criteria_template": "Items can be picked up, viewed in inventory, equipped to modify stats, shops allow buying and selling with currency.",
+      "parallelizable": true,
+      "estimated_tasks": 7,
+      "tags": ["rpg"]
+    },
+    {
+      "id": "abilities_spells",
+      "name": "Abilities & Spells",
+      "description": "Ability definitions, casting system, visual/mechanical effects, status conditions, cooldown and resource costs.",
+      "prerequisites": ["combat_system", "character_system"],
+      "typical_sprint_number": 4,
+      "task_types": ["code", "research"],
+      "exit_criteria_template": "Characters learn abilities, abilities can be cast in combat, effects apply correctly, cooldowns prevent spam, status conditions wear off.",
+      "parallelizable": true,
+      "estimated_tasks": 7,
+      "tags": ["rpg"]
+    },
+    {
+      "id": "multiplayer",
+      "name": "Multiplayer",
+      "description": "Networking protocol selection, client/server architecture, lobby and matchmaking, game state synchronization.",
+      "prerequisites": ["foundation"],
+      "typical_sprint_number": 4,
+      "task_types": ["code", "research", "integration"],
+      "exit_criteria_template": "Two clients can connect to a server, join a shared session, see each other's player entities, actions sync within acceptable latency.",
+      "parallelizable": false,
+      "estimated_tasks": 8,
+      "tags": ["multiplayer"]
+    },
+    {
+      "id": "ai_personality",
+      "name": "AI & Personality",
+      "description": "Enemy memory of player actions, adaptive difficulty, behavior trees for complex AI, nemesis or rival system.",
+      "prerequisites": ["combat_system"],
+      "typical_sprint_number": 5,
+      "task_types": ["code", "research"],
+      "exit_criteria_template": "Enemies remember past encounters, adapt tactics based on player behavior, behavior trees produce varied combat actions, named rivals persist across sessions.",
+      "parallelizable": true,
+      "estimated_tasks": 6,
+      "tags": ["advanced", "rpg"]
+    },
+    {
+      "id": "content_pipeline",
+      "name": "Content Pipeline",
+      "description": "Asset loading infrastructure, sprite or 3D model integration, fallback rendering for missing assets, content manifest.",
+      "prerequisites": ["foundation"],
+      "typical_sprint_number": 2,
+      "task_types": ["code", "integration"],
+      "exit_criteria_template": "Assets load from disk via manifest, sprites/models render at correct positions, missing assets show a visible fallback instead of crashing.",
+      "parallelizable": true,
+      "estimated_tasks": 5,
+      "tags": ["infrastructure"]
+    },
+    {
+      "id": "persistence",
+      "name": "Persistence",
+      "description": "Save game serialization, load game deserialization, auto-save on key events, data migration for schema changes, continue flow from main menu.",
+      "prerequisites": ["foundation", "character_system"],
+      "typical_sprint_number": 5,
+      "task_types": ["code", "integration"],
+      "exit_criteria_template": "Game state saves to disk, loads restore exact state, auto-save triggers on level transitions, old saves migrate to current schema, main menu shows continue option.",
+      "parallelizable": true,
+      "estimated_tasks": 6,
+      "tags": ["core"]
+    },
+    {
+      "id": "audio_vfx",
+      "name": "Audio & VFX",
+      "description": "Sound effect pipeline, background music with transitions, particle or VFX system, combat hit feedback, ambient environmental audio.",
+      "prerequisites": ["foundation"],
+      "typical_sprint_number": 6,
+      "task_types": ["code", "asset", "integration"],
+      "exit_criteria_template": "Sound effects play on actions, music loops and transitions between areas, VFX render on combat hits, ambient sounds play in levels.",
+      "parallelizable": true,
+      "estimated_tasks": 6,
+      "tags": ["polish"]
+    },
+    {
+      "id": "ui_ux_polish",
+      "name": "UI/UX Polish",
+      "description": "Consistent UI styling, contextual help and tooltips, UI animations and transitions, accessibility options, tutorial or onboarding flow.",
+      "prerequisites": ["foundation"],
+      "typical_sprint_number": 7,
+      "task_types": ["code", "asset", "documentation"],
+      "exit_criteria_template": "All UI screens follow a consistent style guide, tooltips appear on hover/focus, transitions animate smoothly, accessibility options (text size, contrast) work, tutorial guides new players through core loop.",
+      "parallelizable": true,
+      "estimated_tasks": 7,
+      "tags": ["polish"]
+    }
+  ]
+}

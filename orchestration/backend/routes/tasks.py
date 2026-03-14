@@ -12,7 +12,7 @@ import time
 from dependency_injector.wiring import inject, Provide
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from backend.config import MAX_TASK_RETRIES
+from backend.config import MAX_TASK_RETRIES, STALENESS_TIMEOUT
 from backend.container import Container
 from backend.db.connection import Database
 from backend.middleware.auth import get_current_user
@@ -277,19 +277,42 @@ async def update_task(
 @inject
 async def retry_task(
     task_id: str,
+    force: bool = Query(False, description="Force-retry a running task (zombie recovery)"),
     current_user: dict = Depends(get_current_user),
     db: Database = Depends(Provide[Container.db]),
 ) -> TaskOut:
-    """Retry a failed task."""
+    """Retry a failed or zombie running task.
+
+    For running tasks, pass force=true. A staleness check prevents
+    accidentally killing genuinely active tasks — the task must have
+    been running longer than the staleness timeout.
+    """
     row = await _verify_task_ownership(db, task_id, current_user)
-    if row["status"] != TaskStatus.FAILED:
-        raise HTTPException(400, "Can only retry failed tasks")
+
+    if row["status"] == TaskStatus.RUNNING:
+        if not force:
+            raise HTTPException(
+                400,
+                "Task is running. Pass force=true to retry a zombie task.",
+            )
+        # Guard against killing a genuinely active task
+        started_at = row["started_at"] or 0
+        if time.time() - started_at < STALENESS_TIMEOUT:
+            raise HTTPException(
+                409,
+                f"Task has only been running {int(time.time() - started_at)}s "
+                f"(staleness threshold: {int(STALENESS_TIMEOUT)}s). "
+                "Wait for the timeout or cancel it first.",
+            )
+    elif row["status"] != TaskStatus.FAILED:
+        raise HTTPException(400, "Can only retry failed or zombie running tasks")
+
     if row["retry_count"] >= MAX_TASK_RETRIES:
         raise HTTPException(400, f"Maximum retry limit reached ({MAX_TASK_RETRIES})")
 
     await db.execute_write(
         "UPDATE tasks SET status = ?, error = NULL, output_text = NULL, "
-        "retry_count = retry_count + 1, updated_at = ? WHERE id = ?",
+        "started_at = NULL, retry_count = retry_count + 1, updated_at = ? WHERE id = ?",
         (TaskStatus.PENDING, time.time(), task_id),
     )
 

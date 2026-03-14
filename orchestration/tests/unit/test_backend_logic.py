@@ -220,37 +220,32 @@ class TestContextForwardingRace:
 
 class TestBudgetLeak:
     @pytest.mark.asyncio
-    async def test_budget_recorded_on_parse_failure(self, tmp_db):
-        """API cost should be recorded even when plan JSON parsing fails."""
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_budget_recorded_on_parse_failure(self, mock_call_llm, tmp_db):
+        """Budget spend should be recorded even when plan JSON parsing fails."""
+        from backend.services.llm_router import LLMResponse
         from backend.services.planner import PlannerService
 
         await create_test_project(tmp_db)
 
-        mock_budget = MagicMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
-        mock_budget.release_reservation = AsyncMock()
+        mock_budget = AsyncMock()
         mock_budget.record_spend = AsyncMock()
 
-        # Mock response with valid usage but unparseable text
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="This is not JSON at all", type="text")]
-        mock_response.usage = MagicMock(input_tokens=500, output_tokens=300)
-
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-        mock_client.close = AsyncMock()
+        # call_llm returns unparseable text
+        mock_call_llm.return_value = LLMResponse(
+            text="This is not JSON at all", provider="test", model="test-model",
+        )
 
         planner = PlannerService(db=tmp_db, budget=mock_budget)
 
         with pytest.raises(Exception):  # PlanParseError
-            await planner.generate("proj1", client=mock_client)
+            await planner.generate("proj1")
 
         # Budget should have been recorded despite parse failure
         mock_budget.record_spend.assert_called_once()
         call_kwargs = mock_budget.record_spend.call_args
-        assert call_kwargs.kwargs["prompt_tokens"] == 500
-        assert call_kwargs.kwargs["completion_tokens"] == 300
-        assert call_kwargs.kwargs["purpose"] == "planning"
+        assert call_kwargs.kwargs["cost_usd"] == 0.0
+        assert call_kwargs.kwargs["purpose"] == "plan_generation"
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +295,7 @@ class TestVerificationFeedbackCap:
             overridden = await verify_task_output(
                 task_row=task_row, output_text="some output",
                 project_id="proj1", task_id="task1",
-                db=tmp_db, client=MagicMock(), budget=mock_budget,
+                db=tmp_db, budget=mock_budget,
                 progress=mock_progress,
             )
 
@@ -475,32 +470,29 @@ class TestOllamaBudgetSkip:
 
 class TestVerifierEnhancements:
     @pytest.mark.asyncio
-    async def test_long_output_truncated(self):
+    @patch("backend.services.verifier.call_llm", new_callable=AsyncMock)
+    async def test_long_output_truncated(self, mock_call_llm):
         """Outputs longer than 8000 chars should be truncated before verification."""
         from backend.services.verifier import verify_output
+        from backend.services.llm_router import LLMResponse
+
+        mock_call_llm.return_value = LLMResponse(
+            text='{"verdict": "passed", "notes": "ok"}',
+            provider="test", model="test-model",
+        )
 
         long_output = "x" * 10000
 
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text='{"verdict": "passed", "notes": "ok"}', type="text")]
-        mock_response.usage = MagicMock(input_tokens=100, output_tokens=50)
-
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        mock_budget = MagicMock()
-        mock_budget.can_spend = AsyncMock(return_value=True)
-        mock_budget.record_spend = AsyncMock()
+        mock_budget = AsyncMock()
 
         result = await verify_output(
             task_title="Test", task_description="Test",
-            output_text=long_output, client=mock_client,
+            output_text=long_output,
             budget=mock_budget, project_id="proj1", task_id="task1",
         )
 
-        # Verify truncation happened in the message sent to Claude
-        call_args = mock_client.messages.create.call_args
-        user_msg = call_args.kwargs["messages"][0]["content"]
+        # Verify truncation happened in the message sent to call_llm
+        user_msg = mock_call_llm.call_args[0][1]
         assert "truncated" in user_msg
         assert len(user_msg) < len(long_output)
         assert result["result"].value == "passed"
@@ -516,7 +508,7 @@ class TestVerifierEnhancements:
 
         result = await verify_output(
             task_title="Test", task_description="Test",
-            output_text="output", client=MagicMock(),
+            output_text="output",
             budget=mock_budget, project_id="proj1", task_id="task1",
         )
 
