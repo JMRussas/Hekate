@@ -130,6 +130,7 @@ public class Vector2Seeder
         await Node(Guid.NewGuid(), toStrBlock, "statement", null,
             "return $\"({X}, {Y})\";", 100);
 
+        _seeded = true;
         Console.WriteLine("[SEED]     Inserted 19 nodes for Vector2");
         return root;
     }
@@ -219,11 +220,12 @@ public class Vector2Seeder
         return Normalize(vec);
     }
 
-    // Key node IDs for the mutation demo
-    public Guid AddMethodId => _addNode;
-    public Guid FieldXId => _fieldX;
-    public Guid FieldYId => _fieldY;
-    public Guid StructId => _structNode;
+    // Key node IDs for the mutation demo (only valid after Seed() has been called)
+    private bool _seeded;
+    public Guid AddMethodId => _seeded ? _addNode : throw new InvalidOperationException("Seed() must be called first");
+    public Guid FieldXId => _seeded ? _fieldX : throw new InvalidOperationException("Seed() must be called first");
+    public Guid FieldYId => _seeded ? _fieldY : throw new InvalidOperationException("Seed() must be called first");
+    public Guid StructId => _seeded ? _structNode : throw new InvalidOperationException("Seed() must be called first");
 
     private async Task Node(Guid id, Guid? parent, string type, string? name,
         string? value, int order, Dictionary<string, string>? attrs = null)

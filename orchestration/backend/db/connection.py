@@ -318,7 +318,7 @@ class Database:
                 self._in_transaction = False
                 self._tx_owner = None
 
-    async def execute_write(self, sql: str, params: tuple | list = ()) -> aiosqlite.Cursor:
+    async def execute_write(self, sql: str, params: tuple[object, ...] | list[object] = ()) -> aiosqlite.Cursor:
         """Execute a write query and commit.
 
         Inside a transaction() block, participates in the outer transaction
@@ -329,7 +329,7 @@ class Database:
             await self.conn.commit()
         return cursor
 
-    async def execute_many_write(self, statements: list[tuple[str, tuple | list]]):
+    async def execute_many_write(self, statements: list[tuple[str, tuple[object, ...] | list[object]]]):
         """Execute multiple write statements atomically.
 
         Uses transaction() internally so all statements commit or roll back
@@ -339,11 +339,11 @@ class Database:
             for sql, params in statements:
                 await self.conn.execute(sql, params)
 
-    async def fetchone(self, sql: str, params: tuple | list = ()) -> sqlite3.Row | None:
+    async def fetchone(self, sql: str, params: tuple[object, ...] | list[object] = ()) -> sqlite3.Row | None:
         cursor = await self.conn.execute(sql, params)
         return await cursor.fetchone()
 
-    async def fetchall(self, sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
+    async def fetchall(self, sql: str, params: tuple[object, ...] | list[object] = ()) -> list[sqlite3.Row]:
         cursor = await self.conn.execute(sql, params)
         return await cursor.fetchall()
 

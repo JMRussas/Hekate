@@ -199,15 +199,22 @@ async def verify_task_output(
             task_id=task_id,
         )
     except Exception as e:
-        # Verification failure should not block task completion
+        # Verification infrastructure failure — the task output is unverified.
+        # Mark as NEEDS_REVIEW so dependents don't proceed on unverified output.
+        # This prevents cascading hollow completions when the verifier is misconfigured.
         logger.warning("Verification failed for task %s: %s", task_id, e)
         await db.execute_write(
-            "UPDATE tasks SET verification_status = ?, verification_notes = ?, "
+            "UPDATE tasks SET status = ?, verification_status = ?, verification_notes = ?, "
             "updated_at = ? WHERE id = ?",
-            (VerificationResult.SKIPPED, f"Verification error: {e}",
-             time.time(), task_id),
+            (TaskStatus.NEEDS_REVIEW, VerificationResult.SKIPPED,
+             f"Verification error: {e}", time.time(), task_id),
         )
-        return False
+        await progress.push_event(
+            project_id, "task_needs_review",
+            f"{task_row['title']}: verification infrastructure failed, blocking dependents",
+            task_id=task_id,
+        )
+        return True
 
     v_result = verification["result"]
     v_notes = verification["notes"]

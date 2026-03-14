@@ -12,7 +12,7 @@ import uuid
 from typing import Optional
 
 from backend.config import PLANNING_MODEL
-from backend.exceptions import NotFoundError, PlanParseError
+from backend.exceptions import BudgetExhaustedError, NotFoundError, PlanParseError
 from backend.models.enums import PlanningRigor, PlanStatus, ProjectStatus
 from backend.services.llm_router import call_llm
 from backend.utils.json_utils import extract_json_object, parse_requirements
@@ -348,6 +348,19 @@ class PlannerService:
         requirements = row["requirements"]
         project_name = row["name"]
 
+        # Budget gate — refuse to plan if budget is already exhausted.
+        # Plan generation itself is $0 on CLI subscription billing, but
+        # generating a plan leads to task execution which costs money.
+        # Check with a nominal $0.01 estimate to trigger actual limit checks
+        # (can_spend short-circuits on 0.0).
+        _BUDGET_CHECK_ESTIMATE = 0.01
+        if not await self._budget.can_spend(_BUDGET_CHECK_ESTIMATE):
+            raise BudgetExhaustedError("Global budget limit exceeded")
+        if not await self._budget.can_spend_project(project_id, _BUDGET_CHECK_ESTIMATE):
+            raise BudgetExhaustedError(
+                f"Project {project_id} has exceeded its per-project budget limit"
+            )
+
         # Read planning rigor from project config
         config = json.loads(row["config_json"]) if row["config_json"] else {}
         rigor_str = config.get("planning_rigor", "L2")
@@ -392,6 +405,17 @@ class PlannerService:
             response_text = llm_response.text
             if not response_text:
                 raise PlanParseError("LLM returned an empty response")
+
+            # Record spend for audit trail — $0 on CLI subscription billing
+            await self._budget.record_spend(
+                cost_usd=0.0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                provider=llm_response.provider or provider or "unknown",
+                model=llm_response.model or "default",
+                purpose="plan_generation",
+                project_id=project_id,
+            )
 
             # Parse the plan JSON
             try:

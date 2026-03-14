@@ -12,6 +12,7 @@ using CodeStoragePoc.AgentCoordination;
 using CodeStoragePoc.Api.Services;
 using CodeStoragePoc.DbLayer;
 using CodeStoragePoc.ContextRouter;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -159,6 +160,16 @@ app.MapPost("/api/node/{parentId:guid}/children", async (Guid parentId, CreateNo
     return detail != null ? Results.Ok(detail) : Results.StatusCode(500);
 });
 
+// Root-level node creation (no parent, just project) — used by Hecate indexer
+app.MapPost("/api/project/{projectId:guid}/nodes", async (Guid projectId, CreateNodeRequest req, NodeRepository repo, CodeStoragePoc.GraphLayer.AgeLayer ageLayer) =>
+{
+    var nodeId = Guid.NewGuid();
+    await repo.InsertNode(nodeId, projectId, null, req.NodeType, req.Name, req.Value,
+        null, 0, req.Attributes?.GetValueOrDefault("modified_by"), req.Attributes);
+    await ageLayer.SyncVertex(nodeId, req.NodeType, req.Name);
+    return Results.Ok(new { id = nodeId, nodeType = req.NodeType, name = req.Name });
+});
+
 // --- Scoped chat (chat about a specific node) ---
 app.MapPost("/api/node/{id:guid}/chat", async (Guid id, HttpContext http, ChatService chat, NodeService nodes) =>
 {
@@ -284,6 +295,73 @@ app.MapPost("/api/code/materialize", async (MaterializeRequest req, CodeService 
 app.MapGet("/api/code/files/{projectId:guid}", async (Guid projectId, CodeService code) =>
     Results.Ok(await code.ListFiles(projectId)));
 
+// --- Project endpoints (used by Hecate indexer) ---
+app.MapGet("/api/projects", async (string? name) =>
+{
+    await using var conn = new NpgsqlConnection(connStr);
+    await conn.OpenAsync();
+    if (!string.IsNullOrWhiteSpace(name))
+    {
+        await using var cmd = new NpgsqlCommand("SELECT id, name, root_path FROM projects WHERE name = @name", conn);
+        cmd.Parameters.AddWithValue("name", name);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (await reader.ReadAsync())
+            return Results.Ok(new { id = reader.GetGuid(0), name = reader.GetString(1), rootPath = reader.IsDBNull(2) ? null : reader.GetString(2) });
+        return Results.NotFound(new { error = $"Project '{name}' not found" });
+    }
+    var projects = new List<object>();
+    await using var listCmd = new NpgsqlCommand("SELECT id, name, root_path FROM projects ORDER BY name", conn);
+    await using var listReader = await listCmd.ExecuteReaderAsync();
+    while (await listReader.ReadAsync())
+        projects.Add(new { id = listReader.GetGuid(0), name = listReader.GetString(1), rootPath = listReader.IsDBNull(2) ? null : listReader.GetString(2) });
+    return Results.Ok(projects);
+});
+
+app.MapPost("/api/projects", async (CreateProjectRequest req) =>
+{
+    await using var conn = new NpgsqlConnection(connStr);
+    await conn.OpenAsync();
+    await using var check = new NpgsqlCommand("SELECT id FROM projects WHERE name = @name", conn);
+    check.Parameters.AddWithValue("name", req.Name);
+    var existing = await check.ExecuteScalarAsync();
+    if (existing != null)
+        return Results.Ok(new { id = (Guid)existing, name = req.Name, created = false });
+    var id = Guid.NewGuid();
+    await using var cmd = new NpgsqlCommand("INSERT INTO projects (id, name, root_path) VALUES (@id, @name, @path)", conn);
+    cmd.Parameters.AddWithValue("id", id);
+    cmd.Parameters.AddWithValue("name", req.Name);
+    cmd.Parameters.AddWithValue("path", (object?)req.RootPath ?? DBNull.Value);
+    await cmd.ExecuteNonQueryAsync();
+    return Results.Ok(new { id, name = req.Name, created = true });
+});
+
+// --- Provenance-based node deletion (used by Hecate indexer for idempotent re-indexing) ---
+app.MapDelete("/api/project/{projectId:guid}/nodes", async (Guid projectId, string? provenance, NodeRepository repo) =>
+{
+    if (string.IsNullOrWhiteSpace(provenance))
+        return Results.BadRequest(new { error = "provenance query parameter is required" });
+
+    var deleted = await repo.DeleteNodesByProvenance(projectId, provenance);
+    return Results.Ok(new { deleted });
+});
+
+// --- Edge creation endpoint (used by Hecate indexer) ---
+app.MapPost("/api/code/edge", async (CreateEdgeRequest req, CodeStoragePoc.GraphLayer.AgeLayer ageLayer) =>
+{
+    try
+    {
+        if (req.Provenance != null)
+            await ageLayer.CreateTemporalEdge(req.FromNodeId, req.ToNodeId, req.EdgeType, req.Provenance);
+        else
+            await ageLayer.CreateEdge(req.FromNodeId, req.ToNodeId, req.EdgeType);
+        return Results.Ok(new { success = true });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
 // --- System message endpoints ---
 app.MapGet("/api/events", async (HttpContext http, SystemMessageBus bus) =>
 {
@@ -363,3 +441,5 @@ record CreateNodeRequest(string NodeType, string? Name, string? Value, Dictionar
 record SetPermissionRequest(int Level, string? Model = null);
 record DecomposeRequest(Guid ProjectId, string FilePath, string? SourceText = null);
 record MaterializeRequest(Guid? FileId = null, Guid? RootNodeId = null);
+record CreateEdgeRequest(Guid FromNodeId, Guid ToNodeId, string EdgeType, string? Provenance = null);
+record CreateProjectRequest(string Name, string? RootPath = null);

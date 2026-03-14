@@ -2,11 +2,12 @@
 #
 #  Tests for the C# reflection-based planning strategy.
 #
-#  Depends on: backend/services/planner.py
+#  Depends on: backend/services/planner.py, backend/services/llm_router.py
 #  Used by:    CI
 
 from unittest.mock import AsyncMock, patch
 
+from backend.services.llm_router import LLMResponse
 from backend.services.planner import (
     PlannerService,
     _build_csharp_system_prompt,
@@ -69,61 +70,46 @@ def _make_planner_db_mock(config_json):
     return mock_db
 
 
-def _make_anthropic_mock(response_text='{"summary": "test", "phases": []}'):
-    """Create a mock anthropic module + client."""
-    mock_anthropic = AsyncMock()
-    mock_client = AsyncMock()
-    mock_response = AsyncMock()
-    mock_response.content = [AsyncMock(text=response_text)]
-    mock_response.usage = AsyncMock(input_tokens=100, output_tokens=200)
-    mock_client.messages.create = AsyncMock(return_value=mock_response)
-    mock_client.close = AsyncMock()
-    mock_anthropic.AsyncAnthropic.return_value = mock_client
-    return mock_anthropic, mock_client
-
-
 class TestPlannerServiceCsharpStrategy:
-    async def test_csharp_strategy_calls_reflection(self):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_csharp_strategy_calls_reflection(self, mock_call_llm):
         """When decomposition_strategy is csharp_reflection, planner calls reflection."""
+        mock_call_llm.return_value = LLMResponse(
+            text='{"summary": "test", "phases": []}', provider="test", model="test-model",
+        )
         config = '{"decomposition_strategy": "csharp_reflection", "csproj_path": "/fake/Test.csproj"}'
         mock_db = _make_planner_db_mock(config)
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
+        mock_budget.record_spend = AsyncMock()
 
         planner = PlannerService(db=mock_db, budget=mock_budget)
 
         with patch.object(planner, "_get_csharp_type_map", new_callable=AsyncMock) as mock_reflect:
             mock_reflect.return_value = "class Foo\n  public void Bar()"
+            await planner.generate("proj1")
 
-            with patch("backend.services.planner.anthropic") as mock_anthropic_mod:
-                mock_anthropic, mock_client = _make_anthropic_mock()
-                mock_anthropic_mod.AsyncAnthropic.return_value = mock_client
+        mock_reflect.assert_called_once()
 
-                await planner.generate("proj1")
-
-            mock_reflect.assert_called_once()
-
-    async def test_csharp_strategy_fallback_on_reflection_failure(self):
+    @patch("backend.services.planner.call_llm", new_callable=AsyncMock)
+    async def test_csharp_strategy_fallback_on_reflection_failure(self, mock_call_llm):
         """If reflection fails, falls back to generic planner."""
+        mock_call_llm.return_value = LLMResponse(
+            text='{"summary": "test", "tasks": []}', provider="test", model="test-model",
+        )
         config = '{"decomposition_strategy": "csharp_reflection", "csproj_path": "/fake/Test.csproj"}'
         mock_db = _make_planner_db_mock(config)
         mock_budget = AsyncMock()
-        mock_budget.reserve_spend = AsyncMock(return_value=True)
+        mock_budget.record_spend = AsyncMock()
 
         planner = PlannerService(db=mock_db, budget=mock_budget)
 
         with patch.object(planner, "_get_csharp_type_map", new_callable=AsyncMock) as mock_reflect:
             mock_reflect.return_value = None  # Reflection failed
+            await planner.generate("proj1")
 
-            with patch("backend.services.planner.anthropic") as mock_anthropic_mod:
-                mock_anthropic, mock_client = _make_anthropic_mock('{"summary": "test", "tasks": []}')
-                mock_anthropic_mod.AsyncAnthropic.return_value = mock_client
-
-                await planner.generate("proj1")
-
-            # Should have called create with a generic prompt (no reflected_types)
-            call_kwargs = mock_client.messages.create.call_args[1]
-            assert "reflected_types" not in call_kwargs["system"]
+        # call_llm(system_prompt, user_msg, ...) — check system_prompt
+        system_prompt = mock_call_llm.call_args[0][0]
+        assert "reflected_types" not in system_prompt
 
     async def test_get_csharp_type_map_no_paths(self):
         """Returns None when no assembly/csproj paths are configured."""

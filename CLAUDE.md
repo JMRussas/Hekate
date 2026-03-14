@@ -14,7 +14,7 @@ Unified AI agent platform: VSCode extension (fleet control) + orchestration back
 ## Project Structure
 
 ```
-beethoven/
+Nobody/
 ├── CLAUDE.md                    # This file
 ├── extension/                   # VSCode extension — fleet control center
 │   ├── src/                     # TypeScript source (api/, views/, etc.)

@@ -1,17 +1,17 @@
 #  Orchestration Engine - Output Verifier
 #
-#  Verifies task output quality using a cheap model (Haiku).
+#  Verifies task output quality using call_llm (CLI providers or Ollama).
 #  Returns PASSED, GAPS_FOUND, or HUMAN_NEEDED.
 #
-#  Depends on: backend/config.py, backend/models/enums.py, utils/json_utils.py
+#  Depends on: backend/config.py, backend/models/enums.py,
+#              backend/services/llm_router.py, backend/utils/json_utils.py
 #  Used by:    services/task_lifecycle.py
 
 import json
 import logging
 
-from backend.config import API_TIMEOUT, VERIFICATION_MAX_TOKENS, VERIFICATION_MODEL
 from backend.models.enums import VerificationResult
-from backend.services.model_router import calculate_cost
+from backend.services.llm_router import call_llm
 from backend.utils.json_utils import extract_json_object
 
 logger = logging.getLogger("orchestration.verifier")
@@ -47,27 +47,27 @@ async def verify_output(
     task_description: str,
     output_text: str,
     *,
-    client,
+    client=None,  # Deprecated — kept for backward compat, ignored
     budget,
     project_id: str,
     task_id: str,
 ) -> dict:
-    """Verify task output quality using a cheap model.
+    """Verify task output quality using call_llm (CLI providers / Ollama).
+
+    Routes through llm_router with task_type="simple" so it prefers
+    Gemini > Ollama > Codex — cheap/free providers suitable for classification.
 
     Args:
         task_title: The task's title.
         task_description: What the task was supposed to do.
         output_text: The actual output produced.
-        client: anthropic.AsyncAnthropic instance.
+        client: Deprecated, ignored. Kept for call-site backward compat.
         budget: BudgetManager for recording verification cost.
         project_id: For cost attribution.
         task_id: For cost attribution.
 
     Returns:
         {"result": VerificationResult, "notes": str, "cost_usd": float}
-
-    Raises:
-        RuntimeError: If the budget is exhausted (caller should skip, not crash).
     """
     # Skip verification if budget is exhausted — output is already paid for
     if not await budget.can_spend(0.001):
@@ -86,33 +86,34 @@ async def verify_output(
         f"### Output\n{truncated}"
     )
 
-    response = await client.messages.create(
-        model=VERIFICATION_MODEL,
-        max_tokens=VERIFICATION_MAX_TOKENS,
-        system=_VERIFICATION_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-        timeout=API_TIMEOUT,
-    )
+    try:
+        llm_response = await call_llm(
+            _VERIFICATION_PROMPT,
+            user_msg,
+            task_type="simple",
+        )
+    except RuntimeError:
+        # All providers failed — don't crash the task, escalate to human review
+        logger.warning("All LLM providers failed for verification of task %s", task_id)
+        return {
+            "result": VerificationResult.HUMAN_NEEDED,
+            "notes": "Verification skipped: all LLM providers unavailable",
+            "cost_usd": 0.0,
+        }
 
-    pt = response.usage.input_tokens
-    ct = response.usage.output_tokens
-    cost = calculate_cost(VERIFICATION_MODEL, pt, ct)
-
+    # Record audit trail (CLI providers report $0, Ollama is free)
     await budget.record_spend(
-        cost_usd=cost,
-        prompt_tokens=pt,
-        completion_tokens=ct,
-        provider="anthropic",
-        model=VERIFICATION_MODEL,
+        cost_usd=llm_response.cost_usd,
+        prompt_tokens=llm_response.prompt_tokens,
+        completion_tokens=llm_response.completion_tokens,
+        provider=llm_response.provider or "unknown",
+        model=llm_response.model or "default",
         purpose="verification",
         project_id=project_id,
         task_id=task_id,
     )
 
-    # Parse response
-    raw = "".join(
-        block.text for block in response.content if block.type == "text"
-    )
+    raw = llm_response.text
 
     try:
         parsed = json.loads(raw)
@@ -137,4 +138,4 @@ async def verify_output(
     }
     result = verdict_map.get(verdict_str, VerificationResult.HUMAN_NEEDED)
 
-    return {"result": result, "notes": notes, "cost_usd": cost}
+    return {"result": result, "notes": notes, "cost_usd": llm_response.cost_usd}

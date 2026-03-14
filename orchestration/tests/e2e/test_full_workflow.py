@@ -3,12 +3,13 @@
 #  Full workflow: register → create project → plan (mocked) → approve → execute.
 #  Verifies the entire pipeline works end-to-end.
 #
-#  Depends on: all backend modules, tests/conftest.py
+#  Depends on: all backend modules, tests/conftest.py, backend/services/llm_router.py
 #  Used by:    pytest
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
+from backend.services.llm_router import LLMResponse
 
 
 class TestFullWorkflow:
@@ -25,40 +26,33 @@ class TestFullWorkflow:
         project_id = project["id"]
         assert project["status"] == "draft"
 
-        # Step 2: Generate a plan (mock Claude)
-        mock_response = MagicMock()
-        mock_response.content = [
-            MagicMock(
-                text=json.dumps({
-                    "summary": "Build web scraper in 2 steps",
-                    "tasks": [
-                        {
-                            "title": "Research scraping libraries",
-                            "description": "Evaluate BeautifulSoup vs Scrapy",
-                            "task_type": "research",
-                            "complexity": "simple",
-                            "depends_on": [],
-                            "tools_needed": ["search_knowledge"],
-                        },
-                        {
-                            "title": "Implement scraper",
-                            "description": "Write the scraper code",
-                            "task_type": "code",
-                            "complexity": "medium",
-                            "depends_on": [0],
-                            "tools_needed": ["write_file"],
-                        },
-                    ],
-                }),
-                type="text",
+        # Step 2: Generate a plan (mock call_llm)
+        plan_json = json.dumps({
+            "summary": "Build web scraper in 2 steps",
+            "tasks": [
+                {
+                    "title": "Research scraping libraries",
+                    "description": "Evaluate BeautifulSoup vs Scrapy",
+                    "task_type": "research",
+                    "complexity": "simple",
+                    "depends_on": [],
+                    "tools_needed": ["search_knowledge"],
+                },
+                {
+                    "title": "Implement scraper",
+                    "description": "Write the scraper code",
+                    "task_type": "code",
+                    "complexity": "medium",
+                    "depends_on": [0],
+                    "tools_needed": ["write_file"],
+                },
+            ],
+        })
+
+        with patch("backend.services.planner.call_llm", new_callable=AsyncMock) as mock_call_llm:
+            mock_call_llm.return_value = LLMResponse(
+                text=plan_json, provider="test", model="test-model",
             )
-        ]
-        mock_response.usage = MagicMock(input_tokens=500, output_tokens=300)
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
             resp = await authed_client.post(f"/api/projects/{project_id}/plan")
             assert resp.status_code == 200
             plan_result = resp.json()
@@ -128,38 +122,44 @@ class TestFullWorkflow:
             assert t["status"] == "cancelled"
 
     async def test_budget_records_plan_cost(self, authed_client, tmp_db):
-        """Verify that plan generation records cost in the budget system."""
+        """Verify that plan generation records an audit entry in the budget system.
+
+        CLI providers report $0 cost and 0 tokens (subscription billing).
+        The test verifies the usage_log entry exists with purpose=plan_generation.
+        """
         # Create project
         resp = await authed_client.post("/api/projects", json={
             "name": "Budget Test", "requirements": "Test budget tracking",
         })
         project_id = resp.json()["id"]
 
-        # Mock Claude response
-        mock_response = MagicMock()
-        mock_response.content = [
-            MagicMock(
-                text=json.dumps({
-                    "summary": "Simple plan",
-                    "tasks": [{
-                        "title": "T1", "description": "D1",
-                        "task_type": "code", "complexity": "simple",
-                        "depends_on": [], "tools_needed": [],
-                    }],
-                }),
-                type="text",
-            )
-        ]
-        mock_response.usage = MagicMock(input_tokens=1000, output_tokens=500)
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        # Mock call_llm
+        plan_json = json.dumps({
+            "summary": "Simple plan",
+            "tasks": [{
+                "title": "T1", "description": "D1",
+                "task_type": "code", "complexity": "simple",
+                "depends_on": [], "tools_needed": [],
+            }],
+        })
 
-        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+        with patch("backend.services.planner.call_llm", new_callable=AsyncMock) as mock_call_llm:
+            mock_call_llm.return_value = LLMResponse(
+                text=plan_json, provider="test", model="test-model",
+            )
             await authed_client.post(f"/api/projects/{project_id}/plan")
 
-        # Check usage summary reflects the plan generation cost
+        # Check usage summary reflects the plan generation audit entry
         resp = await authed_client.get("/api/usage/summary")
         data = resp.json()
         assert data["api_call_count"] >= 1
-        assert data["total_prompt_tokens"] >= 1000
-        assert data["total_completion_tokens"] >= 500
+
+        # Verify the actual usage_log row has correct purpose and provider
+        log_row = await tmp_db.fetchone(
+            "SELECT purpose, provider, cost_usd FROM usage_log WHERE project_id = ?",
+            (project_id,),
+        )
+        assert log_row is not None
+        assert log_row["purpose"] == "plan_generation"
+        assert log_row["provider"] == "test"
+        assert log_row["cost_usd"] == 0.0

@@ -181,6 +181,7 @@ class Executor:
             "SELECT id FROM projects WHERE status = ?",
             (ProjectStatus.EXECUTING,),
         )
+        logger.debug("TICK: found %d executing projects", len(projects))
 
         # Terminal statuses: tasks no longer active (done processing)
         _TERMINAL = (TaskStatus.COMPLETED, TaskStatus.FAILED,
@@ -189,14 +190,15 @@ class Executor:
         for project in projects:
             pid = project["id"]
 
-            # Check budget — skip for projects with only Ollama (free) tasks remaining
+            # Check budget — skip for projects with only free (Ollama/Claude Code) tasks remaining
             if not await self._budget.can_spend(0.001):
-                non_ollama = await self._db.fetchone(
+                _FREE_TIERS = (ModelTier.OLLAMA.value, ModelTier.CLAUDE_CODE.value)
+                non_free = await self._db.fetchone(
                     "SELECT COUNT(*) as cnt FROM tasks "
-                    "WHERE project_id = ? AND model_tier != ? AND status NOT IN (?, ?, ?, ?)",
-                    (pid, ModelTier.OLLAMA.value, *_TERMINAL),
+                    "WHERE project_id = ? AND model_tier NOT IN (?, ?) AND status NOT IN (?, ?, ?, ?)",
+                    (pid, *_FREE_TIERS, *_TERMINAL),
                 )
-                if non_ollama and non_ollama["cnt"] > 0:
+                if non_free and non_free["cnt"] > 0:
                     await self._progress.push_event(pid, "budget_warning", "Budget limit reached. Execution paused.")
                     await self._db.execute_write(
                         "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
@@ -214,6 +216,7 @@ class Executor:
                 (pid, *_TERMINAL),
             )
             current_wave = wave_row["w"] if wave_row and wave_row["w"] is not None else 0
+            logger.debug("TICK: project %s wave=%s", pid[:8], current_wave)
 
             # Find ready tasks: pending with all deps completed, filtered to current wave
             ready = await self._db.fetchall(
@@ -225,16 +228,20 @@ class Executor:
                 "ORDER BY t.priority ASC",
                 (TaskStatus.COMPLETED, pid, TaskStatus.PENDING, current_wave),
             )
+            logger.debug("TICK: found %d ready tasks in wave %s", len(ready), current_wave)
 
             for task_row in ready:
                 task_id = task_row["id"]
+                logger.debug("TICK: evaluating task %s tier=%s", task_id[:8], task_row["model_tier"])
 
                 # Skip tasks still in retry backoff
                 if task_id in self._retry_after and time.time() < self._retry_after[task_id]:
+                    logger.debug("TICK: task %s skipped (retry backoff)", task_id[:8])
                     continue
 
                 # Check resource availability for this task
                 if not self._resources_available(task_row):
+                    logger.debug("TICK: task %s skipped (resources unavailable)", task_id[:8])
                     continue
 
                 # Check per-project budget using reserve_spend (prevents TOCTOU race)

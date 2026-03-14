@@ -4,12 +4,11 @@
 #  Runs periodic background checks and caches results.
 #  All I/O is async (httpx + asyncio) — never blocks the event loop.
 #
-#  Depends on: backend/config.py
+#  Depends on: backend/config.py, backend/services/llm_router.py
 #  Used by:    container.py, routes/services.py, services/executor.py
 
 import asyncio
 import logging
-import shutil
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -114,6 +113,16 @@ def _build_resources() -> list[ResourceDef]:
         category="cli",
     ))
 
+    # Claude Code CLI
+    resources.append(ResourceDef(
+        id="claude_code_cli",
+        name="Claude Code",
+        host="",
+        port=0,
+        health_url=None,
+        category="cli",
+    ))
+
     return resources
 
 
@@ -158,14 +167,17 @@ async def _check_resource(
     """Check a single resource's health (async)."""
     state = ResourceState(id=res.id, name=res.name, category=res.category)
 
-    # CLI tools: check if binary is on PATH
+    # CLI tools: check if binary is on PATH (with Windows npm fallback)
     if res.category == "cli":
-        cli_binaries = {"gemini_cli": "gemini", "codex_cli": "codex"}
+        from backend.services.llm_router import _resolve_cmd
+        cli_binaries = {"gemini_cli": "gemini", "codex_cli": "codex", "claude_code_cli": "claude"}
         binary = cli_binaries.get(res.id)
-        if binary and shutil.which(binary):
+        resolved = _resolve_cmd(binary) if binary else None
+        # _resolve_cmd returns the bare name if not found — check it actually exists
+        if resolved and resolved != binary:
             state.status = ResourceStatus.ONLINE
             state.method = "cli"
-            state.details = {"binary": binary, "path": shutil.which(binary)}
+            state.details = {"binary": binary, "path": resolved}
         else:
             state.status = ResourceStatus.OFFLINE
             state.method = "cli"

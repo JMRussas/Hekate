@@ -1,9 +1,9 @@
 #  Orchestration Engine - Internal Routes
 #
-#  Unauthenticated endpoints for internal use: chat proxy for editor
+#  Authenticated endpoints for internal use: chat proxy for editor
 #  integration, multi-model routing across CLI providers and Ollama.
 #
-#  Depends on: (none — standalone, no DB or DI required)
+#  Depends on: backend/middleware/auth.py
 #  Used by:    app.py
 
 import asyncio
@@ -21,7 +21,9 @@ from dependency_injector.wiring import inject, Provide
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from backend.config import cfg
 from backend.container import Container
+from backend.middleware.auth import get_current_user
 from backend.services.planner import PlannerService
 
 logger = logging.getLogger("orchestration.internal")
@@ -64,7 +66,7 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, _user: dict = Depends(get_current_user)):
     """Chat endpoint for editor integration with conversation history support.
 
     Routes to CLI providers (Claude, Gemini, Codex) via subprocess or to
@@ -167,7 +169,7 @@ async def chat(request: ChatRequest):
 async def _chat_ollama(request: ChatRequest, full_prompt: str) -> ChatResponse:
     """Route chat to Ollama HTTP API with native message support."""
     ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-    ollama_model = request.model or os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b")
+    ollama_model = request.model or os.environ.get("OLLAMA_MODEL", cfg("ollama.default_model", "qwen3.5:latest"))
 
     # Build Ollama messages array if conversation history provided
     if request.messages:
@@ -238,9 +240,10 @@ class PlanRequest(BaseModel):
 @inject
 async def plan(
     request: PlanRequest,
+    _user: dict = Depends(get_current_user),
     planner: PlannerService = Depends(Provide[Container.planner]),
 ):
-    """Unauthenticated plan endpoint for internal use. Routes through CLI."""
+    """Authenticated plan endpoint for internal use. Routes through CLI."""
     try:
         result = await planner.generate(request.project_id, provider=request.provider)
         return result

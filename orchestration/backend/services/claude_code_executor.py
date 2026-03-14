@@ -12,6 +12,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 
 from backend.config import cfg
@@ -21,6 +22,14 @@ logger = logging.getLogger("orchestration.executor")
 
 # Timeout for Claude Code CLI (seconds). Defaults to 10 minutes.
 CLAUDE_CODE_TIMEOUT = int(cfg("claude_code.timeout_seconds", 600))
+
+# Tools that Claude Code is allowed to use without user approval in headless mode.
+# Without this, -p mode requires interactive approval for writes — making it useless
+# for code generation tasks.
+CLAUDE_CODE_ALLOWED_TOOLS = cfg(
+    "claude_code.allowed_tools",
+    "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet *),Bash(npm *),Bash(python *)",
+)
 
 # Max prompt length before switching to stdin pipe (Windows cmd line limit)
 _MAX_CMD_PROMPT_LEN = 4000
@@ -62,7 +71,19 @@ async def run_claude_code_task(
     claude_cmd = _resolve_cmd("claude")
 
     # Build command args
-    cmd_args = [claude_cmd, "-p", "--output-format", "stream-json"]
+    # --allowedTools grants write access in headless mode. Without it, Claude Code
+    # in -p mode defaults to read-only and asks for interactive approval — which
+    # silently fails in a subprocess, producing plans instead of code.
+    cmd_args = [
+        claude_cmd, "-p",
+        "--verbose",
+        "--output-format", "stream-json",
+        "--allowedTools", CLAUDE_CODE_ALLOWED_TOOLS,
+    ]
+
+    # Strip Claude session env vars so the subprocess doesn't detect a nested session
+    clean_env = {k: v for k, v in os.environ.items()
+                 if not k.startswith("CLAUDE") and k != "CLAUDECODE"}
 
     # Launch subprocess — pipe prompt via stdin to avoid Windows cmd length limits
     proc = await asyncio.create_subprocess_exec(
@@ -71,6 +92,7 @@ async def run_claude_code_task(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=clean_env,
     )
 
     text_parts: list[str] = []
@@ -177,13 +199,13 @@ def _build_prompt(task_row) -> str:
     """Build the full prompt from task description and context."""
     parts = []
 
-    # System prompt
-    system_prompt = task_row.get("system_prompt") or ""
+    # System prompt (sqlite3.Row doesn't support .get(), use [] with fallback)
+    system_prompt = task_row["system_prompt"] or ""
     if system_prompt:
         parts.append(system_prompt)
 
     # Context from dependencies
-    context_json = task_row.get("context_json") or "[]"
+    context_json = task_row["context_json"] or "[]"
     context = json.loads(context_json) if isinstance(context_json, str) else context_json
     for ctx in context:
         ctx_type = ctx.get("type", "context")

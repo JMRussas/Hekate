@@ -26,7 +26,7 @@
   "ollama": {
     "hosts": {
       "local": "http://localhost:11434",
-      "server": "http://192.168.1.164:11434"
+      "server": "http://192.168.1.154:11434"
     },
     "default_model": "qwen2.5-coder:14b",
     "embed_model": "nomic-embed-text",
@@ -36,7 +36,7 @@
   "comfyui": {
     "hosts": {
       "local": "http://localhost:8188",
-      "server": "http://192.168.1.164:8188"
+      "server": "http://192.168.1.154:8188"
     },
     "poll_interval": 2.0,
     "timeout": 300,
@@ -96,6 +96,10 @@
     "auto_pr": true,
     "pr_remote": "origin",
     "command_timeout": 30
+  },
+  "claude_code": {
+    "timeout_seconds": 600,
+    "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet *),Bash(npm *),Bash(python *)"
   },
   "resource_check_interval_sec": 30,
   "auth": {
