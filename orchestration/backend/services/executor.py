@@ -399,9 +399,12 @@ class Executor:
             if not self._check_resource("ollama_local"):
                 return False
 
-        # Claude tasks need API key
+        # Claude tasks need API key OR any CLI available (subscriptions cover all tiers)
         if tier in (ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS):
-            if not self._check_resource("anthropic_api"):
+            if not (self._check_resource("anthropic_api") or
+                    self._check_resource("claude_code_cli") or
+                    self._check_resource("gemini_cli") or
+                    self._check_resource("codex_cli")):
                 return False
 
         # ComfyUI tool needs ComfyUI online
