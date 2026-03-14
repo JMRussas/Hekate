@@ -185,6 +185,7 @@ async def create_checkpoint(
 
 async def verify_task_output(
     *, task_row, output_text, project_id, task_id, db, budget, progress,
+    retry_after: dict | None = None,
 ) -> bool:
     """Run output verification. Returns True if the task status was overridden."""
     from backend.services.verifier import verify_output
@@ -264,6 +265,12 @@ async def verify_task_output(
                 return True
 
         if retry_count < max_retries:
+            # Clear any lingering retry backoff so the task re-dispatches
+            # immediately. Without this, a stale retry_after entry from a
+            # prior transient error can block dispatch indefinitely.
+            if retry_after is not None:
+                retry_after.pop(task_id, None)
+
             # Auto-retry with verification feedback appended to context.
             # Sliding window: keep the most recent feedbacks up to the cap.
             non_feedbacks = [e for e in ctx if e.get("type") != "verification_feedback"]
@@ -458,6 +465,7 @@ async def execute_task(
                         task_row=task_row, output_text=result["output"],
                         project_id=project_id, task_id=task_id,
                         db=db, budget=budget, progress=progress,
+                        retry_after=retry_after,
                     )
                     if verification_overridden:
                         return  # Task was reset to PENDING or NEEDS_REVIEW
