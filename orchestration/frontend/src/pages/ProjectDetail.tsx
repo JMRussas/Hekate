@@ -113,7 +113,7 @@ export default function ProjectDetail() {
     <>
       <div className="flex-between mb-2">
         <div>
-          <Link to="/" className="text-dim text-sm">&larr; Projects</Link>
+          <Link to="/" className="text-dim text-sm">&larr; Plans</Link>
           <h2>{project.name}</h2>
           <span className={`badge ${project.status}`}>{project.status}</span>
           {project.status === 'draft' ? (

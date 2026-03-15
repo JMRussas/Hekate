@@ -16,7 +16,10 @@ export default function Layout() {
       <nav className="sidebar" aria-label="Main navigation">
         <h1>Orchestration</h1>
         <NavLink to="/" className={({ isActive }) => isActive ? 'active' : ''} end>
-          Dashboard
+          Plans
+        </NavLink>
+        <NavLink to="/workspaces" className={({ isActive }) => isActive ? 'active' : ''}>
+          Workspaces
         </NavLink>
         <NavLink to="/usage" className={({ isActive }) => isActive ? 'active' : ''}>
           Usage & Budget

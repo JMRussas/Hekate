@@ -231,6 +231,68 @@ async def _chat_ollama(request: ChatRequest, full_prompt: str) -> ChatResponse:
         )
 
 
+# ---------------------------------------------------------------------------
+# Filesystem Browse
+# ---------------------------------------------------------------------------
+
+# Restrict browsing to safe root directories — prevent traversal to system dirs
+_BROWSE_ROOTS = [
+    os.path.expanduser("~/Documents/git"),
+    os.path.expanduser("~/Git"),
+]
+
+
+@router.get("/browse")
+async def browse_directories(
+    path: str = "",
+    _user: dict = Depends(get_current_user),
+):
+    """List subdirectories for the folder picker.
+
+    If path is empty, returns the allowed root directories.
+    If path is provided, returns its subdirectories (must be under an allowed root).
+    Returns only directories, not files. Detects git repos.
+    """
+    if not path:
+        # Return root directories that exist
+        roots = []
+        for root in _BROWSE_ROOTS:
+            if os.path.isdir(root):
+                roots.append({
+                    "path": root,
+                    "name": os.path.basename(root),
+                    "is_git": os.path.isdir(os.path.join(root, ".git")),
+                    "has_children": True,
+                })
+        return {"directories": roots, "current": ""}
+
+    # Validate path is under an allowed root
+    abs_path = os.path.abspath(path)
+    if not any(abs_path.startswith(os.path.abspath(r)) for r in _BROWSE_ROOTS):
+        return {"directories": [], "current": abs_path, "error": "Path not under allowed roots"}
+
+    if not os.path.isdir(abs_path):
+        return {"directories": [], "current": abs_path, "error": "Not a directory"}
+
+    dirs = []
+    try:
+        for entry in sorted(os.scandir(abs_path), key=lambda e: e.name.lower()):
+            if entry.is_dir() and not entry.name.startswith('.'):
+                dirs.append({
+                    "path": entry.path,
+                    "name": entry.name,
+                    "is_git": os.path.isdir(os.path.join(entry.path, ".git")),
+                    "has_children": any(
+                        e.is_dir() for e in os.scandir(entry.path)
+                        if not e.name.startswith('.')
+                    ) if os.access(entry.path, os.R_OK) else False,
+                })
+    except PermissionError:
+        return {"directories": [], "current": abs_path, "error": "Permission denied"}
+
+    return {"directories": dirs, "current": abs_path}
+
+
 class PlanRequest(BaseModel):
     project_id: str
     provider: Optional[str] = None

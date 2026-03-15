@@ -1,12 +1,20 @@
-// Orchestration Engine - Dashboard Page
+// Orchestration Engine - Dashboard Page (Plans)
 
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { listProjects, createProject } from '../api/projects'
 import { getBudget } from '../api/usage'
 import { listServices } from '../api/services'
+import { authFetch } from '../api/client'
 import { useFetch } from '../hooks/useFetch'
 import type { Project, BudgetStatus, Resource, PlanningRigor } from '../types'
+
+interface BrowseEntry {
+  path: string
+  name: string
+  is_git: boolean
+  has_children: boolean
+}
 
 interface DashboardData {
   projects: Project[]
@@ -23,7 +31,25 @@ export default function Dashboard() {
   const [reviewCycle, setReviewCycle] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showBrowser, setShowBrowser] = useState(false)
+  const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([])
+  const [browsePath, setBrowsePath] = useState('')
   const navigate = useNavigate()
+
+  const browse = async (path = '') => {
+    try {
+      const resp = await authFetch(`/api/internal/browse?path=${encodeURIComponent(path)}`)
+      const data = await resp.json()
+      setBrowseEntries(data.directories || [])
+      setBrowsePath(data.current || '')
+      setShowBrowser(true)
+    } catch { /* ignore */ }
+  }
+
+  const selectDir = (path: string) => {
+    setRepoPath(path)
+    setShowBrowser(false)
+  }
 
   const { data, loading: fetchLoading, error: fetchError } = useFetch<DashboardData>(
     () => Promise.all([
@@ -63,9 +89,9 @@ export default function Dashboard() {
   return (
     <>
       <div className="flex-between mb-2">
-        <h2>Projects</h2>
+        <h2>Plans</h2>
         <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
-          + New Project
+          + New Plan
         </button>
       </div>
 
@@ -75,13 +101,70 @@ export default function Dashboard() {
         <div className="card mb-2">
           <div className="form-group">
             <label>Working Directory</label>
-            <input value={repoPath} onChange={e => setRepoPath(e.target.value)}
-              placeholder="C:\Users\you\Documents\git\my-project"
-              style={{ fontFamily: 'monospace' }} />
+            <div className="flex gap-1">
+              <input value={repoPath} onChange={e => setRepoPath(e.target.value)}
+                placeholder="C:\Users\you\Documents\git\my-project"
+                style={{ fontFamily: 'monospace', flex: 1 }} />
+              <button className="btn btn-secondary" onClick={() => browse(repoPath || '')}
+                style={{ whiteSpace: 'nowrap' }}>
+                Browse
+              </button>
+            </div>
             <span className="text-dim text-sm">The repo where tasks will execute and commit code</span>
+            {showBrowser && (
+              <div className="card" style={{ marginTop: '0.5rem', maxHeight: 300, overflowY: 'auto', padding: '0.5rem' }}>
+                {browsePath && (
+                  <div className="flex-between mb-1">
+                    <span className="text-sm" style={{ fontFamily: 'monospace' }}>{browsePath}</span>
+                    <div className="flex gap-1">
+                      <button className="btn btn-primary text-sm" onClick={() => selectDir(browsePath)}
+                        style={{ padding: '2px 8px', fontSize: '0.75rem' }}>
+                        Select This
+                      </button>
+                      <button className="btn btn-secondary text-sm"
+                        onClick={() => browse(browsePath.replace(/[/\\][^/\\]+$/, ''))}
+                        style={{ padding: '2px 8px', fontSize: '0.75rem' }}>
+                        Up
+                      </button>
+                      <button className="btn btn-secondary text-sm"
+                        onClick={() => setShowBrowser(false)}
+                        style={{ padding: '2px 8px', fontSize: '0.75rem' }}>
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {browseEntries.length === 0 ? (
+                  <span className="text-dim text-sm">No subdirectories</span>
+                ) : (
+                  browseEntries.map(d => (
+                    <div key={d.path}
+                      className="flex-between"
+                      style={{ padding: '4px 8px', cursor: 'pointer', borderRadius: 4 }}
+                      onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-hover, rgba(255,255,255,0.05))')}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <span
+                        onClick={() => d.has_children ? browse(d.path) : selectDir(d.path)}
+                        style={{ fontFamily: 'monospace', fontSize: '0.85rem', flex: 1 }}
+                      >
+                        {d.is_git ? '* ' : '  '}{d.name}
+                      </span>
+                      {d.is_git && (
+                        <button className="btn btn-primary text-sm"
+                          onClick={() => selectDir(d.path)}
+                          style={{ padding: '2px 8px', fontSize: '0.7rem', marginLeft: 8 }}>
+                          Select
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
           <div className="form-group">
-            <label>Project Name</label>
+            <label>Plan Name</label>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="My Project" />
           </div>
           <div className="form-group">
@@ -110,7 +193,7 @@ export default function Dashboard() {
           {error && <div className="text-sm" style={{ color: 'var(--error)', marginBottom: '0.5rem' }}>{error}</div>}
           <div className="flex gap-1">
             <button className="btn btn-primary" onClick={handleCreate} disabled={loading}>
-              {loading ? 'Creating...' : 'Create Project'}
+              {loading ? 'Creating...' : 'Create Plan'}
             </button>
             <button className="btn btn-secondary" onClick={() => setShowForm(false)}>Cancel</button>
           </div>
@@ -161,14 +244,14 @@ export default function Dashboard() {
       </div>
 
       {fetchLoading && !data ? (
-        <div className="loading-spinner">Loading projects...</div>
+        <div className="loading-spinner">Loading plans...</div>
       ) : projects.length === 0 ? (
-        <div className="card text-dim">No projects yet. Create one to get started.</div>
+        <div className="card text-dim">No plans yet. Create one to get started.</div>
       ) : (
         <table>
           <thead>
             <tr>
-              <th>Name</th><th>Working Directory</th><th>Rigor</th><th>Status</th><th>Tasks</th><th>Created</th>
+              <th>Plan</th><th>Working Directory</th><th>Rigor</th><th>Status</th><th>Tasks</th><th>Created</th>
             </tr>
           </thead>
           <tbody>
