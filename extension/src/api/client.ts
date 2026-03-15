@@ -1,4 +1,4 @@
-//  Beethoven VSCode Extension - API Client
+//  Hekate VSCode Extension - API Client
 //
 //  HTTP client for the Orchestration REST API. Uses built-in fetch()
 //  with no external dependencies. Includes SSE streaming with
@@ -19,7 +19,7 @@ import type {
 const SSE_RECONNECT_DELAY_MS = 3000;
 const SSE_MAX_RETRIES = 5;
 
-export class BeethovenClient {
+export class HekateClient {
   private readonly apiUrl: string;
   private readonly apiKey: string;
   private _connected = false;
@@ -57,7 +57,7 @@ export class BeethovenClient {
       this._connected = false;
       const body = await response.text().catch(() => "");
       throw new Error(
-        `Beethoven API ${response.status}: ${response.statusText}${body ? ` — ${body}` : ""}`
+        `Hekate API ${response.status}: ${response.statusText}${body ? ` — ${body}` : ""}`
       );
     }
 

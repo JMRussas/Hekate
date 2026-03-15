@@ -441,8 +441,8 @@ Output a structured review:
 Be specific. Reference file names and line numbers where possible."""
 
     # Fan out to available models
-    # Claude Code gets Hecate MCP tools for deep analysis
-    hecate_review_prompt = f"""Review the following code changes from Wave {completed_wave} of an orchestrated development plan.
+    # Claude Code gets Hekate MCP tools for deep analysis
+    hekate_review_prompt = f"""Review the following code changes from Wave {completed_wave} of an orchestrated development plan.
 
 <tasks_completed>
 {task_summary}
@@ -452,7 +452,7 @@ Be specific. Reference file names and line numbers where possible."""
 {diff_stat}
 </diff_summary>
 
-You have access to the Hecate MCP server. Use these tools to do a thorough review:
+You have access to the Hekate MCP server. Use these tools to do a thorough review:
 1. Call `review` on each modified file to check role constraints and guidelines
 2. Call `verify` on modified C# files to compile-check them
 3. Call `check_contracts` on any new or modified types
@@ -467,7 +467,7 @@ Be specific. Reference file names and line numbers."""
 
     reviews = {}
     reviewers = [
-        ("claude", execute_claude, hecate_review_prompt),  # Has Hecate MCP
+        ("claude", execute_claude, hekate_review_prompt),  # Has Hekate MCP
         ("gemini", execute_gemini, review_prompt),
         ("codex", execute_codex, review_prompt),
     ]

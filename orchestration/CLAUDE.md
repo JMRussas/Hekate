@@ -88,7 +88,7 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 | `data/orchestration.db` | SQLite database (auto-created, gitignored) |
 | `tools/local_executor.py` | CLI task executor — claims tasks from DB, runs via claude/gemini/codex/ollama |
 | `tools/supervisor.py` | Task monitor — detects failures (explicit + silent), auto-fixes or escalates |
-| `tools/patch_hecate_plan.py` | One-off plan patcher — reassign tiers, reset stuck tasks, add review gates |
+| `tools/patch_hekate_plan.py` | One-off plan patcher — reassign tiers, reset stuck tasks, add review gates |
 
 ## Deep-Dive Docs
 

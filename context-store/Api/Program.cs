@@ -153,14 +153,15 @@ app.MapPut("/api/node/{id:guid}/attributes", async (Guid id, UpdateAttrsRequest 
     return Results.Ok(req.Attributes);
 });
 
-app.MapPost("/api/node/{parentId:guid}/children", async (Guid parentId, CreateNodeRequest req, NodeService nodes) =>
+app.MapPost("/api/node/{parentId:guid}/children", async (Guid parentId, CreateNodeRequest req, NodeService nodes, CodeStoragePoc.GraphLayer.AgeLayer ageLayer) =>
 {
     var newId = await nodes.CreateChildNode(parentId, req.NodeType, req.Name, req.Value, req.Attributes);
+    await ageLayer.SyncVertex(newId, req.NodeType, req.Name);
     var detail = await nodes.GetNodeDetail(newId);
     return detail != null ? Results.Ok(detail) : Results.StatusCode(500);
 });
 
-// Root-level node creation (no parent, just project) — used by Hecate indexer
+// Root-level node creation (no parent, just project) — used by Hekate indexer
 app.MapPost("/api/project/{projectId:guid}/nodes", async (Guid projectId, CreateNodeRequest req, NodeRepository repo, CodeStoragePoc.GraphLayer.AgeLayer ageLayer) =>
 {
     var nodeId = Guid.NewGuid();
@@ -295,7 +296,7 @@ app.MapPost("/api/code/materialize", async (MaterializeRequest req, CodeService 
 app.MapGet("/api/code/files/{projectId:guid}", async (Guid projectId, CodeService code) =>
     Results.Ok(await code.ListFiles(projectId)));
 
-// --- Project endpoints (used by Hecate indexer) ---
+// --- Project endpoints (used by Hekate indexer) ---
 app.MapGet("/api/projects", async (string? name) =>
 {
     await using var conn = new NpgsqlConnection(connStr);
@@ -335,7 +336,7 @@ app.MapPost("/api/projects", async (CreateProjectRequest req) =>
     return Results.Ok(new { id, name = req.Name, created = true });
 });
 
-// --- Provenance-based node deletion (used by Hecate indexer for idempotent re-indexing) ---
+// --- Provenance-based node deletion (used by Hekate indexer for idempotent re-indexing) ---
 app.MapDelete("/api/project/{projectId:guid}/nodes", async (Guid projectId, string? provenance, NodeRepository repo) =>
 {
     if (string.IsNullOrWhiteSpace(provenance))
@@ -345,7 +346,7 @@ app.MapDelete("/api/project/{projectId:guid}/nodes", async (Guid projectId, stri
     return Results.Ok(new { deleted });
 });
 
-// --- Edge creation endpoint (used by Hecate indexer) ---
+// --- Edge creation endpoint (used by Hekate indexer) ---
 app.MapPost("/api/code/edge", async (CreateEdgeRequest req, CodeStoragePoc.GraphLayer.AgeLayer ageLayer) =>
 {
     try

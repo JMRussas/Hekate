@@ -44,7 +44,7 @@ def create_server(config_path: Path | None = None) -> FastMCP:
     api_key = config.get("api_key", "")
     timeout = config.get("timeout", 300)
 
-    # Resolve env var references like ${BEETHOVEN_API_KEY}
+    # Resolve env var references like ${HEKATE_API_KEY}
     if api_key.startswith("${") and api_key.endswith("}"):
         env_name = api_key[2:-1]
         api_key = os.environ.get(env_name, "")

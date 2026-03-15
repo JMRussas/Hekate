@@ -32,7 +32,7 @@ CLAUDE_CODE_ALLOWED_TOOLS = cfg(
     "Edit,Write,Read,Glob,Grep,"
     "Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),"
     "Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),"
-    "mcp__hecate__*,mcp__ollama__*",
+    "mcp__hekate__*,mcp__ollama__*",
 )
 
 
@@ -218,7 +218,7 @@ async def _handle_stream_event(
 ):
     """Process a single stream-json event from Claude Code.
 
-    Maps Claude Code stream events to Nobody progress events for the dashboard.
+    Maps Claude Code stream events to Hekate progress events for the dashboard.
     """
     event_type = event.get("type", "")
 

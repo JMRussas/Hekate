@@ -14,7 +14,7 @@ router that assembles per-model payloads. Voice and text chat must share the sam
 downstream pipeline — the input transport is the only difference.
 
 ### What exists today
-- Beethoven chat view: in-memory history, passes last 20 messages to every model
+- Hekate chat view: in-memory history, passes last 20 messages to every model
 - CodeStoragePoc: nodes table with code + plan domains, AGE graph, pgvector
 - Three model CLIs on subscription: Claude, Gemini, Codex
 
@@ -200,7 +200,7 @@ Input: user message + conversation_id
 - Not an intent classifier model. Intent classification is keyword/pattern-based
   first (fast), with model-based fallback only for ambiguous cases.
 
-The caller (Beethoven chat, voice pipeline, CLI) calls the context router with
+The caller (Hekate chat, voice pipeline, CLI) calls the context router with
 a user message and conversation ID. It gets back a context payload. The caller
 then sends that payload to the appropriate model.
 

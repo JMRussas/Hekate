@@ -1,4 +1,4 @@
-// Beethoven Fleet Control - Status Bar
+// Hekate Fleet Control - Status Bar
 //
 // Creates and updates the status bar item showing fleet connection state
 // and running task count. Uses VSCode theme colors for visual feedback.
@@ -9,16 +9,16 @@
 import * as vscode from "vscode";
 
 /**
- * Creates the Beethoven status bar item on the left side.
+ * Creates the Hekate status bar item on the left side.
  */
 export function createStatusBar(): vscode.StatusBarItem {
   const item = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Left,
     100
   );
-  item.text = "$(hubot) Beethoven";
-  item.tooltip = "Beethoven Fleet Control";
-  item.command = "beethoven.refresh";
+  item.text = "$(hubot) Hekate";
+  item.tooltip = "Hekate Fleet Control";
+  item.command = "hekate.refresh";
   item.show();
   return item;
 }
@@ -37,18 +37,18 @@ export function updateStatusBar(
   runningCount: number
 ): void {
   if (!connected) {
-    item.text = "$(circle-slash) Beethoven — Offline";
-    item.tooltip = "Beethoven Fleet Control — Disconnected";
+    item.text = "$(circle-slash) Hekate — Offline";
+    item.tooltip = "Hekate Fleet Control — Disconnected";
     item.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
     item.color = undefined;
   } else if (runningCount > 0) {
-    item.text = `$(sync~spin) Beethoven — ${runningCount} task${runningCount === 1 ? "" : "s"}`;
-    item.tooltip = `Beethoven Fleet Control — ${runningCount} task${runningCount === 1 ? "" : "s"} running`;
+    item.text = `$(sync~spin) Hekate — ${runningCount} task${runningCount === 1 ? "" : "s"}`;
+    item.tooltip = `Hekate Fleet Control — ${runningCount} task${runningCount === 1 ? "" : "s"} running`;
     item.backgroundColor = undefined;
     item.color = new vscode.ThemeColor("charts.blue");
   } else {
-    item.text = "$(check) Beethoven — Idle";
-    item.tooltip = "Beethoven Fleet Control — Connected";
+    item.text = "$(check) Hekate — Idle";
+    item.tooltip = "Hekate Fleet Control — Connected";
     item.backgroundColor = undefined;
     item.color = new vscode.ThemeColor("charts.green");
   }

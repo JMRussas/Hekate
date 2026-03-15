@@ -12,11 +12,11 @@ The user has a twice-exceptional brain — rapid ideation, many good ideas, inco
 - Captures ideas as they flow during whiteboard sessions
 - Tracks every idea through a lifecycle (mentioned → explored → committed → completed/parked)
 - Surfaces "loose threads" — ideas mentioned but never followed up on
-- Integrates with Beethoven (VS Code extension for AI orchestration)
+- Integrates with Hekate (VS Code extension for AI orchestration)
 
 Existing infrastructure:
 - **CodeStoragePoc**: PostgreSQL 16 + Apache AGE + pgvector on port 5433, stores C# code as node trees
-- **Beethoven**: VS Code extension with chat view, fleet tree, multi-model support (Claude, Gemini, Codex, Ollama)
+- **Hekate**: VS Code extension with chat view, fleet tree, multi-model support (Claude, Gemini, Codex, Ollama)
 - **Orchestration Engine**: FastAPI backend on port 5200
 - **Local GPU**: RTX 4090 (main), RTX 3090 (server), both with Ollama + nomic-embed-text
 - **AI CLIs**: Claude Code, Gemini CLI, Codex CLI — all on subscription (no per-token cost)
@@ -74,7 +74,7 @@ plan → plan_phase → plan_step → task
 7. Define intent classifier (what kind of request is this?)
 8. Build query assembler (pgvector + graph + status → per-model context)
 9. Add context router endpoint to Orchestration Engine
-10. Wire Beethoven chat to use context router instead of raw history
+10. Wire Hekate chat to use context router instead of raw history
 
 ### Phase 3: Voice Layer
 

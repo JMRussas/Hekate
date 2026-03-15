@@ -1,4 +1,4 @@
-// Beethoven Fleet Control - Extension Entry Point
+// Hekate Fleet Control - Extension Entry Point
 //
 // Registers commands, creates client, wires tree + chat providers.
 //
@@ -6,24 +6,24 @@
 // Used by:    VSCode (activation)
 
 import * as vscode from "vscode";
-import { BeethovenClient } from "./api/client";
+import { HekateClient } from "./api/client";
 import { FleetTreeProvider } from "./views/fleetTree";
 import { ChatViewProvider } from "./views/chatView";
 import { createStatusBar, updateStatusBar } from "./statusBar";
 
 let refreshInterval: ReturnType<typeof setInterval> | undefined;
 
-const log = vscode.window.createOutputChannel("Beethoven Fleet", { log: true });
+const log = vscode.window.createOutputChannel("Hekate Fleet", { log: true });
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const config = vscode.workspace.getConfiguration("beethoven");
+  const config = vscode.workspace.getConfiguration("hekate");
   const apiUrl = config.get<string>("apiUrl", "http://localhost:5200");
   const autoConnect = config.get<boolean>("autoConnect", true);
 
   const secrets = context.secrets;
-  const secretKey = await secrets.get("beethoven.apiKey");
+  const secretKey = await secrets.get("hekate.apiKey");
   const configKey = config.get<string>("apiKey", "");
-  const envKey = process.env.BEETHOVEN_API_KEY;
+  const envKey = process.env.HEKATE_API_KEY;
   let apiKey = secretKey || configKey || envKey;
 
   log.info(`API URL: ${apiUrl}`);
@@ -34,16 +34,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const ollamaUrl = config.get<string>("ollamaUrl", "http://localhost:11434");
   const ollamaModel = config.get<string>("ollamaModel", "qwen2.5-coder:14b");
 
-  let client = new BeethovenClient(apiUrl, apiKey ?? undefined);
+  let client = new HekateClient(apiUrl, apiKey ?? undefined);
 
   // Tree view
   const treeProvider = new FleetTreeProvider(client);
-  vscode.window.registerTreeDataProvider("beethovenTree", treeProvider);
+  vscode.window.registerTreeDataProvider("hekateTree", treeProvider);
 
   // Chat webview
   const chatProvider = new ChatViewProvider(context.extensionUri, client, ollamaUrl, ollamaModel, context.globalState);
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider("beethovenChat", chatProvider)
+    vscode.window.registerWebviewViewProvider("hekateChat", chatProvider)
   );
 
   // Status bar
@@ -53,14 +53,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // --- Commands ---
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.refresh", () => {
+    vscode.commands.registerCommand("hekate.refresh", () => {
       treeProvider.refresh();
       updateStatusBar(statusBarItem, client.isConnected(), 0);
     })
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.selectProject", (item: { projectId?: string; label?: string | vscode.TreeItemLabel }) => {
+    vscode.commands.registerCommand("hekate.selectProject", (item: { projectId?: string; label?: string | vscode.TreeItemLabel }) => {
       if (item.projectId) {
         const name = typeof item.label === "string" ? item.label : item.projectId;
         chatProvider.setActiveProject(item.projectId, name);
@@ -69,7 +69,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.startProject", async (item: { projectId?: string }) => {
+    vscode.commands.registerCommand("hekate.startProject", async (item: { projectId?: string }) => {
       if (item.projectId) {
         await client.startProject(item.projectId);
         treeProvider.refresh();
@@ -78,7 +78,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.pauseProject", async (item: { projectId?: string }) => {
+    vscode.commands.registerCommand("hekate.pauseProject", async (item: { projectId?: string }) => {
       if (item.projectId) {
         await client.pauseProject(item.projectId);
         treeProvider.refresh();
@@ -87,7 +87,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.retryTask", async (item: { taskId?: string }) => {
+    vscode.commands.registerCommand("hekate.retryTask", async (item: { taskId?: string }) => {
       if (item.taskId) {
         await client.retryTask(item.taskId);
         treeProvider.refresh();
@@ -96,7 +96,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.cancelTask", async (item: { taskId?: string }) => {
+    vscode.commands.registerCommand("hekate.cancelTask", async (item: { taskId?: string }) => {
       if (item.taskId) {
         await client.cancelTask(item.taskId);
         treeProvider.refresh();
@@ -105,28 +105,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.connect", async () => {
+    vscode.commands.registerCommand("hekate.connect", async () => {
       const key = await vscode.window.showInputBox({
-        prompt: "Enter Beethoven API key",
+        prompt: "Enter Hekate API key",
         password: true,
         ignoreFocusOut: true,
       });
       if (key !== undefined) {
-        await secrets.store("beethoven.apiKey", key);
+        await secrets.store("hekate.apiKey", key);
         apiKey = key;
-        client = new BeethovenClient(apiUrl, apiKey ?? undefined);
+        client = new HekateClient(apiUrl, apiKey ?? undefined);
         treeProvider.updateClient(client);
         chatProvider.updateClient(client);
         treeProvider.refresh();
         const runningCount = await client.getRunningTaskCount();
         updateStatusBar(statusBarItem, client.isConnected(), runningCount);
-        vscode.window.showInformationMessage("Beethoven: API key updated.");
+        vscode.window.showInformationMessage("Hekate: API key updated.");
       }
     })
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("beethoven.diagnose", async () => {
+    vscode.commands.registerCommand("hekate.diagnose", async () => {
       const lines = [
         `API URL: ${apiUrl}`,
         `API key source: ${secretKey ? "secrets" : configKey ? "settings" : envKey ? "env" : "NONE"}`,

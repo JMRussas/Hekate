@@ -70,7 +70,7 @@ DO $$
 BEGIN PERFORM create_elabel('code_graph', 'CONTRADICTS');
 EXCEPTION WHEN duplicate_table THEN NULL; END $$;
 
--- Hecate semantic edges (code analysis)
+-- Hekate semantic edges (code analysis)
 DO $$
 BEGIN PERFORM create_elabel('code_graph', 'IMPLEMENTS');
 EXCEPTION WHEN duplicate_table THEN NULL; END $$;

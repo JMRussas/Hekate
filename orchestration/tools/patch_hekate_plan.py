@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch the Hecate execution plan in the orchestration database.
+"""Patch the Hekate execution plan in the orchestration database.
 
 Fixes:
 1. Reset RUNNING tasks that were paused mid-execution
@@ -7,8 +7,8 @@ Fixes:
 3. Add review gate tasks at wave boundaries
 
 Usage:
-    python orchestration/tools/patch_hecate_plan.py          # Apply patches
-    python orchestration/tools/patch_hecate_plan.py --dry-run # Preview only
+    python orchestration/tools/patch_hekate_plan.py          # Apply patches
+    python orchestration/tools/patch_hekate_plan.py --dry-run # Preview only
 """
 
 import argparse
@@ -29,9 +29,9 @@ TIER_REASSIGNMENTS = {
     "74f02a12c5e3": "claude_code",   # EphemeralWorkspaceFactory with TTL cache
     "deb45381cf6b": "claude_code",   # Remove persistent workspace from WorkspaceCache
     "69df039b21c1": "claude_code",   # Incremental indexing via git diff
-    "31b83f54490b": "claude_code",   # NobodyIndexWriter: push index to graph DB
+    "31b83f54490b": "claude_code",   # HekateIndexWriter: push index to graph DB
     "4937fe6ed140": "claude_code",   # Graph-backed where and find_implementations
-    "dd5d56a37881": "claude_code",   # Cross-project analysis via Nobody graph
+    "dd5d56a37881": "claude_code",   # Cross-project analysis via Hekate graph
     "9b589a8c71db": "claude_code",   # Mixed-language project support
     "3d544acedf0e": "claude_code",   # Multi-language integration tests
 
@@ -44,7 +44,7 @@ TIER_REASSIGNMENTS = {
     # TypeScript / C++ / Frontend -> Codex CLI (strong TS/C++, web search)
     "2ab40902887b": "codex_cli",     # TypeScript worker with Tree-sitter + ts-morph
     "1e27c2177242": "codex_cli",     # C++ worker with Tree-sitter + clangd
-    "7799f4b05820": "codex_cli",     # Dashboard integration in Nobody frontend
+    "7799f4b05820": "codex_cli",     # Dashboard integration in Hekate frontend
 
     # Mechanical / boilerplate -> Ollama (4090 local, fast, free)
     "15bd7f3540f7": "ollama",        # WorkerManager: health checks and lifecycle
@@ -67,7 +67,7 @@ REVIEW_GATES = [
          "Steps:\n"
          "1. Run `dotnet build` — must compile with 0 errors, 0 warnings\n"
          "2. Run `dotnet test` — all tests must pass, no regressions\n"
-         "3. Run Hecate `review` tool against all modified files\n"
+         "3. Run Hekate `review` tool against all modified files\n"
          "4. Check for: naming consistency, operator precedence bugs, "
          "proper variable scoping, test coverage for new index-based code paths\n"
          "5. If violations found, create fix tasks and block Wave 2 until resolved\n\n"
@@ -80,7 +80,7 @@ REVIEW_GATES = [
          "1. Run `dotnet build` and `dotnet test` — full pass required\n"
          "2. Verify EphemeralWorkspaceFactory TTL behavior with a manual test\n"
          "3. Verify Tree-sitter parser produces correct AST for sample files\n"
-         "4. Run Hecate `check_contracts` on all new types\n"
+         "4. Run Hekate `check_contracts` on all new types\n"
          "5. Check worker health endpoints respond correctly\n\n"
          "Wave 3 depends on correct workspace and parser infrastructure."
      )},
@@ -91,7 +91,7 @@ REVIEW_GATES = [
          "1. Full build + test pass\n"
          "2. Verify Python worker processes real Python files correctly\n"
          "3. Verify incremental indexing detects stale files via git diff\n"
-         "4. Run Hecate `project_graph` and verify multi-project dependencies\n"
+         "4. Run Hekate `project_graph` and verify multi-project dependencies\n"
          "5. Integration test: index a mixed-language project\n\n"
          "Wave 5 introduces graph DB integration — must have solid foundations."
      )},
@@ -99,7 +99,7 @@ REVIEW_GATES = [
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Patch Hecate execution plan")
+    parser = argparse.ArgumentParser(description="Patch Hekate execution plan")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without applying")
     args = parser.parse_args()
 
@@ -110,7 +110,7 @@ def main():
     db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
 
-    # Find the Hecate project (the one with the most tasks — the seeded plan)
+    # Find the Hekate project (the one with the most tasks — the seeded plan)
     row = db.execute(
         "SELECT project_id, plan_id, COUNT(*) as cnt FROM tasks "
         "GROUP BY project_id ORDER BY cnt DESC LIMIT 1"
@@ -126,7 +126,7 @@ def main():
     now = time.time()
 
     print("=" * 70)
-    print("HECATE PLAN PATCH")
+    print("HEKATE PLAN PATCH")
     print("=" * 70)
 
     # --- 1. Status resets ---

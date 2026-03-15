@@ -64,7 +64,7 @@ public class PlanSeeder
         // --- Phases ---
         GatherPhaseId = await SeedPhase(projectId, PlanId, 100,
             "GATHER", "completed",
-            "Read CodeStoragePoc codebase, Beethoven extension, research voice AI landscape");
+            "Read CodeStoragePoc codebase, Hekate extension, research voice AI landscape");
 
         PlanPhaseId = await SeedPhase(projectId, PlanId, 200,
             "PLAN", "completed",
@@ -132,7 +132,7 @@ public class PlanSeeder
             "New endpoint in Orchestration Engine that returns assembled context for a given intent");
 
         await SeedTask(projectId, step5, 400,
-            "Wire Beethoven chat",
+            "Wire Hekate chat",
             "Replace raw history passing with context router calls in chatView.ts");
 
         // --- Risks ---

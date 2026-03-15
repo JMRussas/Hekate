@@ -1,4 +1,4 @@
-//  Beethoven VSCode Extension - Fleet TreeView
+//  Hekate VSCode Extension - Fleet TreeView
 //
 //  TreeDataProvider for the sidebar tree. Shows projects (grouped by wave)
 //  and agent/service statuses in a two-root hierarchy.
@@ -15,7 +15,7 @@ import {
   ServiceStatus,
   ProjectStatus,
 } from "../api/types";
-import { BeethovenClient } from "../api/client";
+import { HekateClient } from "../api/client";
 
 // ---------------------------------------------------------------------------
 //  Status → ThemeIcon mappings (icon id + color)
@@ -118,18 +118,18 @@ export class FleetTreeProvider implements vscode.TreeDataProvider<FleetItem> {
   private cachedServices: ServiceStatus[] = [];
   private _connected = false;
 
-  private client: BeethovenClient;
+  private client: HekateClient;
 
-  constructor(client: BeethovenClient) {
+  constructor(client: HekateClient) {
     this.client = client;
   }
 
   private setConnected(value: boolean): void {
     this._connected = value;
-    vscode.commands.executeCommand("setContext", "beethoven.connected", value);
+    vscode.commands.executeCommand("setContext", "hekate.connected", value);
   }
 
-  updateClient(client: BeethovenClient): void {
+  updateClient(client: HekateClient): void {
     this.client = client;
   }
 

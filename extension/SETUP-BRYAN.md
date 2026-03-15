@@ -1,4 +1,4 @@
-# Beethoven Fleet Control — Setup Guide
+# Hekate Fleet Control — Setup Guide
 
 ## What This Is
 
@@ -21,7 +21,7 @@ Verify it works: `gemini -p "hello"` (or `claude -p "hello"`, etc.)
 ### Step 2: Install the Extension
 
 ```bash
-code --install-extension beethoven-fleet-0.2.0.vsix --force
+code --install-extension hekate-fleet-0.2.0.vsix --force
 ```
 
 Then **reload VS Code** (Ctrl+Shift+P → "Reload Window").

@@ -1,4 +1,4 @@
-# Beethoven
+# Hekate
 
 Unified AI agent platform: VSCode extension (fleet control) + orchestration backend (task execution) + context store (agent memory). Three components, one repo.
 
@@ -14,7 +14,7 @@ Unified AI agent platform: VSCode extension (fleet control) + orchestration back
 ## Project Structure
 
 ```
-Nobody/
+Hekate/
 ├── CLAUDE.md                    # This file
 ├── extension/                   # VSCode extension — fleet control center
 │   ├── src/                     # TypeScript source (api/, views/, etc.)

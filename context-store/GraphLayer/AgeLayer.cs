@@ -44,7 +44,7 @@ public class AgeLayer
         "INFORMS",
         // Agent action domain
         "PRODUCED", "TRIGGERED", "FORKED_FROM", "OBSERVED", "INFORMED",
-        // Hecate semantic edges (code analysis)
+        // Hekate semantic edges (code analysis)
         "IMPLEMENTS", "DEFINES", "ALLOCATES"
     };
 

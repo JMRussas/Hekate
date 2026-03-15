@@ -1,26 +1,26 @@
-//  Beethoven VSCode Extension - Chat WebviewView Provider
+//  Hekate VSCode Extension - Chat WebviewView Provider
 //
 //  Renders an inline chat panel in the sidebar below the fleet tree.
 //  Supports slash commands (/status, /tasks, /start, /pause) and
-//  free-text chat routed to the orchestration API via BeethovenClient.
+//  free-text chat routed to the orchestration API via HekateClient.
 //
-//  Depends on: ../api/client.ts (BeethovenClient)
+//  Depends on: ../api/client.ts (HekateClient)
 //  Used by:    extension.ts
 
 import * as vscode from "vscode";
 import { spawn } from "child_process";
 import { ClaudeCode } from "claude-code-js";
-import { BeethovenClient } from "../api/client";
+import { HekateClient } from "../api/client";
 import { redactSecrets } from "../redact";
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-  public static readonly viewType = "beethovenChat";
+  public static readonly viewType = "hekateChat";
 
   private _view?: vscode.WebviewView;
   private _activeProjectId?: string;
   private _activeProjectName?: string;
 
-  private _client: BeethovenClient;
+  private _client: HekateClient;
   private _ollamaUrl: string;
   private _ollamaModel: string;
   private static readonly MAX_HISTORY = 100;
@@ -32,7 +32,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
-    client: BeethovenClient,
+    client: HekateClient,
     ollamaUrl: string,
     ollamaModel: string,
     globalState: vscode.Memento
@@ -44,7 +44,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._globalState = globalState;
   }
 
-  public updateClient(client: BeethovenClient): void {
+  public updateClient(client: HekateClient): void {
     this._client = client;
   }
 
@@ -78,10 +78,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._abortController?.abort();
           break;
         case "providerChanged":
-          this._globalState.update("beethoven.lastSelection", msg.value);
+          this._globalState.update("hekate.lastSelection", msg.value);
           break;
         case "webviewReady": {
-          const saved = this._globalState.get<string>("beethoven.lastSelection");
+          const saved = this._globalState.get<string>("hekate.lastSelection");
           if (saved) {
             this.postMessage({ type: "restoreSelection", value: saved });
           }
@@ -189,7 +189,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "refresh": {
-          vscode.commands.executeCommand("beethoven.refresh");
+          vscode.commands.executeCommand("hekate.refresh");
           this.postMessage({
             type: "addMessage",
             role: "assistant",
@@ -241,8 +241,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Build system prompt with fleet context
     const systemMsg = this._activeProjectId
-      ? `You are a helpful AI assistant integrated into the Beethoven Fleet Control panel in VS Code. The user is working on project "${this._activeProjectName}". Help them with their questions. Keep responses concise.`
-      : "You are a helpful AI assistant integrated into the Beethoven Fleet Control panel in VS Code. Help the user with their questions. Keep responses concise.";
+      ? `You are a helpful AI assistant integrated into the Hekate Fleet Control panel in VS Code. The user is working on project "${this._activeProjectName}". Help them with their questions. Keep responses concise.`
+      : "You are a helpful AI assistant integrated into the Hekate Fleet Control panel in VS Code. Help the user with their questions. Keep responses concise.";
 
     const messages = [
       { role: "system", content: systemMsg },
@@ -333,7 +333,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: "addMessage",
         role: "assistant",
         content: isConnectionError
-          ? `Could not connect to Ollama at ${this._ollamaUrl}.\n\nMake sure Ollama is running:\n  ollama serve\n\nOr update the URL in Settings > Beethoven > Ollama URL.`
+          ? `Could not connect to Ollama at ${this._ollamaUrl}.\n\nMake sure Ollama is running:\n  ollama serve\n\nOr update the URL in Settings > Hekate > Ollama URL.`
           : `Chat error: ${message}`,
         provider: "ollama",
       });
@@ -757,7 +757,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   <div class="messages" id="messages">
     <div class="welcome" id="welcome">
-      <h3>Beethoven Chat</h3>
+      <h3>Hekate Chat</h3>
       <div>Chat with AI using the provider dropdown above.</div>
       <div class="hint">Select a provider (Gemini, Claude, Codex) and start chatting.<br>Type <strong>/help</strong> for available commands.</div>
     </div>

@@ -41,7 +41,7 @@ public class Plan002Seeder
 
         // Phases
         var gather = await SeedPhase(projectId, 100, "GATHER", "completed",
-            "Read CodeStoragePoc codebase, Beethoven chat implementation, Plan 001 output");
+            "Read CodeStoragePoc codebase, Hekate chat implementation, Plan 001 output");
 
         var plan = await SeedPhase(projectId, 200, "PLAN", "completed",
             "Design transport-agnostic pipeline, context router architecture, intent classification");

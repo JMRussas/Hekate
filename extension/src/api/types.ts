@@ -1,4 +1,4 @@
-//  Beethoven VSCode Extension - API Type Definitions
+//  Hekate VSCode Extension - API Type Definitions
 //
 //  TypeScript interfaces matching the Orchestration REST API.
 //

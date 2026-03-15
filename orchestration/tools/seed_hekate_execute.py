@@ -1,13 +1,13 @@
-#  Nobody - Hecate Roadmap Executor Seeder
+#  Hekate - Hekate Roadmap Executor Seeder
 #
-#  Seeds the full Hecate MCP roadmap into the orchestration engine (SQLite)
+#  Seeds the full Hekate MCP roadmap into the orchestration engine (SQLite)
 #  as an L3 project with phased plan, task decomposition, and wave scheduling.
-#  This is the executable counterpart to seed_hecate_roadmap.py (PostgreSQL).
+#  This is the executable counterpart to seed_hekate_roadmap.py (PostgreSQL).
 #
 #  Usage:
-#    python orchestration/tools/seed_hecate_execute.py                # seed + decompose into tasks
-#    python orchestration/tools/seed_hecate_execute.py --dry-run      # print plan JSON
-#    python orchestration/tools/seed_hecate_execute.py --draft        # seed plan without decomposing
+#    python orchestration/tools/seed_hekate_execute.py                # seed + decompose into tasks
+#    python orchestration/tools/seed_hekate_execute.py --dry-run      # print plan JSON
+#    python orchestration/tools/seed_hekate_execute.py --draft        # seed plan without decomposing
 #
 #  Depends on: backend/db/connection.py, backend/services/decomposer.py
 #  Used by:    manual invocation
@@ -33,9 +33,9 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "orchestration.db"
 # ---------------------------------------------------------------------------
 
 REQUIREMENTS = """\
-Build a unified multi-language code intelligence MCP server (Hecate) that:
+Build a unified multi-language code intelligence MCP server (Hekate) that:
 
-[R1] Index-first architecture: All read-only tools query a local index (.hecate/index/) \
+[R1] Index-first architecture: All read-only tools query a local index (.hekate/index/) \
 instead of holding a live Roslyn workspace. Ephemeral workspaces open only for writes \
 (execute tool, build_index) and dispose immediately.
 
@@ -47,7 +47,7 @@ structural analysis, optional per-language semantic backends as subprocess worke
 run on remote machines (3090 server, cloud). Session-based lifecycle with health checks \
 and graceful shutdown.
 
-[R4] Nobody graph integration: Push index data into Nobody's context store (PostgreSQL + \
+[R4] Hekate graph integration: Push index data into Hekate's context store (PostgreSQL + \
 AGE + pgvector) for cross-project queries, semantic search, and multi-hop graph traversal.
 
 [R5] Production hardening: Incremental indexing (only re-analyze changed files), mixed-language \
@@ -61,8 +61,8 @@ project support, cross-project analysis, and a dashboard for fleet monitoring.
 
 PLAN = {
     "summary": (
-        "Complete the Hecate MCP roadmap: migrate to index-first reads, add Python/TS/C++ "
-        "language backends via distributed workers, integrate with Nobody's graph DB, and "
+        "Complete the Hekate MCP roadmap: migrate to index-first reads, add Python/TS/C++ "
+        "language backends via distributed workers, integrate with Hekate's graph DB, and "
         "harden for production use. 5 phases, 24 tasks, building on 17K lines, 306 tests, "
         "15 MCP tools, and the worker protocol Phase 1."
     ),
@@ -90,7 +90,7 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R1"],
                     "verification_criteria": "Unit tests: cache miss loads, cache hit returns same, stale detection, concurrent access safe.",
-                    "affected_files": ["src/Analysis/Indexing/IndexCache.cs", "tests/HecateMcp.Tests.Unit/IndexCacheTests.cs"],
+                    "affected_files": ["src/Analysis/Indexing/IndexCache.cs", "tests/HekateMcp.Tests.Unit/IndexCacheTests.cs"],
                 },
                 {
                     # Task 1
@@ -150,7 +150,7 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R1"],
                     "verification_criteria": "Factory creates workspace, TTL expiry disposes, concurrent requests share instance.",
-                    "affected_files": ["src/Analysis/EphemeralWorkspaceFactory.cs", "tests/HecateMcp.Tests.Unit/EphemeralWorkspaceFactoryTests.cs"],
+                    "affected_files": ["src/Analysis/EphemeralWorkspaceFactory.cs", "tests/HekateMcp.Tests.Unit/EphemeralWorkspaceFactoryTests.cs"],
                 },
                 {
                     # Task 5
@@ -193,13 +193,13 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R3"],
                     "verification_criteria": "Unit tests with MockHttpHandler. Integration test against test HTTP server.",
-                    "affected_files": ["src/Analysis/Workers/HttpWorkerClient.cs", "tests/HecateMcp.Tests.Unit/HttpWorkerClientTests.cs"],
+                    "affected_files": ["src/Analysis/Workers/HttpWorkerClient.cs", "tests/HekateMcp.Tests.Unit/HttpWorkerClientTests.cs"],
                 },
                 {
                     # Task 7
                     "title": "Worker configuration in ServerConfig",
                     "description": (
-                        "Add workers[] to ~/.hecate/config.json: {name, language, url, healthEndpoint}. "
+                        "Add workers[] to ~/.hekate/config.json: {name, language, url, healthEndpoint}. "
                         "ServerConfigLoader parses into WorkerConfig[]. AnalyzerRegistry creates RemoteAnalyzer."
                     ),
                     "task_type": "code",
@@ -223,7 +223,7 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R3"],
                     "verification_criteria": "Health check marks status correctly, periodic check runs, degraded on timeout.",
-                    "affected_files": ["src/Analysis/Workers/WorkerManager.cs", "tests/HecateMcp.Tests.Unit/WorkerManagerTests.cs"],
+                    "affected_files": ["src/Analysis/Workers/WorkerManager.cs", "tests/HekateMcp.Tests.Unit/WorkerManagerTests.cs"],
                 },
                 {
                     # Task 9
@@ -262,7 +262,7 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R2"],
                     "verification_criteria": "Parses real .py files, extracts types/methods, detects Python patterns.",
-                    "affected_files": ["workers/python/TreeSitterPython.cs", "tests/HecateMcp.Tests.Unit/PythonAnalyzerTests.cs"],
+                    "affected_files": ["workers/python/TreeSitterPython.cs", "tests/HekateMcp.Tests.Unit/PythonAnalyzerTests.cs"],
                 },
                 {
                     # Task 11
@@ -307,7 +307,7 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R2", "R3"],
                     "verification_criteria": "All ILanguageAnalyzer methods return valid results through HTTP.",
-                    "affected_files": ["tests/HecateMcp.Tests.Integration/PythonWorkerTests.cs"],
+                    "affected_files": ["tests/HekateMcp.Tests.Integration/PythonWorkerTests.cs"],
                 },
             ],
         },
@@ -361,31 +361,31 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R2", "R3"],
                     "verification_criteria": "All 4 backends respond through HTTP. Mixed-project analysis works.",
-                    "affected_files": ["tests/HecateMcp.Tests.Integration/MultiLanguageTests.cs"],
+                    "affected_files": ["tests/HekateMcp.Tests.Integration/MultiLanguageTests.cs"],
                 },
             ],
         },
         # ================================================================
-        # Phase 5: Nobody Integration & Hardening (tasks 17-23)
+        # Phase 5: Hekate Integration & Hardening (tasks 17-23)
         # ================================================================
         {
-            "name": "Nobody Integration & Production Hardening",
+            "name": "Hekate Integration & Production Hardening",
             "description": "Graph DB integration, cross-project queries, incremental indexing, dashboard.",
             "tasks": [
                 {
                     # Task 17
-                    "title": "NobodyIndexWriter: push index to graph DB",
+                    "title": "HekateIndexWriter: push index to graph DB",
                     "description": (
-                        "IndexData → Nobody graph nodes/edges via REST. Idempotent. "
-                        "CompositeIndexWriter writes local + Nobody simultaneously."
+                        "IndexData → Hekate graph nodes/edges via REST. Idempotent. "
+                        "CompositeIndexWriter writes local + Hekate simultaneously."
                     ),
                     "task_type": "code",
                     "complexity": "medium",
                     "depends_on": [5],
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R4"],
-                    "verification_criteria": "Index data in Nobody graph. Idempotent re-index works.",
-                    "affected_files": ["src/Analysis/Indexing/NobodyIndexWriter.cs", "src/Analysis/Indexing/CompositeIndexWriter.cs"],
+                    "verification_criteria": "Index data in Hekate graph. Idempotent re-index works.",
+                    "affected_files": ["src/Analysis/Indexing/HekateIndexWriter.cs", "src/Analysis/Indexing/CompositeIndexWriter.cs"],
                 },
                 {
                     # Task 18
@@ -400,7 +400,7 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R4"],
                     "verification_criteria": "Navigation tools return results from graph. Fallback to local index works.",
-                    "affected_files": ["src/Server/NavigationTools.cs", "src/Analysis/NobodyGraphStore.cs"],
+                    "affected_files": ["src/Server/NavigationTools.cs", "src/Analysis/HekateGraphStore.cs"],
                 },
                 {
                     # Task 19
@@ -421,7 +421,7 @@ PLAN = {
                     # Task 20
                     "title": "Mixed-language project support",
                     "description": (
-                        "Per-pathRule language override in .hecate.json schema v2. "
+                        "Per-pathRule language override in .hekate.json schema v2. "
                         "build_index iterates all configured analyzers. Blazor (C# + TS)."
                     ),
                     "task_type": "code",
@@ -434,7 +434,7 @@ PLAN = {
                 },
                 {
                     # Task 21
-                    "title": "Cross-project analysis via Nobody graph",
+                    "title": "Cross-project analysis via Hekate graph",
                     "description": (
                         "Query across all indexed projects. Cross-project find_usages, "
                         "dependency graph, shared pattern detection."
@@ -445,11 +445,11 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R4", "R5"],
                     "verification_criteria": "find_usages returns from multiple projects. Cross-project edges in graph.",
-                    "affected_files": ["src/Server/NavigationTools.cs", "src/Analysis/NobodyGraphStore.cs"],
+                    "affected_files": ["src/Server/NavigationTools.cs", "src/Analysis/HekateGraphStore.cs"],
                 },
                 {
                     # Task 22
-                    "title": "Dashboard integration in Nobody frontend",
+                    "title": "Dashboard integration in Hekate frontend",
                     "description": (
                         "Fleet status cards for workers. Architecture view: project → worker → language. "
                         "Index status per project."
@@ -460,13 +460,13 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R5"],
                     "verification_criteria": "Dashboard shows worker fleet, architecture view, index status.",
-                    "affected_files": ["context-store/ui/src/components/HecateDashboard.tsx"],
+                    "affected_files": ["context-store/ui/src/components/HekateDashboard.tsx"],
                 },
                 {
                     # Task 23
                     "title": "End-to-end roadmap validation",
                     "description": (
-                        "Full E2E: multi-language index, push to Nobody graph, query all 15 MCP tools, "
+                        "Full E2E: multi-language index, push to Hekate graph, query all 15 MCP tools, "
                         "incremental reindex, cross-project query."
                     ),
                     "task_type": "integration",
@@ -475,7 +475,7 @@ PLAN = {
                     "tools_needed": ["read_file", "write_file"],
                     "requirement_ids": ["R1", "R2", "R3", "R4", "R5"],
                     "verification_criteria": "All 15 MCP tools work with index-first, distributed workers, and graph.",
-                    "affected_files": ["tests/HecateMcp.Tests.Integration/EndToEndTests.cs"],
+                    "affected_files": ["tests/HekateMcp.Tests.Integration/EndToEndTests.cs"],
                 },
             ],
         },
@@ -492,9 +492,9 @@ PLAN = {
             "impact": "Git-only means non-git projects can't use incremental indexing.",
         },
         {
-            "question": "Should cross-project queries require same Nobody instance?",
+            "question": "Should cross-project queries require same Hekate instance?",
             "proposed_answer": "Yes for now. Federation is a future concern.",
-            "impact": "Multiple Nobody instances can't query across each other.",
+            "impact": "Multiple Hekate instances can't query across each other.",
         },
     ],
     "risk_assessment": [
@@ -517,7 +517,7 @@ PLAN = {
             "mitigation": "Run both paths in parallel, compare. Document divergences.",
         },
         {
-            "risk": "Nobody graph may not handle 100K+ nodes",
+            "risk": "Hekate graph may not handle 100K+ nodes",
             "likelihood": "low",
             "impact": "high",
             "mitigation": "pgvector + AGE proven at scale. Add limits and pagination.",
@@ -536,7 +536,7 @@ PLAN = {
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Seed Hecate roadmap into orchestration engine (SQLite)")
+    parser = argparse.ArgumentParser(description="Seed Hekate roadmap into orchestration engine (SQLite)")
     parser.add_argument("--dry-run", action="store_true", help="Print plan JSON without inserting")
     parser.add_argument("--draft", action="store_true", help="Insert plan as draft (don't decompose into tasks)")
     args = parser.parse_args()
@@ -564,11 +564,11 @@ async def main():
             "repo_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
-                "Hecate MCP — Full Roadmap",
+                "Hekate MCP — Full Roadmap",
                 REQUIREMENTS,
                 "draft",
                 json.dumps({"planning_rigor": "L3", "execution_mode": "auto"}),
-                "C:\\Users\\kmgsp\\Documents\\git\\hecate-mcp",
+                "C:\\Users\\kmgsp\\Documents\\git\\hekate-mcp",
                 now, now,
             ),
         )

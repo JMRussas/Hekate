@@ -1,15 +1,15 @@
-#  Nobody - Hecate Roadmap Seeder
+#  Hekate - Hekate Roadmap Seeder
 #
-#  Seeds the full Hecate MCP roadmap into the Nobody context store (PostgreSQL)
+#  Seeds the full Hekate MCP roadmap into the Hekate context store (PostgreSQL)
 #  as a plan node tree: plan → plan_phase → plan_step → task, with risks,
 #  questions, test_specs, and a retrospective placeholder.
 #
 #  Matches the C# seeder pattern (PlanSeeder.cs, Plan005Seeder.cs).
 #
 #  Usage:
-#    python orchestration/tools/seed_hecate_roadmap.py              # seed into context store
-#    python orchestration/tools/seed_hecate_roadmap.py --dry-run    # print node tree without inserting
-#    python orchestration/tools/seed_hecate_roadmap.py --base-url http://192.168.1.164:5102
+#    python orchestration/tools/seed_hekate_roadmap.py              # seed into context store
+#    python orchestration/tools/seed_hekate_roadmap.py --dry-run    # print node tree without inserting
+#    python orchestration/tools/seed_hekate_roadmap.py --base-url http://192.168.1.164:5102
 #
 #  Depends on: Context store REST API (POST /api/projects, /api/project/{id}/nodes, /api/node/{id}/children)
 #  Used by:    manual invocation
@@ -27,7 +27,7 @@ DEFAULT_BASE_URL = "http://localhost:5102"
 # ---------------------------------------------------------------------------
 
 class ContextStoreClient:
-    """Thin wrapper around the Nobody context store REST API."""
+    """Thin wrapper around the Hekate context store REST API."""
 
     def __init__(self, base_url: str):
         self.base = base_url.rstrip("/")
@@ -78,8 +78,8 @@ class ContextStoreClient:
 # ---------------------------------------------------------------------------
 
 PLAN_SUMMARY = (
-    "Complete the Hecate MCP roadmap: migrate to index-first reads, add Python/TS/C++ "
-    "language backends via distributed workers, integrate with Nobody's graph DB, and "
+    "Complete the Hekate MCP roadmap: migrate to index-first reads, add Python/TS/C++ "
+    "language backends via distributed workers, integrate with Hekate's graph DB, and "
     "harden for production use. 5 phases, 24 tasks, building on the existing foundation "
     "of 17K lines, 306 tests, 15 MCP tools, and the worker protocol Phase 1."
 )
@@ -174,7 +174,7 @@ PHASES = [
             },
             {
                 "name": "Worker configuration in ServerConfig",
-                "description": "Add workers section to ~/.hecate/config.json: array of {name, language, url, healthEndpoint}. AnalyzerRegistry creates RemoteAnalyzer from config.",
+                "description": "Add workers section to ~/.hekate/config.json: array of {name, language, url, healthEndpoint}. AnalyzerRegistry creates RemoteAnalyzer from config.",
                 "status": "pending",
                 "tasks": [
                     ("Extend ServerConfigLoader + LlmConfig.cs", "Parse workers array into WorkerConfig[]"),
@@ -245,7 +245,7 @@ PHASES = [
                 "tasks": [
                     ("E2E test suite for Python worker", "All ILanguageAnalyzer methods return valid results through HTTP transport"),
                 ],
-                "affected_files": "tests/HecateMcp.Tests.Integration/PythonWorkerTests.cs",
+                "affected_files": "tests/HekateMcp.Tests.Integration/PythonWorkerTests.cs",
             },
         ],
     },
@@ -281,23 +281,23 @@ PHASES = [
                 "tasks": [
                     ("E2E multi-language test suite", "All 4 backends respond through HTTP, mixed-project analysis works"),
                 ],
-                "affected_files": "tests/HecateMcp.Tests.Integration/MultiLanguageTests.cs",
+                "affected_files": "tests/HekateMcp.Tests.Integration/MultiLanguageTests.cs",
             },
         ],
     },
     {
-        "name": "Nobody Integration & Production Hardening",
-        "description": "Push index data to Nobody graph DB, cross-project queries, incremental indexing, mixed-language support, dashboard.",
+        "name": "Hekate Integration & Production Hardening",
+        "description": "Push index data to Hekate graph DB, cross-project queries, incremental indexing, mixed-language support, dashboard.",
         "status": "pending",
         "steps": [
             {
-                "name": "NobodyIndexWriter",
-                "description": "Adapter: IndexData → Nobody graph nodes/edges via REST. Idempotent. CompositeIndexWriter writes local + Nobody simultaneously.",
+                "name": "HekateIndexWriter",
+                "description": "Adapter: IndexData → Hekate graph nodes/edges via REST. Idempotent. CompositeIndexWriter writes local + Hekate simultaneously.",
                 "status": "pending",
                 "tasks": [
-                    ("Implement NobodyIndexWriter + CompositeIndexWriter", "Convert IndexData to graph nodes/edges, idempotent re-index"),
+                    ("Implement HekateIndexWriter + CompositeIndexWriter", "Convert IndexData to graph nodes/edges, idempotent re-index"),
                 ],
-                "affected_files": "src/Analysis/Indexing/NobodyIndexWriter.cs, src/Analysis/Indexing/CompositeIndexWriter.cs",
+                "affected_files": "src/Analysis/Indexing/HekateIndexWriter.cs, src/Analysis/Indexing/CompositeIndexWriter.cs",
             },
             {
                 "name": "Graph-backed navigation",
@@ -307,7 +307,7 @@ PHASES = [
                     ("Refactor where + find_implementations for graph", "pgvector for concept matching, AGE for ownership traversal"),
                     ("Fallback tests", "Graph unavailable → local index fallback works"),
                 ],
-                "affected_files": "src/Server/NavigationTools.cs, src/Analysis/NobodyGraphStore.cs",
+                "affected_files": "src/Server/NavigationTools.cs, src/Analysis/HekateGraphStore.cs",
             },
             {
                 "name": "Incremental indexing",
@@ -320,7 +320,7 @@ PHASES = [
             },
             {
                 "name": "Mixed-language project support",
-                "description": "Per-pathRule language override in .hecate.json schema v2. build_index iterates all configured analyzers. Blazor (C# + TS).",
+                "description": "Per-pathRule language override in .hekate.json schema v2. build_index iterates all configured analyzers. Blazor (C# + TS).",
                 "status": "pending",
                 "tasks": [
                     ("Schema v2 + AnalyzerRegistry multi-language routing", "Per-path language hints, multi-analyzer indexing"),
@@ -329,30 +329,30 @@ PHASES = [
             },
             {
                 "name": "Cross-project analysis",
-                "description": "Query across all indexed projects in Nobody graph. Cross-project find_usages, dependency graph, shared pattern detection.",
+                "description": "Query across all indexed projects in Hekate graph. Cross-project find_usages, dependency graph, shared pattern detection.",
                 "status": "pending",
                 "tasks": [
                     ("Cross-project graph queries", "find_usages returns results from multiple projects, cross-project edges in project_graph"),
                 ],
-                "affected_files": "src/Server/NavigationTools.cs, src/Analysis/NobodyGraphStore.cs",
+                "affected_files": "src/Server/NavigationTools.cs, src/Analysis/HekateGraphStore.cs",
             },
             {
                 "name": "Dashboard integration",
                 "description": "Fleet status cards for workers. Architecture view: project → worker → language routing. Index status per project.",
                 "status": "pending",
                 "tasks": [
-                    ("Build HecateDashboard.tsx", "Worker fleet status, architecture view, index status display"),
+                    ("Build HekateDashboard.tsx", "Worker fleet status, architecture view, index status display"),
                 ],
-                "affected_files": "context-store/ui/src/components/HecateDashboard.tsx",
+                "affected_files": "context-store/ui/src/components/HekateDashboard.tsx",
             },
             {
                 "name": "End-to-end roadmap validation",
-                "description": "Full E2E: multi-language index, push to Nobody graph, query via all 15 MCP tools, incremental reindex, cross-project query.",
+                "description": "Full E2E: multi-language index, push to Hekate graph, query via all 15 MCP tools, incremental reindex, cross-project query.",
                 "status": "pending",
                 "tasks": [
                     ("Comprehensive E2E test suite", "All 15 MCP tools work with index-first reads, distributed workers, and graph integration"),
                 ],
-                "affected_files": "tests/HecateMcp.Tests.Integration/EndToEndTests.cs",
+                "affected_files": "tests/HekateMcp.Tests.Integration/EndToEndTests.cs",
             },
         ],
     },
@@ -375,7 +375,7 @@ RISKS = [
         "mitigation": "Run both paths in parallel during migration, compare results. Document known divergences.",
     },
     {
-        "description": "Nobody graph DB may not handle large codebases (100K+ nodes)",
+        "description": "Hekate graph DB may not handle large codebases (100K+ nodes)",
         "severity": "low",
         "mitigation": "pgvector + AGE are proven at scale. Add index limits and pagination in queries.",
     },
@@ -391,8 +391,8 @@ QUESTIONS = [
         "proposed_answer": "Both — git diff in git repos (more accurate), mtime fallback otherwise. StalenessChecker already has mtime comparison.",
     },
     {
-        "text": "Should cross-project queries require all projects in the same Nobody instance?",
-        "proposed_answer": "Yes for now. Federation across Nobody instances is a future concern.",
+        "text": "Should cross-project queries require all projects in the same Hekate instance?",
+        "proposed_answer": "Yes for now. Federation across Hekate instances is a future concern.",
     },
 ]
 
@@ -400,7 +400,7 @@ TEST_SPECS = [
     ("Index vs workspace parity: all tools return equivalent results", "integration"),
     ("HTTP transport vs in-process parity: RemoteAnalyzer matches InProcess", "integration"),
     ("Multi-language E2E: 4 workers, mixed project, all tools", "integration"),
-    ("Local index vs Nobody graph parity: navigation tools return same results", "integration"),
+    ("Local index vs Hekate graph parity: navigation tools return same results", "integration"),
     ("Incremental index correctness: matches full reindex after changes", "unit"),
 ]
 
@@ -410,18 +410,18 @@ TEST_SPECS = [
 # ---------------------------------------------------------------------------
 
 def seed(client: ContextStoreClient, dry_run: bool = False):
-    """Seed the full Hecate roadmap into the context store."""
+    """Seed the full Hekate roadmap into the context store."""
 
     if dry_run:
         _print_tree()
         return
 
     # Create or get project
-    project_id = client.create_project("HecateMCP", "C:\\Users\\kmgsp\\Documents\\git\\hecate-mcp")
+    project_id = client.create_project("HekateMCP", "C:\\Users\\kmgsp\\Documents\\git\\hekate-mcp")
     print(f"Project: {project_id}")
 
     # Root plan node
-    plan_id = client.create_root_node(project_id, "plan", "Hecate MCP — Full Roadmap", PLAN_SUMMARY, {
+    plan_id = client.create_root_node(project_id, "plan", "Hekate MCP — Full Roadmap", PLAN_SUMMARY, {
         "level": "L3",
         "status": "plan",
         "plan_type": "feature",
@@ -490,7 +490,7 @@ def seed(client: ContextStoreClient, dry_run: bool = False):
         client.create_child(close_out_id, "test_spec", None, spec_desc,
                             {"test_type": spec_type, "status": "pending"})
 
-    client.create_child(close_out_id, "retrospective", "Hecate Roadmap Retrospective", None,
+    client.create_child(close_out_id, "retrospective", "Hekate Roadmap Retrospective", None,
                         {"status": "pending", "template": "status|test_results|deviations|learnings|docs_updated"})
 
     # Plan-level risks
@@ -508,7 +508,7 @@ def seed(client: ContextStoreClient, dry_run: bool = False):
 
 def _print_tree():
     """Print the plan structure without inserting."""
-    print("plan: Hecate MCP — Full Roadmap (L3)")
+    print("plan: Hekate MCP — Full Roadmap (L3)")
     print("├── milestone: C# analysis fully operational [completed]")
     print("├── milestone: Worker protocol Phase 1 shipped [completed]")
     print("├── milestone: Index-first reads complete [pending]")
@@ -532,7 +532,7 @@ def _print_tree():
     print("├── plan_phase: CLOSE_OUT [pending]")
     for desc, ttype in TEST_SPECS:
         print(f"│   ├── test_spec: {desc} [{ttype}]")
-    print("│   └── retrospective: Hecate Roadmap Retrospective")
+    print("│   └── retrospective: Hekate Roadmap Retrospective")
 
     print(f"├── {len(RISKS)} risks")
     print(f"└── {len(QUESTIONS)} questions")
@@ -540,7 +540,7 @@ def _print_tree():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Seed Hecate roadmap into Nobody context store (PostgreSQL)")
+    parser = argparse.ArgumentParser(description="Seed Hekate roadmap into Hekate context store (PostgreSQL)")
     parser.add_argument("--dry-run", action="store_true", help="Print node tree without inserting")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help=f"Context store URL (default: {DEFAULT_BASE_URL})")
     args = parser.parse_args()

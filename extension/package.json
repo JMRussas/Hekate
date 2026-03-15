@@ -1,7 +1,7 @@
 {
-  "name": "beethoven-fleet",
-  "displayName": "Beethoven Fleet Control",
-  "description": "Fleet control center for Beethoven AI agent orchestration",
+  "name": "hekate-fleet",
+  "displayName": "Hekate Fleet Control",
+  "description": "Fleet control center for Hekate AI agent orchestration",
   "version": "0.2.0",
   "publisher": "jmrussas",
   "engines": {
@@ -13,21 +13,21 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "beethoven",
-          "title": "Beethoven Fleet",
+          "id": "hekate",
+          "title": "Hekate Fleet",
           "icon": "$(hubot)"
         }
       ]
     },
     "views": {
-      "beethoven": [
+      "hekate": [
         {
-          "id": "beethovenTree",
+          "id": "hekateTree",
           "name": "Fleet",
           "type": "tree"
         },
         {
-          "id": "beethovenChat",
+          "id": "hekateChat",
           "name": "Chat",
           "type": "webview"
         }
@@ -35,98 +35,98 @@
     },
     "commands": [
       {
-        "command": "beethoven.refresh",
+        "command": "hekate.refresh",
         "title": "Refresh Fleet",
         "icon": "$(refresh)"
       },
       {
-        "command": "beethoven.selectProject",
+        "command": "hekate.selectProject",
         "title": "Select Project"
       },
       {
-        "command": "beethoven.startProject",
+        "command": "hekate.startProject",
         "title": "Start Project",
         "icon": "$(play)"
       },
       {
-        "command": "beethoven.pauseProject",
+        "command": "hekate.pauseProject",
         "title": "Pause Project",
         "icon": "$(debug-pause)"
       },
       {
-        "command": "beethoven.retryTask",
+        "command": "hekate.retryTask",
         "title": "Retry Task",
         "icon": "$(debug-restart)"
       },
       {
-        "command": "beethoven.cancelTask",
+        "command": "hekate.cancelTask",
         "title": "Cancel Task",
         "icon": "$(close)"
       },
       {
-        "command": "beethoven.connect",
-        "title": "Connect to Beethoven"
+        "command": "hekate.connect",
+        "title": "Connect to Hekate"
       },
       {
-        "command": "beethoven.diagnose",
-        "title": "Beethoven: Diagnose Connection"
+        "command": "hekate.diagnose",
+        "title": "Hekate: Diagnose Connection"
       }
     ],
     "menus": {
       "view/item/context": [
         {
-          "command": "beethoven.startProject",
-          "when": "view == beethovenTree && viewItem == project-paused",
+          "command": "hekate.startProject",
+          "when": "view == hekateTree && viewItem == project-paused",
           "group": "inline"
         },
         {
-          "command": "beethoven.pauseProject",
-          "when": "view == beethovenTree && viewItem == project-running",
+          "command": "hekate.pauseProject",
+          "when": "view == hekateTree && viewItem == project-running",
           "group": "inline"
         },
         {
-          "command": "beethoven.retryTask",
-          "when": "view == beethovenTree && viewItem == task-failed",
+          "command": "hekate.retryTask",
+          "when": "view == hekateTree && viewItem == task-failed",
           "group": "inline"
         },
         {
-          "command": "beethoven.cancelTask",
-          "when": "view == beethovenTree && viewItem == task-running",
+          "command": "hekate.cancelTask",
+          "when": "view == hekateTree && viewItem == task-running",
           "group": "inline"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "beethovenTree",
-        "contents": "Welcome to Beethoven Fleet Control.\n\nThis extension connects to your Orchestration API to manage AI agent projects, tasks, and providers.\n\n**Quick start:**\n1. Ensure the orchestration server is running\n2. Set the API URL in settings (default: 192.168.1.164:5200)\n3. Click Refresh or wait for auto-connect\n\n[Refresh Fleet](command:beethoven.refresh)\n[Set API Key](command:beethoven.connect)\n[Open Settings](command:workbench.action.openSettings?%5B%22beethoven%22%5D)\n\n**Chat commands:**\n`/status` — list all projects\n`/tasks` — show tasks for selected project\n`/start` — start selected project\n`/pause` — pause selected project",
-        "when": "!beethoven.connected"
+        "view": "hekateTree",
+        "contents": "Welcome to Hekate Fleet Control.\n\nThis extension connects to your Orchestration API to manage AI agent projects, tasks, and providers.\n\n**Quick start:**\n1. Ensure the orchestration server is running\n2. Set the API URL in settings (default: 192.168.1.164:5200)\n3. Click Refresh or wait for auto-connect\n\n[Refresh Fleet](command:hekate.refresh)\n[Set API Key](command:hekate.connect)\n[Open Settings](command:workbench.action.openSettings?%5B%22hekate%22%5D)\n\n**Chat commands:**\n`/status` — list all projects\n`/tasks` — show tasks for selected project\n`/start` — start selected project\n`/pause` — pause selected project",
+        "when": "!hekate.connected"
       }
     ],
     "configuration": {
-      "title": "Beethoven Fleet",
+      "title": "Hekate Fleet",
       "properties": {
-        "beethoven.apiUrl": {
+        "hekate.apiUrl": {
           "type": "string",
           "default": "http://localhost:5200",
-          "description": "URL of the Beethoven orchestration API (e.g. http://192.168.1.164:5200)"
+          "description": "URL of the Hekate orchestration API (e.g. http://192.168.1.164:5200)"
         },
-        "beethoven.autoConnect": {
+        "hekate.autoConnect": {
           "type": "boolean",
           "default": true,
           "description": "Automatically connect to the API on activation"
         },
-        "beethoven.apiKey": {
+        "hekate.apiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for the Beethoven orchestration API (orch_... key)"
+          "description": "API key for the Hekate orchestration API (orch_... key)"
         },
-        "beethoven.ollamaUrl": {
+        "hekate.ollamaUrl": {
           "type": "string",
           "default": "http://localhost:11434",
           "description": "Ollama API URL for chat"
         },
-        "beethoven.ollamaModel": {
+        "hekate.ollamaModel": {
           "type": "string",
           "default": "qwen2.5-coder:14b",
           "description": "Ollama model for chat"

@@ -1,4 +1,4 @@
-//  Beethoven VSCode Extension - Secret Redaction
+//  Hekate VSCode Extension - Secret Redaction
 //
 //  Scrubs known secret patterns from text before it enters
 //  conversation history or gets forwarded to LLM providers.

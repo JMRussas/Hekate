@@ -4,7 +4,7 @@ Read this when you need to understand the system design, component relationships
 
 ## Overview
 
-Beethoven is a three-component AI agent platform:
+Hekate is a three-component AI agent platform:
 
 - **Extension** (TypeScript) — VSCode fleet control center. Manages projects, monitors tasks, streams events.
 - **Orchestration** (Python/FastAPI) — Task execution engine. Plans work via Claude, decomposes into dependency waves, dispatches to model tiers, verifies results.
@@ -21,7 +21,7 @@ Orchestration API (:5200)
     ├── MCP server for external agents (Claude Code, Gemini, Codex)
     └── CLI executors for local task dispatch (tools/local_executor.py)
     │
-    │  one-way seeding (tools/seed_hecate_roadmap.py)
+    │  one-way seeding (tools/seed_hekate_roadmap.py)
     ▼
 Context Store API (:5102)
     ├── PostgreSQL + AGE graph + pgvector embeddings
@@ -56,7 +56,7 @@ Exposes tools for external agents: `create_project`, `plan_project`, `start_proj
 
 ### Orchestration → Context Store (port 5102)
 
-One-way via `orchestration/tools/seed_hecate_roadmap.py`. Creates projects and nodes in the graph DB. Not used during normal execution.
+One-way via `orchestration/tools/seed_hekate_roadmap.py`. Creates projects and nodes in the graph DB. Not used during normal execution.
 
 ### CLI Executors (tools/)
 
@@ -66,7 +66,7 @@ Local task execution bypassing the REST API — direct SQLite access:
 |------|------|
 | `tools/local_executor.py` | Claims tasks from DB, runs via claude/gemini/codex CLI or Ollama |
 | `tools/supervisor.py` | Monitors tasks for failures (explicit + silent), re-queues or escalates |
-| `tools/patch_hecate_plan.py` | One-off plan patches — reassign tiers, reset stuck tasks |
+| `tools/patch_hekate_plan.py` | One-off plan patches — reassign tiers, reset stuck tasks |
 
 ## Model Tiers
 
