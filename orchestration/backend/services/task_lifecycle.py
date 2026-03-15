@@ -153,19 +153,40 @@ async def _run_review_cycle(
         logger.debug("No repo_path for project %s, skipping review cycle", project_id)
         return False
 
-    # Get git diff for review
+    # Get git diff for review — scoped to task's affected_files only.
+    # This prevents unrelated dirty files (e.g., .claude/settings.local.json)
+    # from polluting the review with false security warnings.
     diff_text = None
     try:
         from backend.services.git_service import GitService
         git = GitService(db=db)
         status = await git.get_status(cwd)
         if status.strip():
-            # There are uncommitted changes — diff against HEAD
-            diff_text = await git.get_diff_working(cwd)
-            # Also include untracked files in diff context
-            staged = await git.get_diff_staged(cwd)
-            if staged:
-                diff_text = (diff_text or "") + "\n" + staged
+            # Scope diff to affected_files if available
+            ctx_entries = json.loads(task_row["context_json"] or "[]")
+            affected = []
+            for entry in ctx_entries:
+                if entry.get("type") == "affected_files":
+                    affected = entry.get("content", "").split(", ")
+                    break
+            if not affected:
+                # Fallback: parse affected_files from task description
+                affected_json = task_row.get("affected_files") or "[]"
+                if isinstance(affected_json, str):
+                    try:
+                        affected = json.loads(affected_json)
+                    except json.JSONDecodeError:
+                        affected = []
+
+            if affected and any(f.strip() for f in affected):
+                # Diff only the task's files
+                file_args = [f.strip() for f in affected if f.strip()]
+                diff_text = await asyncio.to_thread(
+                    git._run_git_sync, "diff", "--no-color", "--", *file_args, cwd=cwd,
+                )
+            else:
+                # No affected_files — diff entire working tree
+                diff_text = await git.get_diff_working(cwd)
     except Exception as e:
         logger.debug("Failed to get git diff for review: %s", e)
 
