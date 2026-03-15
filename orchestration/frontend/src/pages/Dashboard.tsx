@@ -74,6 +74,13 @@ export default function Dashboard() {
       {showForm && (
         <div className="card mb-2">
           <div className="form-group">
+            <label>Working Directory</label>
+            <input value={repoPath} onChange={e => setRepoPath(e.target.value)}
+              placeholder="C:\Users\you\Documents\git\my-project"
+              style={{ fontFamily: 'monospace' }} />
+            <span className="text-dim text-sm">The repo where tasks will execute and commit code</span>
+          </div>
+          <div className="form-group">
             <label>Project Name</label>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="My Project" />
           </div>
@@ -82,25 +89,23 @@ export default function Dashboard() {
             <textarea value={requirements} onChange={e => setRequirements(e.target.value)}
               placeholder="Describe what you want built..." />
           </div>
-          <div className="form-group">
-            <label>Planning Rigor</label>
-            <select value={rigor} onChange={e => setRigor(e.target.value as PlanningRigor)}>
-              <option value="L1">L1 Quick — Flat task list</option>
-              <option value="L2">L2 Standard — Phases + open questions</option>
-              <option value="L3">L3 Thorough — Phases + risk + test strategy</option>
-            </select>
-          </div>
-          <div className="form-group">
-            <label>Repository Path <span className="text-dim text-sm">(optional)</span></label>
-            <input value={repoPath} onChange={e => setRepoPath(e.target.value)}
-              placeholder="C:\Users\you\project" />
-          </div>
-          <div className="form-group">
-            <label className="flex gap-1" style={{ alignItems: 'center', cursor: 'pointer' }}>
-              <input type="checkbox" checked={reviewCycle} onChange={e => setReviewCycle(e.target.checked)} />
-              <span>Code Review Cycle</span>
-              <span className="text-dim text-sm">— review, iterate, auto-commit, PR per wave</span>
-            </label>
+          <div className="grid grid-2" style={{ gap: '1rem' }}>
+            <div className="form-group">
+              <label>Planning Rigor</label>
+              <select value={rigor} onChange={e => setRigor(e.target.value as PlanningRigor)}>
+                <option value="L0">L0 Roadmap — High-level epics</option>
+                <option value="L1">L1 Quick — Flat task list</option>
+                <option value="L2">L2 Standard — Phases + open questions</option>
+                <option value="L3">L3 Thorough — Phases + risk + test strategy</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="flex gap-1" style={{ alignItems: 'center', cursor: 'pointer' }}>
+                <input type="checkbox" checked={reviewCycle} onChange={e => setReviewCycle(e.target.checked)} />
+                <span>Code Review Cycle</span>
+              </label>
+              <span className="text-dim text-sm">Review, iterate, auto-commit, PR per wave</span>
+            </div>
           </div>
           {error && <div className="text-sm" style={{ color: 'var(--error)', marginBottom: '0.5rem' }}>{error}</div>}
           <div className="flex gap-1">
@@ -163,13 +168,14 @@ export default function Dashboard() {
         <table>
           <thead>
             <tr>
-              <th>Name</th><th>Rigor</th><th>Status</th><th>Tasks</th><th>Created</th>
+              <th>Name</th><th>Working Directory</th><th>Rigor</th><th>Status</th><th>Tasks</th><th>Created</th>
             </tr>
           </thead>
           <tbody>
             {projects.map(p => (
               <tr key={p.id}>
                 <td><Link to={`/project/${p.id}`}>{p.name}</Link></td>
+                <td className="text-dim text-sm" style={{ fontFamily: 'monospace' }}>{p.repo_path ? p.repo_path.split(/[/\\]/).slice(-2).join('/') : '—'}</td>
                 <td><span className={`badge rigor-${p.planning_rigor?.toLowerCase() ?? 'l2'}`}>{p.planning_rigor ?? 'L2'}</span></td>
                 <td><span className={`badge ${p.status}`}>{p.status}</span></td>
                 <td>

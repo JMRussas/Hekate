@@ -14,7 +14,7 @@ export type PlanStatus = 'draft' | 'approved' | 'superseded'
 export type TaskStatus = 'pending' | 'blocked' | 'queued' | 'running' | 'completed' | 'needs_review' | 'failed' | 'cancelled'
 export type ModelTier = 'haiku' | 'sonnet' | 'opus' | 'ollama' | 'claude_code'
 export type TaskType = 'code' | 'research' | 'analysis' | 'asset' | 'integration' | 'documentation'
-export type PlanningRigor = 'L1' | 'L2' | 'L3'
+export type PlanningRigor = 'L0' | 'L1' | 'L2' | 'L3'
 export type ResourceStatus = 'online' | 'offline' | 'degraded'
 export type SSEEventType =
   | 'task_start' | 'task_complete' | 'task_failed' | 'tool_call'

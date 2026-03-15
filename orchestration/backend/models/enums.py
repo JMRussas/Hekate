@@ -76,6 +76,7 @@ class TaskSortField(str, Enum):
 
 
 class PlanningRigor(str, Enum):
+    L0 = "L0"   # Roadmap — high-level epics, no task decomposition
     L1 = "L1"   # Quick — flat task list
     L2 = "L2"   # Standard — phases + open questions
     L3 = "L3"   # Thorough — phases + risk + test strategy
