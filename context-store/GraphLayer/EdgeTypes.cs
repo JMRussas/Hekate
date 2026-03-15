@@ -40,4 +40,9 @@ public static class EdgeTypes
     public const string ForkedFrom = "FORKED_FROM";
     public const string Observed = "OBSERVED";
     public const string Informed = "INFORMED";
+
+    // Sentinel domain
+    public const string ObservedBy = "OBSERVED_BY";
+    public const string ResolvedBy = "RESOLVED_BY";
+    public const string EscalatedTo = "ESCALATED_TO";
 }

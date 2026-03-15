@@ -45,7 +45,9 @@ public class AgeLayer
         // Agent action domain
         "PRODUCED", "TRIGGERED", "FORKED_FROM", "OBSERVED", "INFORMED",
         // Hekate semantic edges (code analysis)
-        "IMPLEMENTS", "DEFINES", "ALLOCATES"
+        "IMPLEMENTS", "DEFINES", "ALLOCATES",
+        // Sentinel domain
+        "OBSERVED_BY", "RESOLVED_BY", "ESCALATED_TO"
     };
 
     public AgeLayer(string connectionString) => _connStr = connectionString;

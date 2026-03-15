@@ -65,7 +65,7 @@ class TestCheckHttp:
         resp.json.return_value = {"models": []}
         client.get = AsyncMock(return_value=resp)
 
-        ok, data = await _check_http("http://localhost:11434/api/tags", client)
+        ok, data, _elapsed = await _check_http("http://localhost:11434/api/tags", client)
         assert ok is True
         assert data == {"models": []}
 
@@ -77,7 +77,7 @@ class TestCheckHttp:
         resp.json.side_effect = ValueError("not json")
         client.get = AsyncMock(return_value=resp)
 
-        ok, data = await _check_http("http://localhost:11434/api/tags", client)
+        ok, data, _elapsed = await _check_http("http://localhost:11434/api/tags", client)
         assert ok is True
         assert data == {}
 
@@ -88,7 +88,7 @@ class TestCheckHttp:
         resp.status_code = 500
         client.get = AsyncMock(return_value=resp)
 
-        ok, data = await _check_http("http://localhost:11434/api/tags", client)
+        ok, data, _elapsed = await _check_http("http://localhost:11434/api/tags", client)
         assert ok is False
         assert data == {}
 
@@ -97,7 +97,7 @@ class TestCheckHttp:
         client = AsyncMock(spec=httpx.AsyncClient)
         client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
 
-        ok, data = await _check_http("http://localhost:11434/api/tags", client)
+        ok, data, _elapsed = await _check_http("http://localhost:11434/api/tags", client)
         assert ok is False
         assert data == {}
 

@@ -22,6 +22,7 @@ from backend.services.planner import PlannerService
 from backend.services.progress import ProgressManager
 from backend.services.provider_quota import ProviderQuotaManager
 from backend.services.resource_monitor import ResourceMonitor
+from backend.services.sentinel.system_sentinel import SystemSentinel
 from backend.services.diagnostic_ingest import DiagnosticIngester
 from backend.tools.rag import RAGIndexCache
 from backend.tools.registry import ToolRegistry
@@ -75,6 +76,9 @@ class Container(containers.DeclarativeContainer):
     progress = providers.Singleton(ProgressManager, db=db)
     provider_quota = providers.Singleton(ProviderQuotaManager, db=db)
     resource_monitor = providers.Singleton(ResourceMonitor)
+    system_sentinel = providers.Singleton(
+        SystemSentinel, resource_monitor=resource_monitor,
+    )
     diagnostic_ingester = providers.Singleton(DiagnosticIngester)
     model_discovery = providers.Singleton(ModelDiscoveryService)
 
@@ -97,4 +101,5 @@ class Container(containers.DeclarativeContainer):
         rag_cache=rag_cache,
         diagnostic_ingester=diagnostic_ingester,
         quota_manager=provider_quota,
+        system_sentinel=system_sentinel,
     )
