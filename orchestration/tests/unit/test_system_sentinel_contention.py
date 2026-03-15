@@ -71,16 +71,16 @@ class TestSemaphoreContention:
 
         await sentinel._detect_contention()
 
-        # Should get one advisory per project
-        assert len(collected) == 2
-        payloads = {m.payload["project_id"] for m in collected}
+        # Should get advisories per project (semaphore + tier contention)
+        semaphore_msgs = [m for m in collected if m.payload["kind"] == "semaphore"]
+        assert len(semaphore_msgs) == 2
+        payloads = {m.payload["project_id"] for m in semaphore_msgs}
         assert payloads == {"proj-a", "proj-b"}
-        assert all(m.payload["kind"] == "semaphore" for m in collected)
-        assert all(m.payload["utilization"] == 1.0 for m in collected)
+        assert all(m.payload["utilization"] == 1.0 for m in semaphore_msgs)
 
     @pytest.mark.asyncio
-    async def test_below_threshold_no_advisory(self):
-        """Usage below 80% does not trigger advisory."""
+    async def test_below_threshold_no_semaphore_advisory(self):
+        """Usage below 80% does not trigger semaphore advisory."""
         bus = SentinelBus()
         collected: list[SentinelMessage] = []
         bus.on("contention_advisory", AsyncMock(side_effect=lambda m: collected.append(m)))
@@ -102,7 +102,9 @@ class TestSemaphoreContention:
         sentinel._plan_sentinels["proj-b"] = MagicMock()
 
         await sentinel._detect_contention()
-        assert len(collected) == 0
+        # Semaphore below threshold — no semaphore advisories
+        semaphore_msgs = [m for m in collected if m.payload["kind"] == "semaphore"]
+        assert len(semaphore_msgs) == 0
 
     @pytest.mark.asyncio
     async def test_single_project_no_cross_plan_contention(self):
