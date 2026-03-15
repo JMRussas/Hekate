@@ -1,7 +1,8 @@
 // Orchestration Engine - Task Detail Page
 //
 // Depends on: api/client.ts, api/projects.ts, hooks/useFetch.ts,
-//             components/CopyButton.tsx, components/Modal.tsx
+//             components/CopyButton.tsx, components/Modal.tsx,
+//             components/ReviewHistorySection.tsx
 // Used by:    App.tsx
 
 import { useState } from 'react'
@@ -12,7 +13,8 @@ import { reviewTask, expandEpic } from '../api/projects'
 import { useFetch } from '../hooks/useFetch'
 import CopyButton from '../components/CopyButton'
 import Modal from '../components/Modal'
-import type { Task } from '../types'
+import type { Task, TaskContextEntry } from '../types'
+import ReviewHistorySection from '../components/ReviewHistorySection'
 
 export default function TaskDetail() {
   const navigate = useNavigate()
@@ -29,6 +31,10 @@ export default function TaskDetail() {
   const [editOpen, setEditOpen] = useState(false)
   const [editTitle, setEditTitle] = useState('')
   const [editDesc, setEditDesc] = useState('')
+
+  const reviewEntries: TaskContextEntry[] = task?.context?.filter(
+    (e: TaskContextEntry) => e.type === 'review_feedback',
+  ) ?? []
 
   if (!id || !taskId) return <div className="text-dim">Invalid URL — missing project or task ID.</div>
   if (error) return <div className="card" style={{ borderColor: 'var(--error)' }}>Error loading task: {error}</div>
@@ -179,6 +185,8 @@ export default function TaskDetail() {
           )}
         </div>
       )}
+
+      <ReviewHistorySection entries={reviewEntries} />
 
       {task.error && (
         <div className="card mb-2" style={{ borderColor: 'var(--error)' }}>

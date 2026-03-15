@@ -276,16 +276,23 @@ async def get_git_status(
     if not repo_path:
         return None
 
+    # Branch — may fail on empty repos (unborn HEAD)
+    branch = None
     try:
         branch = await git.get_current_branch(repo_path)
-        status_output = await git.get_status(repo_path)
     except GitError:
-        raise HTTPException(500, "Failed to read git status from repository")
+        pass  # Empty repo — HEAD not yet created
 
-    # Parse dirty state from porcelain-style status
-    modified_lines = [
-        line for line in status_output.split("\n") if line.strip()
-    ]
+    # Status — works even on empty repos
+    modified_lines = []
+    try:
+        status_output = await git.get_status(repo_path)
+        modified_lines = [
+            line for line in status_output.split("\n") if line.strip()
+        ]
+    except GitError:
+        pass
+
     is_dirty = len(modified_lines) > 0
 
     # Last commit — may fail on repos with no commits yet
@@ -302,24 +309,25 @@ async def get_git_status(
     except GitError:
         pass  # Empty repo — no commits yet
 
-    # Open PR discovery via gh CLI
+    # Open PR discovery via gh CLI (skip if no branch detected)
     open_pr_url = None
-    try:
-        result = await asyncio.to_thread(
-            lambda: subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--json", "url", "--limit", "1"],
-                cwd=str(repo_path),
-                capture_output=True,
-                text=True,
-                timeout=10,
+    if branch:
+        try:
+            result = await asyncio.to_thread(
+                lambda: subprocess.run(
+                    ["gh", "pr", "list", "--head", branch, "--json", "url", "--limit", "1"],
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
             )
-        )
-        if result.returncode == 0:
-            pr_list = json.loads(result.stdout)
-            if pr_list:
-                open_pr_url = pr_list[0]["url"]
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, json.JSONDecodeError):
-        pass  # gh unavailable or failed — skip PR info
+            if result.returncode == 0:
+                pr_list = json.loads(result.stdout)
+                if pr_list:
+                    open_pr_url = pr_list[0]["url"]
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError, json.JSONDecodeError):
+            pass  # gh unavailable or failed — skip PR info
 
     return {
         "branch": branch,
