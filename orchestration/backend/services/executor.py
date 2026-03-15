@@ -28,7 +28,7 @@ from backend.config import (
     TICK_INTERVAL,
     WAVE_CHECKPOINTS,
 )
-from backend.models.enums import ModelTier, ProjectStatus, TaskStatus
+from backend.models.enums import ExecutionMode, ModelTier, ProjectStatus, TaskStatus
 from backend.services.model_router import calculate_cost, get_model_id
 from backend.services.git_service import GitService
 from backend.services.task_lifecycle import execute_task
@@ -280,6 +280,13 @@ class Executor:
         for project in projects:
             pid = project["id"]
 
+            # Read project config to determine execution mode
+            project_row = await self._db.fetchone(
+                "SELECT config_json FROM projects WHERE id = ?", (pid,)
+            )
+            project_config = json.loads(project_row["config_json"] or "{}") if project_row else {}
+            execution_mode = project_config.get("execution_mode", "auto")
+
             # Ensure feature branch exists (once per executor session).
             # Multiple projects can share the same repo on different branches.
             if pid not in self._branch_confirmed:
@@ -352,6 +359,13 @@ class Executor:
             for task_row in ready:
                 task_id = task_row["id"]
                 logger.info("TICK: evaluating task %s tier=%s title=%s", task_id[:8], task_row["model_tier"], task_row["title"])
+
+                # Execution mode gate: skip tasks the executor shouldn't dispatch
+                if execution_mode == ExecutionMode.EXTERNAL:
+                    continue  # External executors handle all tasks
+                tier = ModelTier(task_row["model_tier"])
+                if execution_mode == ExecutionMode.HYBRID and tier != ModelTier.OLLAMA:
+                    continue  # Hybrid: executor only handles Ollama tasks
 
                 # Skip tasks still in retry backoff
                 if task_id in self._retry_after and time.time() < self._retry_after[task_id]:
@@ -517,7 +531,10 @@ class Executor:
                 self._release_repo(pid)
                 continue
 
-            # Detect dead projects: no tasks are pending/queued/running, but some are blocked
+            # Detect dead projects: no tasks are pending/queued/running, but some are blocked.
+            # Skip for external/hybrid — executor isn't responsible for forward progress.
+            if execution_mode in (ExecutionMode.EXTERNAL, ExecutionMode.HYBRID):
+                continue
             active = await self._db.fetchone(
                 "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = ? AND status IN (?, ?, ?)",
                 (pid, TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.RUNNING),
