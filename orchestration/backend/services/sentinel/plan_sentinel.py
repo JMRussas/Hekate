@@ -7,7 +7,8 @@
 #
 #  Spawned and torn down by SystemSentinel.
 #
-#  Depends on: sentinel/bus.py, sentinel/models.py, sentinel/context_client.py
+#  Depends on: sentinel/bus.py, sentinel/models.py, sentinel/context_client.py,
+#              sentinel/reasoner.py, sentinel/intervention_executor.py
 #  Used by:    system_sentinel.py
 
 from __future__ import annotations
@@ -27,6 +28,9 @@ from backend.services.sentinel.models import (
     SentinelObservation,
     Severity,
 )
+
+from backend.services.sentinel.intervention_executor import InterventionExecutor
+from backend.services.sentinel.reasoner import SentinelReasoner
 
 if TYPE_CHECKING:
     from backend.services.sentinel.bus import SentinelBus
@@ -147,6 +151,8 @@ class PlanSentinel:
         progress_manager: ProgressManager | None = None,
         base_url: str = DEFAULT_BASE_URL,
         auth_token: str | None = None,
+        reasoner: SentinelReasoner | None = None,
+        intervention_executor: InterventionExecutor | None = None,
     ) -> None:
         self._project_id = project_id
         self._bus = bus
@@ -158,6 +164,10 @@ class PlanSentinel:
         self._task: asyncio.Task | None = None
         self._state = PlanState()
         self._http_client: httpx.AsyncClient | None = None
+        self._reasoner = reasoner
+        self._executor = intervention_executor
+        # Recent observations for reasoner context
+        self._observation_history: list[SentinelObservation] = []
 
     # ------------------------------------------------------------------
     # Public properties
@@ -205,6 +215,8 @@ class PlanSentinel:
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
+        if self._executor:
+            await self._executor.close()
         logger.info("Plan Sentinel stopped for project %s", self._project_id)
 
     # ------------------------------------------------------------------
@@ -723,6 +735,11 @@ class PlanSentinel:
         - budget_warning → resource_alert
         - task_stuck, wave_stalled, cascade_failure → stall_notification
         """
+        # Track for reasoner context (cap at 50 most recent)
+        self._observation_history.append(obs)
+        if len(self._observation_history) > 50:
+            self._observation_history = self._observation_history[-50:]
+
         topic = "stall_notification"
         if obs.category == "budget_warning":
             topic = "resource_alert"
@@ -763,9 +780,13 @@ class PlanSentinel:
     async def _handle_intervention(self, obs: SentinelObservation) -> None:
         """Determine and execute the appropriate intervention for an observation.
 
-        Auto-tier interventions (retry_task, release_claim) are executed
-        directly via the orchestration API. Supervised-tier interventions
-        (skip_task, reorder_wave) are published as proposals for user approval.
+        Consults the SentinelReasoner (if available) before acting.  If the
+        reasoner's confidence is below 0.5, auto-tier interventions are
+        escalated to supervised.  Supervised proposals always include the LLM
+        diagnosis when available.
+
+        Auto-tier actions are delegated to the InterventionExecutor when
+        present, falling back to the legacy inline HTTP calls otherwise.
         """
         entry = _CATEGORY_TO_INTERVENTION.get(obs.category)
         if entry is None:
@@ -790,28 +811,72 @@ class PlanSentinel:
             return
         self._state.handled_interventions.add(dedup_key)
 
+        # --- Consult reasoner for LLM-powered diagnosis ---
+        reasoning_result = None
+        if self._reasoner:
+            try:
+                reasoning_result = await self._reasoner.reason(
+                    obs, self._state, self._observation_history,
+                )
+            except Exception:
+                logger.debug(
+                    "Reasoner failed for %s, falling back to rule-only",
+                    obs.observation_id,
+                )
+
+        # If reasoner confidence is low, escalate auto-tier to supervised
+        if (
+            reasoning_result is not None
+            and tier == InterventionTier.AUTO
+            and reasoning_result.confidence < 0.5
+        ):
+            logger.info(
+                "Reasoner confidence %.2f < 0.5 for %s — escalating to supervised",
+                reasoning_result.confidence, obs.observation_id[:8],
+            )
+            tier = InterventionTier.SUPERVISED
+
         if tier == InterventionTier.AUTO:
             await self._execute_auto_intervention(action, obs)
         else:
-            await self._publish_intervention_proposal(action, obs)
+            await self._publish_intervention_proposal(
+                action, obs, reasoning_result=reasoning_result,
+            )
 
     # --- Auto-tier interventions ---
 
     async def _execute_auto_intervention(
         self, action: InterventionAction, obs: SentinelObservation,
     ) -> None:
-        """Execute an auto-tier intervention and publish the outcome."""
+        """Execute an auto-tier intervention via the InterventionExecutor
+        (or legacy inline calls) and publish the outcome."""
         success = False
         result_detail = ""
 
         try:
-            if action == InterventionAction.RETRY_TASK:
-                success, result_detail = await self._auto_retry_task(obs)
-            elif action == InterventionAction.RELEASE_CLAIM:
-                success, result_detail = await self._auto_release_claim(obs)
+            if self._executor:
+                ir = await self._dispatch_via_executor(action, obs)
+                success = ir.success
+                result_detail = ir.detail
+                # Update internal state on successful retry/release
+                task_id = ir.task_id or obs.task_id
+                if success and task_id:
+                    if action == InterventionAction.RETRY_TASK:
+                        self._state.retry_counts[task_id] = (
+                            self._state.retry_counts.get(task_id, 0) + 1
+                        )
+                        self._state.task_statuses[task_id] = TaskState.PENDING
+                    elif action == InterventionAction.RELEASE_CLAIM:
+                        self._state.task_statuses[task_id] = TaskState.PENDING
             else:
-                logger.warning("Unknown auto intervention: %s", action)
-                return
+                # Legacy fallback — inline HTTP calls
+                if action == InterventionAction.RETRY_TASK:
+                    success, result_detail = await self._auto_retry_task(obs)
+                elif action == InterventionAction.RELEASE_CLAIM:
+                    success, result_detail = await self._auto_release_claim(obs)
+                else:
+                    logger.warning("Unknown auto intervention: %s", action)
+                    return
         except Exception:
             logger.exception(
                 "Auto intervention %s failed for project %s",
@@ -840,6 +905,27 @@ class PlanSentinel:
             logger.exception(
                 "Failed to publish intervention result for %s", obs.observation_id,
             )
+
+    async def _dispatch_via_executor(
+        self, action: InterventionAction, obs: SentinelObservation,
+    ):
+        """Route an action to the correct InterventionExecutor method."""
+        from backend.services.sentinel.intervention_executor import InterventionResult
+
+        assert self._executor is not None
+        if action == InterventionAction.RETRY_TASK:
+            return await self._executor.retry_task(obs)
+        elif action == InterventionAction.RELEASE_CLAIM:
+            return await self._executor.release_claim(obs)
+        elif action == InterventionAction.SKIP_TASK:
+            return await self._executor.skip_task(obs)
+        elif action == InterventionAction.REORDER_WAVE:
+            return await self._executor.reorder_wave(obs)
+        return InterventionResult(
+            action=action.value, success=False, detail="unknown action",
+        )
+
+    # --- Legacy inline HTTP interventions (used when no executor is wired) ---
 
     async def _auto_retry_task(
         self, obs: SentinelObservation,
@@ -919,9 +1005,18 @@ class PlanSentinel:
     # --- Supervised-tier interventions ---
 
     async def _publish_intervention_proposal(
-        self, action: InterventionAction, obs: SentinelObservation,
+        self,
+        action: InterventionAction,
+        obs: SentinelObservation,
+        *,
+        reasoning_result=None,
     ) -> None:
-        """Publish a supervised intervention proposal for user approval."""
+        """Publish a supervised intervention proposal for user approval.
+
+        When a ``reasoning_result`` is provided (from SentinelReasoner), its
+        diagnosis, confidence, and evidence are included in the proposal
+        payload so the human reviewer has full LLM context.
+        """
         payload: dict[str, Any] = {
             "type": "intervention_proposal",
             "action": action.value,
@@ -949,6 +1044,15 @@ class PlanSentinel:
                 f"Wave {wave} is fully stalled ({len(task_ids)} tasks). "
                 "Consider reordering remaining work or manual intervention."
             )
+
+        # Include LLM diagnosis when available
+        if reasoning_result is not None:
+            payload["llm_diagnosis"] = {
+                "diagnosis": reasoning_result.diagnosis,
+                "recommended_action": reasoning_result.recommended_action,
+                "confidence": reasoning_result.confidence,
+                "supporting_evidence": reasoning_result.supporting_evidence,
+            }
 
         msg = SentinelMessage(
             topic="intervention_proposal",

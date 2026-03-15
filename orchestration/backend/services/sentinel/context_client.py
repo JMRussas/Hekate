@@ -139,6 +139,43 @@ class SentinelContextClient:
         ]
         return ContextStoreResult(nodes=sentinel_nodes, latency_ms=result.latency_ms)
 
+    async def search_similar_observations(
+        self,
+        observation: SentinelObservation,
+        max_results: int = 5,
+    ) -> list[dict]:
+        """Fetch the most similar past observations for reasoning context.
+
+        Builds a semantic query from the observation's category, message,
+        and severity, then filters to sentinel_observation nodes excluding
+        the current observation.
+
+        Returns:
+            A list of up to *max_results* observation node dicts, or an
+            empty list if the context store is unavailable.
+        """
+        query = (
+            f"{observation.severity.value} {observation.category}: "
+            f"{observation.message}"
+        )
+        # Request extra nodes to account for filtering out the current observation
+        result = await self._client.preview(query, max_nodes=max_results + 5)
+        if result is None:
+            return []
+
+        similar: list[dict] = []
+        for node in result.nodes:
+            if node.get("type") != SENTINEL_OBSERVATION_TYPE:
+                continue
+            # Exclude the observation we're searching for
+            node_id = node.get("id") or node.get("attributes", {}).get("observation_id")
+            if node_id == observation.observation_id:
+                continue
+            similar.append(node)
+            if len(similar) >= max_results:
+                break
+        return similar
+
     async def update_observation(
         self,
         observation_id: str,
