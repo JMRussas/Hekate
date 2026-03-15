@@ -1,7 +1,7 @@
 // Orchestration Engine - Projects API
 
 import { apiFetch, apiPost, apiPatch, apiDelete, authFetch } from './client'
-import type { Project, Plan, Task, Checkpoint, CoverageReport, PlanningRigor } from '../types'
+import type { Project, Plan, Task, Checkpoint, CoverageReport, PlanningRigor, GitStatus } from '../types'
 
 export const listProjects = (status?: string) =>
   apiFetch<Project[]>(`/projects${status ? `?status=${status}` : ''}`)
@@ -115,3 +115,6 @@ export const bulkTaskAction = (action: 'retry' | 'cancel', taskIds: string[]) =>
   apiPost<{ succeeded: string[]; failed: { id: string; reason: string }[] }>(
     '/tasks/bulk', { action, task_ids: taskIds }
   )
+
+export const fetchGitStatus = (projectId: string) =>
+  apiFetch<GitStatus | null>(`/projects/${projectId}/git-status`)

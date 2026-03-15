@@ -5,11 +5,11 @@ import { useParams, Link } from 'react-router-dom'
 import {
   getProject, listPlans, listTasks, fetchCoverage, fetchCheckpoints,
   generatePlan, approvePlan, startExecution, pauseExecution, cancelProject,
-  resolveCheckpoint, updateProject,
+  resolveCheckpoint, updateProject, fetchGitStatus,
 } from '../api/projects'
 import { useSSE } from '../hooks/useSSE'
 import { useFetch } from '../hooks/useFetch'
-import type { Project, Plan, Task, Checkpoint, CoverageReport, PlanningRigor } from '../types'
+import type { Project, Plan, Task, Checkpoint, CoverageReport, PlanningRigor, GitStatus } from '../types'
 import PlanTree from '../components/PlanTree'
 
 interface ProjectData {
@@ -18,6 +18,7 @@ interface ProjectData {
   tasks: Task[]
   coverage: CoverageReport | null
   checkpoints: Checkpoint[]
+  gitStatus: GitStatus | null
 }
 
 export default function ProjectDetail() {
@@ -32,8 +33,9 @@ export default function ProjectDetail() {
       listTasks(id!),
       fetchCoverage(id!).catch(() => null),
       fetchCheckpoints(id!).catch(() => []),
-    ]).then(([project, plans, tasks, coverage, checkpoints]) => ({
-      project, plans, tasks, coverage, checkpoints,
+      fetchGitStatus(id!).catch(() => null),
+    ]).then(([project, plans, tasks, coverage, checkpoints, gitStatus]) => ({
+      project, plans, tasks, coverage, checkpoints, gitStatus,
     })),
     [id],
   )
@@ -43,6 +45,7 @@ export default function ProjectDetail() {
   const tasks = data?.tasks ?? []
   const coverage = data?.coverage ?? null
   const checkpoints = data?.checkpoints ?? []
+  const gitStatus = data?.gitStatus ?? null
   const error = actionError || fetchError
 
   const sse = useSSE(project?.status === 'executing' ? id! : null)
@@ -198,6 +201,62 @@ export default function ProjectDetail() {
           </div>
         )
       })()}
+
+      {/* Repository Status */}
+      {gitStatus && (
+        <div className="card mb-2">
+          <h3>Repository</h3>
+          <div className="grid grid-4" style={{ gap: '1rem', marginTop: '0.5rem' }}>
+            <div>
+              <div className="text-dim text-sm">Branch</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style={{ flexShrink: 0, opacity: 0.6 }}>
+                  <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25z" />
+                </svg>
+                <span style={{ fontWeight: 600 }}>{gitStatus.branch}</span>
+                {gitStatus.is_dirty && (
+                  <span className="badge failed" style={{ fontSize: '0.7rem' }}>
+                    {gitStatus.modified_files_count} modified
+                  </span>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="text-dim text-sm">Last Commit</div>
+              {gitStatus.last_commit ? (
+                <div style={{ marginTop: '0.25rem' }}>
+                  <code style={{ fontSize: '0.85rem' }}>{gitStatus.last_commit.sha.slice(0, 7)}</code>
+                  <div className="text-dim text-sm" style={{ marginTop: '0.125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {gitStatus.last_commit.message}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-dim text-sm" style={{ marginTop: '0.25rem' }}>No commits</div>
+              )}
+            </div>
+            <div>
+              <div className="text-dim text-sm">Status</div>
+              <div style={{ marginTop: '0.25rem' }}>
+                <span className={`badge ${gitStatus.is_dirty ? 'failed' : 'completed'}`}>
+                  {gitStatus.is_dirty ? 'dirty' : 'clean'}
+                </span>
+              </div>
+            </div>
+            <div>
+              <div className="text-dim text-sm">Pull Request</div>
+              <div style={{ marginTop: '0.25rem' }}>
+                {gitStatus.open_pr_url ? (
+                  <a href={gitStatus.open_pr_url} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-sm">
+                    View PR
+                  </a>
+                ) : (
+                  <span className="text-dim text-sm">None</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && <div className="card" style={{ borderColor: 'var(--error)' }}>{error}</div>}
 

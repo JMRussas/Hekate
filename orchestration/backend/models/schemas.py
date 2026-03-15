@@ -126,6 +126,7 @@ class TaskOut(BaseModel):
     cost_usd: float = 0.0
     output_text: str | None = None
     output_artifacts: list[dict] = Field(default_factory=list)
+    context: list[dict] = Field(default_factory=list)
     error: str | None = None
     depends_on: list[str] = Field(default_factory=list)
     started_at: float | None = None

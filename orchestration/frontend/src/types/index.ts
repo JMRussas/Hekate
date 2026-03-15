@@ -104,6 +104,36 @@ export interface PlanTestStrategy {
   coverage_notes: string
 }
 
+// ---------------------------------------------------------------------------
+// Review feedback (from code_reviewer.py review cycle)
+// ---------------------------------------------------------------------------
+
+export type ReviewVerdict = 'approved' | 'changes_requested'
+export type ReviewSeverity = 'error' | 'warning'
+
+export interface ReviewIssue {
+  severity: ReviewSeverity
+  file: string
+  description: string
+}
+
+export interface ReviewFeedback {
+  verdict: ReviewVerdict
+  issues: ReviewIssue[]
+  summary: string
+}
+
+// ---------------------------------------------------------------------------
+// Task context entries
+// ---------------------------------------------------------------------------
+
+export interface TaskContextEntry {
+  type: string
+  content: string
+  /** Structured review data — present when type === 'review_feedback' */
+  review?: ReviewFeedback
+}
+
 export interface Task {
   id: string
   project_id: string
@@ -118,6 +148,7 @@ export interface Task {
   wave: number
   phase: string | null
   tools: string[]
+  context: TaskContextEntry[]
   verification_status: string | null
   verification_notes: string | null
   requirement_ids: string[]
@@ -207,4 +238,18 @@ export interface CoverageReport {
   covered_count: number
   uncovered_count: number
   requirements: CoverageRequirement[]
+}
+
+export interface GitStatusCommit {
+  sha: string
+  message: string
+  date: string
+}
+
+export interface GitStatus {
+  branch: string
+  is_dirty: boolean
+  modified_files_count: number
+  last_commit: GitStatusCommit | null
+  open_pr_url: string | null
 }

@@ -279,7 +279,6 @@ async def get_git_status(
     try:
         branch = await git.get_current_branch(repo_path)
         status_output = await git.get_status(repo_path)
-        log_entries = await git.get_log(repo_path, count=1)
     except GitError:
         raise HTTPException(500, "Failed to read git status from repository")
 
@@ -289,15 +288,19 @@ async def get_git_status(
     ]
     is_dirty = len(modified_lines) > 0
 
-    # Last commit
+    # Last commit — may fail on repos with no commits yet
     last_commit = None
-    if log_entries:
-        entry = log_entries[0]
-        last_commit = {
-            "sha": entry["sha"][:7],
-            "message": entry["message"],
-            "date": entry["date"],
-        }
+    try:
+        log_entries = await git.get_log(repo_path, count=1)
+        if log_entries:
+            entry = log_entries[0]
+            last_commit = {
+                "sha": entry["sha"][:7],
+                "message": entry["message"],
+                "date": entry["date"],
+            }
+    except GitError:
+        pass  # Empty repo — no commits yet
 
     # Open PR discovery via gh CLI
     open_pr_url = None

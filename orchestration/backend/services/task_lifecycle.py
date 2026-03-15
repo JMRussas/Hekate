@@ -170,8 +170,8 @@ async def _run_review_cycle(
                     affected = entry.get("content", "").split(", ")
                     break
             if not affected:
-                # Fallback: parse affected_files from task description
-                affected_json = task_row.get("affected_files") or "[]"
+                # Fallback: parse affected_files from task row (if column exists)
+                affected_json = _row_get(task_row, "affected_files") or "[]"
                 if isinstance(affected_json, str):
                     try:
                         affected = json.loads(affected_json)
@@ -264,7 +264,15 @@ async def _run_review_cycle(
     feedback_text = format_review_feedback(review)
     non_feedbacks = [c for c in ctx if c.get("type") != "review_feedback"]
     feedbacks = [c for c in ctx if c.get("type") == "review_feedback"]
-    feedbacks.append({"type": "review_feedback", "content": feedback_text})
+    feedbacks.append({
+        "type": "review_feedback",
+        "content": feedback_text,
+        "review": {
+            "verdict": review["verdict"],
+            "issues": review.get("issues", []),
+            "summary": review.get("summary", ""),
+        },
+    })
 
     updated_ctx = non_feedbacks + feedbacks
 
