@@ -770,11 +770,15 @@ async def execute_task(
                 # Reviews the git diff like a senior dev, iterates if needed,
                 # then commits approved changes.
                 # Check both global config AND per-project config_json.
-                _project_cfg = json.loads(
-                    (await db.fetchone("SELECT config_json FROM projects WHERE id = ?", (project_id,))
-                     or {}).get("config_json") or "{}"
-                ) if not REVIEW_CYCLE_ENABLED else {}
-                _review_enabled = REVIEW_CYCLE_ENABLED or _project_cfg.get("review_cycle", {}).get("enabled", False)
+                _review_enabled = REVIEW_CYCLE_ENABLED
+                if not _review_enabled:
+                    _proj_row = await db.fetchone(
+                        "SELECT config_json FROM projects WHERE id = ?", (project_id,)
+                    )
+                    _project_cfg = json.loads(
+                        _proj_row["config_json"] if _proj_row and _proj_row["config_json"] else "{}"
+                    )
+                    _review_enabled = _project_cfg.get("review_cycle", {}).get("enabled", False)
                 if _review_enabled and tier not in (ModelTier.OLLAMA,):
                     review_blocked = await _run_review_cycle(
                         task_row=task_row,
