@@ -83,8 +83,11 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 | `backend/services/sentinel/models.py` | SentinelMessage, SentinelObservation, Severity, HealthTrend enums/dataclasses |
 | `backend/services/sentinel/bus.py` | Async pub/sub message bus with topic routing, wildcard subscriptions |
 | `backend/services/sentinel/context_client.py` | Context store wrapper for observation persistence + semantic search |
-| `backend/services/sentinel/plan_sentinel.py` | Per-plan monitor (SSE subscriber, intervention actions) — stub, Epic 3 expands |
+| `backend/services/sentinel/plan_sentinel.py` | Per-plan monitor: SSE subscriber, rule-based detection, auto/supervised interventions |
 | `backend/services/sentinel/system_sentinel.py` | Singleton system monitor: health trends, Plan Sentinel lifecycle, contention detection |
+| `backend/services/sentinel/reasoner.py` | LLM-powered diagnosis via Haiku, semantic search of past incidents |
+| `backend/services/sentinel/intervention_executor.py` | Concrete intervention actions: retry, release, skip, reorder via orchestration API |
+| `backend/routes/sentinel.py` | REST + SSE endpoints: status, observations, interventions, approve/reject, event stream |
 | `backend/tools/registry.py` | Injectable `ToolRegistry` class |
 | `backend/tools/` | Tool implementations (RAG, Ollama, ComfyUI, file) |
 | `frontend/` | React 19 + TypeScript + Vite UI (ErrorBoundary, 404 page) |
