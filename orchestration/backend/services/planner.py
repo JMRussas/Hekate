@@ -71,6 +71,39 @@ _TASK_SCHEMA = """{
       "affected_files": ["src/auth.ts", "db/schema.sql"]
     }"""
 
+_RIGOR_SUFFIX_L0 = """Produce a high-level roadmap of epics. Do NOT decompose into individual tasks — \
+each epic represents a major body of work that will be planned separately at L1-L3 when the user is ready.
+
+{
+  "summary": "Brief summary of the overall vision",
+  "epics": [
+    {
+      "title": "Epic title (e.g. 'Authentication System', 'Data Pipeline')",
+      "description": "What this epic delivers and why it matters",
+      "scope": "What's in scope and what's explicitly out of scope",
+      "estimated_complexity": "small|medium|large|xlarge",
+      "depends_on": [],
+      "success_criteria": "How you know this epic is done"
+    }
+  ],
+  "open_questions": [
+    {
+      "question": "An ambiguity or decision that affects the roadmap",
+      "proposed_answer": "How you propose to handle it",
+      "impact": "What changes if the answer differs"
+    }
+  ]
+}
+
+Epic guidelines:
+- 3-10 epics that represent major deliverables or milestones.
+- Each epic should be independently plannable at L1-L3 later.
+- Order by dependency — earlier epics should not depend on later ones.
+- depends_on indices are 0-based across all epics.
+- estimated_complexity guides effort sizing (small=days, medium=1-2 weeks, large=2-4 weeks, xlarge=month+).
+
+Respond with ONLY the JSON roadmap, no markdown fences or explanation."""
+
 _RIGOR_SUFFIX_L1 = f"""Produce a JSON plan with this exact structure:
 {{
   "summary": "Brief summary of what will be built",
@@ -176,6 +209,7 @@ Test strategy:
 You may optionally begin your response with a <thinking> block to reason through dependencies, risks, and trade-offs before producing the plan. After your reasoning (if any), output the JSON plan with no markdown fences."""
 
 _RIGOR_SUFFIXES = {
+    PlanningRigor.L0: _RIGOR_SUFFIX_L0,
     PlanningRigor.L1: _RIGOR_SUFFIX_L1,
     PlanningRigor.L2: _RIGOR_SUFFIX_L2,
     PlanningRigor.L3: _RIGOR_SUFFIX_L3,

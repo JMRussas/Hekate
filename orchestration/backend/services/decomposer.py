@@ -43,12 +43,37 @@ def _load_platform_knowledge(platform: str) -> str | None:
 
 
 def _flatten_plan_tasks(plan_data: dict) -> tuple[list[dict], list[str | None]]:
-    """Extract a flat task list from either a flat or phased plan.
+    """Extract a flat task list from a flat, phased, or roadmap plan.
 
     Returns:
         (tasks_data, phase_names) where phase_names[i] is the phase name
         for tasks_data[i]. For flat plans, all phase_names are None.
     """
+    # L0 Roadmap — epics become research/analysis tasks (one per epic)
+    epics = plan_data.get("epics")
+    if epics and isinstance(epics, list) and len(epics) > 0:
+        tasks_data: list[dict] = []
+        phase_names: list[str | None] = []
+        for epic in epics:
+            if not isinstance(epic, dict):
+                continue
+            tasks_data.append({
+                "title": epic.get("title", "Unnamed Epic"),
+                "description": (
+                    f"{epic.get('description', '')}\n\n"
+                    f"**Scope:** {epic.get('scope', 'Not specified')}\n"
+                    f"**Success criteria:** {epic.get('success_criteria', 'Not specified')}"
+                ),
+                "task_type": "research",
+                "complexity": epic.get("estimated_complexity", "medium"),
+                "depends_on": epic.get("depends_on", []),
+                "tools_needed": [],
+                "verification_criteria": epic.get("success_criteria", ""),
+                "affected_files": [],
+            })
+            phase_names.append("Roadmap")
+        return tasks_data, phase_names
+
     phases = plan_data.get("phases")
     if phases and isinstance(phases, list) and len(phases) > 0:
         tasks_data: list[dict] = []
