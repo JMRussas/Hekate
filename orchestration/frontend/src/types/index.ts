@@ -159,6 +159,8 @@ export interface Task {
   output_artifacts: Record<string, unknown>[]
   error: string | null
   depends_on: string[]
+  git_branch: string | null
+  git_commit_sha: string | null
   started_at: number | null
   completed_at: number | null
   created_at: number
