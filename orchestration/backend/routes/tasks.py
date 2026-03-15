@@ -383,3 +383,62 @@ async def review_task(
 
     updated = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
     return TaskOut(**await _row_to_dict(updated, db))
+
+
+@router.post("/{task_id}/expand", status_code=201)
+@inject
+async def expand_epic(
+    task_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(Provide[Container.db]),
+) -> dict:
+    """Expand an L0 epic (task) into a new L2 project.
+
+    Creates a new project using the epic's title as the name and its
+    description as requirements, inheriting the parent project's
+    repo_path and config. Returns the new project ID.
+    """
+    import uuid
+    from backend.models.enums import ProjectStatus
+
+    task_row = await _verify_task_ownership(db, task_id, current_user)
+
+    # Get parent project for repo_path and config
+    parent = await db.fetchone(
+        "SELECT * FROM projects WHERE id = ?", (task_row["project_id"],)
+    )
+    if not parent:
+        raise HTTPException(404, "Parent project not found")
+
+    parent_config = json.loads(parent["config_json"]) if parent["config_json"] else {}
+
+    # Build new project config — inherit review_cycle, upgrade rigor to L2
+    new_config = dict(parent_config)
+    new_config["planning_rigor"] = "L2"
+    new_config["expanded_from"] = {
+        "project_id": task_row["project_id"],
+        "task_id": task_id,
+        "epic_title": task_row["title"],
+    }
+
+    new_id = uuid.uuid4().hex[:12]
+    now = time.time()
+
+    await db.execute_write(
+        "INSERT INTO projects (id, name, requirements, status, config_json, "
+        "owner_id, repo_path, git_base_branch, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            new_id,
+            task_row["title"],
+            task_row["description"],
+            ProjectStatus.DRAFT,
+            json.dumps(new_config),
+            current_user["id"],
+            parent["repo_path"],
+            parent["git_base_branch"],
+            now, now,
+        ),
+    )
+
+    return {"project_id": new_id, "name": task_row["title"]}

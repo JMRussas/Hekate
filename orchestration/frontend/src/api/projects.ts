@@ -93,6 +93,9 @@ export const updateTask = (taskId: string, body: Record<string, unknown>) =>
 export const retryTask = (taskId: string) =>
   apiPost<Task>(`/tasks/${taskId}/retry`)
 
+export const expandEpic = (taskId: string) =>
+  apiPost<{ project_id: string; name: string }>(`/tasks/${taskId}/expand`)
+
 export const cloneProject = (projectId: string) =>
   apiPost<Project>(`/projects/${projectId}/clone`)
 

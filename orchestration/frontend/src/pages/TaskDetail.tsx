@@ -6,14 +6,16 @@
 
 import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { apiFetch, apiPatch, apiPost } from '../api/client'
-import { reviewTask } from '../api/projects'
+import { reviewTask, expandEpic } from '../api/projects'
 import { useFetch } from '../hooks/useFetch'
 import CopyButton from '../components/CopyButton'
 import Modal from '../components/Modal'
 import type { Task } from '../types'
 
 export default function TaskDetail() {
+  const navigate = useNavigate()
   const { id, taskId } = useParams<{ id: string; taskId: string }>()
   const { data: task, error, refetch } = useFetch<Task>(
     () => apiFetch<Task>(`/tasks/${taskId}`),
@@ -81,6 +83,23 @@ export default function TaskDetail() {
               setActionError('')
               setEditOpen(true)
             }}>Edit &amp; Retry</button>
+          )}
+          {task.task_type === 'research' && (
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={!!actionLoading}
+              onClick={async () => {
+                setActionLoading('expand')
+                setActionError('')
+                try {
+                  const result = await expandEpic(taskId!)
+                  navigate(`/project/${result.project_id}`)
+                } catch (e) {
+                  setActionError(String(e))
+                }
+                setActionLoading('')
+              }}
+            >{actionLoading === 'expand' ? 'Expanding...' : 'Expand to Project'}</button>
           )}
           <span className={`badge ${task.status}`}>{task.status}</span>
         </div>
