@@ -120,6 +120,7 @@ export default function ProjectDetail() {
               onChange={e => handleRigorChange(e.target.value as PlanningRigor)}
               disabled={!!loading}
             >
+              <option value="L0">L0 Roadmap</option>
               <option value="L1">L1 Quick</option>
               <option value="L2">L2 Standard</option>
               <option value="L3">L3 Thorough</option>
@@ -157,6 +158,46 @@ export default function ProjectDetail() {
           )}
         </div>
       </div>
+
+      {/* Project Stats */}
+      {tasks.length > 0 && (() => {
+        const completed = tasks.filter(t => t.status === 'completed').length
+        const running = tasks.filter(t => ['running', 'queued'].includes(t.status)).length
+        const waves = new Set(tasks.map(t => t.wave)).size
+        const currentWave = Math.min(...tasks.filter(t => !['completed', 'failed', 'cancelled', 'needs_review'].includes(t.status)).map(t => t.wave ?? 0))
+        const currentWaveTotal = tasks.filter(t => t.wave === currentWave).length
+        const currentWaveDone = tasks.filter(t => t.wave === currentWave && ['completed', 'failed', 'needs_review'].includes(t.status)).length
+        const wavePct = currentWaveTotal > 0 ? Math.round((currentWaveDone / currentWaveTotal) * 100) : 0
+        const agents = new Set(tasks.map(t => t.model_tier).filter(Boolean)).size
+        const totalCost = tasks.reduce((sum, t) => sum + (t.cost_usd ?? 0), 0)
+        return (
+          <div className="grid grid-4 mb-2">
+            <div className="card">
+              <div className="text-dim text-sm">Tasks</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 600 }}>{completed}/{tasks.length}</div>
+              {running > 0 && <div className="text-dim text-sm">{running} running</div>}
+            </div>
+            <div className="card">
+              <div className="text-dim text-sm">Current Wave</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 600 }}>Wave {isFinite(currentWave) ? currentWave : '—'}</div>
+              {isFinite(currentWave) && (
+                <div className="progress-bar" style={{ marginTop: 4 }}>
+                  <div className="progress-fill ok" style={{ width: `${wavePct}%` }} />
+                </div>
+              )}
+            </div>
+            <div className="card">
+              <div className="text-dim text-sm">Agents</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 600 }}>{agents}</div>
+              <div className="text-dim text-sm">{waves} wave{waves !== 1 ? 's' : ''}</div>
+            </div>
+            <div className="card">
+              <div className="text-dim text-sm">Total Cost</div>
+              <div className="cost" style={{ fontSize: '1.5rem' }}>${totalCost.toFixed(4)}</div>
+            </div>
+          </div>
+        )
+      })()}
 
       {error && <div className="card" style={{ borderColor: 'var(--error)' }}>{error}</div>}
 
