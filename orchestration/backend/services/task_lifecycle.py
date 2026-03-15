@@ -485,6 +485,54 @@ async def verify_task_output(
         retry_count = task_row["retry_count"]
         max_retries = task_row["max_retries"]
 
+        # Empty output with gaps is always a hard failure — never treat as a
+        # soft pass.  Force retry if budget remains, otherwise mark FAILED so
+        # the task blocks dependents and project completion.
+        _output_empty = not output_text or not output_text.strip()
+        if _output_empty:
+            if retry_count < max_retries:
+                if retry_after is not None:
+                    retry_after.pop(task_id, None)
+                ctx = json.loads(task_row["context_json"]) if task_row["context_json"] else []
+                non_feedbacks = [e for e in ctx if e.get("type") != "verification_feedback"]
+                feedbacks = [e for e in ctx if e.get("type") == "verification_feedback"]
+                if len(feedbacks) >= _MAX_VERIFICATION_FEEDBACKS:
+                    feedbacks = feedbacks[-(_MAX_VERIFICATION_FEEDBACKS - 1):]
+                feedbacks.append({
+                    "type": "verification_feedback",
+                    "content": f"Previous attempt produced empty output with gaps: {v_notes}. "
+                               "You MUST produce substantive output.",
+                })
+                ctx = non_feedbacks + feedbacks
+                await db.execute_write(
+                    "UPDATE tasks SET status = ?, context_json = ?, output_text = NULL, "
+                    "retry_count = retry_count + 1, completed_at = NULL, updated_at = ? WHERE id = ?",
+                    (TaskStatus.PENDING, json.dumps(ctx), time.time(), task_id),
+                )
+                await progress.push_event(
+                    project_id, "task_verification_retry",
+                    f"{task_row['title']}: empty output with gaps, retrying",
+                    task_id=task_id, verification_notes=v_notes,
+                )
+                return True
+            else:
+                logger.warning(
+                    "Task %s has empty output with gaps and retries exhausted — marking FAILED",
+                    task_id,
+                )
+                await db.execute_write(
+                    "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    (TaskStatus.FAILED,
+                     f"Empty output after {retry_count} retries (gaps: {v_notes})",
+                     time.time(), task_id),
+                )
+                await progress.push_event(
+                    project_id, "task_failed",
+                    f"{task_row['title']}: empty output with gaps, retries exhausted",
+                    task_id=task_id,
+                )
+                return True
+
         # Loop-breaker: if this output is identical to a previously rejected
         # output, retrying won't help — escalate to human review.
         import hashlib

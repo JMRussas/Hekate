@@ -75,6 +75,7 @@ async def lifespan(app: FastAPI):
     resource_monitor = container.resource_monitor()
     model_discovery = container.model_discovery()
     executor = container.executor()
+    system_sentinel = container.system_sentinel()
 
     async with AsyncExitStack() as stack:
         logger.info("Initializing database...")
@@ -95,6 +96,9 @@ async def lifespan(app: FastAPI):
         set_discovery_service(model_discovery)  # Wire into model_router module
         stack.push_async_callback(model_discovery.close)
         logger.info("Model discovery completed")
+
+        await system_sentinel.start()
+        stack.push_async_callback(system_sentinel.stop)
 
         await executor.start()
         stack.push_async_callback(executor.stop)

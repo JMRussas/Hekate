@@ -71,4 +71,7 @@ public static class NodeTypes
     // Agent action domain (planned)
     public const string MutateNode = "mutate_node";
     public const string Execute = "execute";
+
+    // Sentinel domain
+    public const string SentinelObservation = "sentinel_observation";
 }

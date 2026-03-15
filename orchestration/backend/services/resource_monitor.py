@@ -9,6 +9,7 @@
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -43,6 +44,7 @@ class ResourceState:
     method: str = ""
     details: dict = field(default_factory=dict)
     category: str = "ai"
+    response_time_ms: float | None = None  # latency of the health check
 
 
 # ---------------------------------------------------------------------------
@@ -146,19 +148,21 @@ async def _check_tcp(host: str, port: int, timeout: float = 1.5) -> bool:
 
 async def _check_http(
     url: str, client: httpx.AsyncClient, timeout: float = 2.0
-) -> tuple[bool, dict]:
-    """Async HTTP health check. Returns (ok, parsed_json_or_empty)."""
+) -> tuple[bool, dict, float]:
+    """Async HTTP health check. Returns (ok, parsed_json_or_empty, elapsed_ms)."""
+    t0 = time.monotonic()
     try:
         resp = await client.get(url, timeout=timeout)
+        elapsed = (time.monotonic() - t0) * 1000
         if 200 <= resp.status_code < 300:
             try:
                 data = resp.json()
             except Exception:
                 data = {}
-            return True, data
+            return True, data, elapsed
     except Exception:
-        pass
-    return False, {}
+        elapsed = (time.monotonic() - t0) * 1000
+    return False, {}, elapsed
 
 
 async def _check_resource(
@@ -197,7 +201,8 @@ async def _check_resource(
 
     # HTTP check
     if res.health_url:
-        ok, data = await _check_http(res.health_url, client)
+        ok, data, elapsed_ms = await _check_http(res.health_url, client)
+        state.response_time_ms = elapsed_ms
         if ok:
             state.status = ResourceStatus.ONLINE
             state.method = "http"

@@ -47,7 +47,7 @@ class Executor:
 
     def __init__(self, db, budget, progress, resource_monitor, tool_registry,
                  http_client=None, rag_cache=None, diagnostic_ingester=None,
-                 quota_manager=None):
+                 quota_manager=None, system_sentinel=None):
         self._db = db
         self._budget = budget
         self._progress = progress
@@ -57,6 +57,7 @@ class Executor:
         self._rag_cache = rag_cache
         self._diagnostic_ingester = diagnostic_ingester
         self._quota_manager = quota_manager  # Optional; skips quota check when None
+        self._system_sentinel = system_sentinel  # Optional; manages Plan Sentinel lifecycle
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
         self._task: asyncio.Task | None = None
         self._running = False
@@ -285,6 +286,10 @@ class Executor:
                 await self._ensure_project_branch(pid)
                 self._branch_confirmed.add(pid)
 
+                # Spawn a Plan Sentinel to monitor this project's execution
+                if self._system_sentinel is not None:
+                    await self._system_sentinel.spawn_plan_sentinel(pid)
+
             # Check budget — skip for projects with only free/CLI tasks remaining.
             # All CLI tiers are subscription-billed ($0). When no API key is set,
             # haiku/sonnet/opus also route through CLI, making them effectively free.
@@ -310,6 +315,7 @@ class Executor:
                         "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
                         (ProjectStatus.PAUSED, time.time(), pid),
                     )
+                    await self._teardown_plan_sentinel(pid)
                     self._release_repo(pid)
                     continue
 
@@ -326,16 +332,19 @@ class Executor:
             logger.debug("TICK: project %s wave=%s", pid[:8], current_wave)
 
             # Find ready tasks: pending with all deps resolved, filtered to current wave.
-            # A dep is "resolved" when completed or needs_review (output exists either way).
+            # A dep is "resolved" when completed, or needs_review WITH non-empty output.
+            # needs_review with empty output is a hollow completion — not resolved.
             ready = await self._db.fetchall(
                 "SELECT t.* FROM tasks t "
                 "LEFT JOIN task_deps d ON d.task_id = t.id "
                 "LEFT JOIN tasks dep ON dep.id = d.depends_on "
-                "  AND dep.status NOT IN (?, ?) "
+                "  AND (dep.status NOT IN (?, ?) "
+                "       OR (dep.status = ? AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))) "
                 "WHERE t.project_id = ? AND t.status = ? AND t.wave = ? "
                 "GROUP BY t.id HAVING COUNT(dep.id) = 0 "
                 "ORDER BY t.priority ASC",
                 (TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
+                 TaskStatus.NEEDS_REVIEW,
                  pid, TaskStatus.PENDING, current_wave),
             )
             logger.info("TICK: found %d ready tasks in wave %s for project %s", len(ready), current_wave, pid[:8])
@@ -453,6 +462,7 @@ class Executor:
                             f"Wave {current_wave} complete. Resume to start wave {next_wave['w']}.",
                             wave=current_wave, next_wave=next_wave["w"],
                         )
+                        await self._teardown_plan_sentinel(pid)
                         self._release_repo(pid)
                         continue
 
@@ -462,7 +472,34 @@ class Executor:
                 (pid, *_TERMINAL),
             )
             if remaining and remaining["cnt"] == 0:
-                # All tasks reached a terminal state
+                # All tasks reached a terminal state — but NEEDS_REVIEW tasks
+                # with empty output are hollow completions that should block
+                # project completion.  Treat them as incomplete.
+                hollow = await self._db.fetchone(
+                    "SELECT COUNT(*) as cnt FROM tasks "
+                    "WHERE project_id = ? AND status = ? "
+                    "AND (output_text IS NULL OR TRIM(output_text) = '')",
+                    (pid, TaskStatus.NEEDS_REVIEW),
+                )
+                hollow_cnt = hollow["cnt"] if hollow else 0
+                if hollow_cnt > 0:
+                    logger.warning(
+                        "Project %s has %d needs_review task(s) with empty output — not completing",
+                        pid[:8], hollow_cnt,
+                    )
+                    await self._progress.push_event(
+                        pid, "project_blocked",
+                        f"{hollow_cnt} task(s) in needs_review with empty output — resolve before completion.",
+                    )
+                    # Pause the project so it doesn't spin in the tick loop
+                    await self._db.execute_write(
+                        "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+                        (ProjectStatus.PAUSED, time.time(), pid),
+                    )
+                    await self._teardown_plan_sentinel(pid)
+                    self._release_repo(pid)
+                    continue
+
                 failed_cnt = await self._db.fetchone(
                     "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = ? AND status = ?",
                     (pid, TaskStatus.FAILED),
@@ -476,6 +513,7 @@ class Executor:
                 event_type = "project_complete" if not has_failures else "project_failed"
                 msg = "All tasks finished." if not has_failures else f"Project finished with {failed_cnt['cnt']} failed task(s)."
                 await self._progress.push_event(pid, event_type, msg)
+                await self._teardown_plan_sentinel(pid)
                 self._release_repo(pid)
                 continue
 
@@ -498,6 +536,7 @@ class Executor:
                         pid, "project_failed",
                         f"No forward progress possible: {blocked['cnt']} task(s) blocked by failed dependencies.",
                     )
+                    await self._teardown_plan_sentinel(pid)
                     self._release_repo(pid)
 
     async def _ensure_project_branch(self, project_id: str) -> bool:
@@ -531,12 +570,18 @@ class Executor:
         """Clear branch-confirmed cache when a project leaves executing state."""
         self._branch_confirmed.discard(project_id)
 
+    async def _teardown_plan_sentinel(self, project_id: str) -> None:
+        """Tear down the Plan Sentinel for a project leaving execution."""
+        if self._system_sentinel is not None:
+            await self._system_sentinel.teardown_plan_sentinel(project_id)
+
     async def _update_blocked_tasks(self, project_id: str):
         """Unblock tasks whose dependencies are all resolved.
 
-        A dependency is "resolved" when it's completed OR needs_review.
-        NEEDS_REVIEW means the task produced output but verification flagged it —
-        dependent tasks can still use that output and shouldn't be blocked.
+        A dependency is "resolved" when it's completed OR needs_review WITH
+        non-empty output.  NEEDS_REVIEW with empty output is a hollow
+        completion — dependents must stay blocked because there's no usable
+        output to forward.
         """
         now = time.time()
         await self._db.execute_write(
@@ -545,10 +590,12 @@ class Executor:
             "AND id NOT IN ("
             "  SELECT d.task_id FROM task_deps d "
             "  JOIN tasks dep ON dep.id = d.depends_on "
-            "  WHERE dep.status NOT IN (?, ?)"
+            "  WHERE dep.status NOT IN (?, ?) "
+            "     OR (dep.status = ? AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))"
             ")",
             (TaskStatus.PENDING, now, project_id, TaskStatus.BLOCKED,
-             TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW),
+             TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
+             TaskStatus.NEEDS_REVIEW),
         )
 
     async def _create_wave_pr(self, project_id: str, project_name: str, wave: int) -> None:
