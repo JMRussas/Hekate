@@ -54,6 +54,7 @@ class Container(containers.DeclarativeContainer):
             "backend.routes.auth_oidc",
             "backend.routes.external",
             "backend.routes.internal",
+            "backend.routes.sentinel",
             "backend.middleware.auth",
             "backend.services.model_discovery",
         ]
