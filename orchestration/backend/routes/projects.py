@@ -7,7 +7,9 @@
 #  Depends on: container.py, models/schemas.py, services/planner.py, services/decomposer.py, services/git_service.py, middleware/auth.py
 #  Used by:    app.py
 
+import asyncio
 import json
+import subprocess
 import time
 import uuid
 

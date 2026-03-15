@@ -67,7 +67,6 @@ class Executor:
         self._resource_skip_until: dict[str, float] = {}  # resource → skip until timestamp
         self._git = GitService(db=db)
         self._branch_confirmed: set[str] = set()  # project IDs with branch already verified
-        self._repo_owner: dict[str, str] = {}  # repo_path → project_id (prevents concurrent branch conflicts)
 
     async def start(self):
         """Start the executor loop. Recovers stale tasks from prior crashes."""
@@ -130,7 +129,6 @@ class Executor:
         self._retry_after.clear()
         self._resource_skip_until.clear()
         self._branch_confirmed.clear()
-        self._repo_owner.clear()
         logger.info("Executor stopped")
 
     async def _run_loop(self):
@@ -281,11 +279,10 @@ class Executor:
         for project in projects:
             pid = project["id"]
 
-            # Ensure feature branch is checked out (once per executor session).
-            # If the repo is owned by another project, skip this project entirely.
+            # Ensure feature branch exists (once per executor session).
+            # Multiple projects can share the same repo on different branches.
             if pid not in self._branch_confirmed:
-                if not await self._ensure_project_branch(pid):
-                    continue  # Repo in use by another project
+                await self._ensure_project_branch(pid)
                 self._branch_confirmed.add(pid)
 
             # Check budget — skip for projects with only free/CLI tasks remaining.
@@ -517,43 +514,22 @@ class Executor:
             (project_id,),
         )
         if not row or not row["repo_path"]:
-            return True
-
-        repo_path = row["repo_path"]
-
-        # Repo-level exclusion: prevent two projects from switching branches
-        # on the same repository concurrently (race condition guard).
-        current_owner = self._repo_owner.get(repo_path)
-        if current_owner and current_owner != project_id:
-            logger.warning(
-                "Repo %s owned by project %s, skipping branch setup for project %s",
-                repo_path, current_owner[:8], project_id[:8],
-            )
-            return False
-        self._repo_owner[repo_path] = project_id
+            return
 
         branch_name = f"{GIT_BRANCH_PREFIX}/{slugify(row['name'])}"
         base_branch = row["git_base_branch"] or "main"
 
         try:
             await self._git.ensure_feature_branch(
-                repo_path, branch_name, base_branch,
+                row["repo_path"], branch_name, base_branch,
             )
             logger.info("Branch confirmed for project %s: %s", project_id[:8], branch_name)
-            return True
         except Exception as e:
             logger.warning("Failed to ensure branch for project %s: %s", project_id[:8], e)
-            return True  # Don't block execution if branch setup fails
 
     def _release_repo(self, project_id: str) -> None:
-        """Release repo ownership when a project leaves executing state."""
+        """Clear branch-confirmed cache when a project leaves executing state."""
         self._branch_confirmed.discard(project_id)
-        to_remove = [
-            path for path, owner in self._repo_owner.items()
-            if owner == project_id
-        ]
-        for path in to_remove:
-            del self._repo_owner[path]
 
     async def _update_blocked_tasks(self, project_id: str):
         """Unblock tasks whose dependencies are all resolved.
