@@ -374,6 +374,51 @@ export default function ProjectDetail() {
         )
       })()}
 
+      {/* Project Settings */}
+      {project && (
+        <div className="card" style={{ marginTop: '1rem' }}>
+          <h3>Settings</h3>
+          <div className="grid grid-2" style={{ gap: '1rem', marginTop: '0.5rem' }}>
+            <div className="form-group">
+              <label>Repository Path</label>
+              <input
+                defaultValue={project.repo_path ?? ''}
+                placeholder="C:\Users\you\project"
+                onBlur={e => {
+                  const val = e.target.value.trim()
+                  if (val !== (project.repo_path ?? '')) {
+                    action('update-repo', () => updateProject(id!, { repo_path: val || null }))
+                  }
+                }}
+              />
+            </div>
+            <div className="form-group">
+              <label className="flex gap-1" style={{ alignItems: 'center', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={(project.config?.review_cycle as Record<string, unknown>)?.enabled === true}
+                  onChange={e => {
+                    const current = project.config ?? {}
+                    const updated = {
+                      ...current,
+                      review_cycle: {
+                        ...((current.review_cycle as Record<string, unknown>) ?? {}),
+                        enabled: e.target.checked,
+                        auto_commit: true,
+                        pr_on_wave_complete: true,
+                      },
+                    }
+                    action('toggle-review', () => updateProject(id!, { config: updated }))
+                  }}
+                />
+                <span>Code Review Cycle</span>
+                <span className="text-dim text-sm">— review, iterate, auto-commit, PR per wave</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* SSE Events */}
       {sse.events.length > 0 && (
         <div className="card" style={{ marginTop: '1rem' }}>

@@ -37,6 +37,7 @@ export interface Project {
   updated_at: number
   completed_at: number | null
   config: Record<string, unknown>
+  repo_path: string | null
   task_summary: TaskSummary | null
 }
 

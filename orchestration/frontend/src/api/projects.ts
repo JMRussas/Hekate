@@ -9,8 +9,22 @@ export const listProjects = (status?: string) =>
 export const getProject = (id: string) =>
   apiFetch<Project>(`/projects/${id}`)
 
-export const createProject = (name: string, requirements: string, planning_rigor: PlanningRigor = 'L2') =>
-  apiPost<Project>('/projects', { name, requirements, planning_rigor })
+export interface CreateProjectOptions {
+  name: string
+  requirements: string
+  planning_rigor?: PlanningRigor
+  repo_path?: string
+  config?: Record<string, unknown>
+}
+
+export const createProject = (opts: CreateProjectOptions) =>
+  apiPost<Project>('/projects', {
+    name: opts.name,
+    requirements: opts.requirements,
+    planning_rigor: opts.planning_rigor ?? 'L2',
+    repo_path: opts.repo_path || undefined,
+    config: opts.config ?? {},
+  })
 
 export const updateProject = (id: string, body: Record<string, unknown>) =>
   apiPatch<Project>(`/projects/${id}`, body)

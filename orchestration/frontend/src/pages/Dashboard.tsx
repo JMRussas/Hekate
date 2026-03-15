@@ -19,6 +19,8 @@ export default function Dashboard() {
   const [name, setName] = useState('')
   const [requirements, setRequirements] = useState('')
   const [rigor, setRigor] = useState<PlanningRigor>('L2')
+  const [repoPath, setRepoPath] = useState('')
+  const [reviewCycle, setReviewCycle] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const navigate = useNavigate()
@@ -44,7 +46,11 @@ export default function Dashboard() {
     setLoading(true)
     setError('')
     try {
-      const project = await createProject(name, requirements, rigor)
+      const config: Record<string, unknown> = {}
+      if (reviewCycle) {
+        config.review_cycle = { enabled: true, auto_commit: true, pr_on_wave_complete: true }
+      }
+      const project = await createProject({ name, requirements, planning_rigor: rigor, repo_path: repoPath || undefined, config })
       navigate(`/project/${project.id}`)
     } catch (e) {
       setError(String(e))
@@ -83,6 +89,18 @@ export default function Dashboard() {
               <option value="L2">L2 Standard — Phases + open questions</option>
               <option value="L3">L3 Thorough — Phases + risk + test strategy</option>
             </select>
+          </div>
+          <div className="form-group">
+            <label>Repository Path <span className="text-dim text-sm">(optional)</span></label>
+            <input value={repoPath} onChange={e => setRepoPath(e.target.value)}
+              placeholder="C:\Users\you\project" />
+          </div>
+          <div className="form-group">
+            <label className="flex gap-1" style={{ alignItems: 'center', cursor: 'pointer' }}>
+              <input type="checkbox" checked={reviewCycle} onChange={e => setReviewCycle(e.target.checked)} />
+              <span>Code Review Cycle</span>
+              <span className="text-dim text-sm">— review, iterate, auto-commit, PR per wave</span>
+            </label>
           </div>
           {error && <div className="text-sm" style={{ color: 'var(--error)', marginBottom: '0.5rem' }}>{error}</div>}
           <div className="flex gap-1">
