@@ -44,6 +44,7 @@ from backend.routes.external import router as external_router
 from backend.routes.internal import router as internal_router
 from backend.routes.projects import router as projects_router
 from backend.routes.rag import router as rag_router
+from backend.routes.sentinel import router as sentinel_router
 from backend.routes.services import health_router, router as services_router
 from backend.routes.tasks import router as tasks_router
 from backend.routes.usage import router as usage_router
@@ -276,6 +277,9 @@ app.include_router(internal_router, prefix="/api")
 
 # Events route uses query-param token auth (EventSource can't send headers)
 app.include_router(events_router, prefix="/api")
+
+# Sentinel routes — SSE endpoint uses query-param token auth, REST endpoints use per-route auth
+app.include_router(sentinel_router, prefix="/api")
 
 # Serve frontend build if available
 frontend_dist = PROJECT_ROOT / "frontend" / "dist"
