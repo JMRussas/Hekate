@@ -151,7 +151,7 @@ _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     ("code", "medium"): ModelTier.CLAUDE_CODE,
     ("code", "complex"): ModelTier.CLAUDE_CODE,
     # Research
-    ("research", "simple"): ModelTier.OLLAMA,
+    ("research", "simple"): ModelTier.GEMINI_CLI,
     ("research", "medium"): ModelTier.GEMINI_CLI,
     ("research", "complex"): ModelTier.GEMINI_CLI,
     # Analysis
