@@ -156,6 +156,23 @@ async def _run_cli_task(
                 f"{provider} CLI failed (exit {returncode}): {stderr_text[:500]}"
             )
 
+        # Silent failure — clean exit but empty output (common with codex_cli)
+        if returncode == 0 and not stdout_text.strip():
+            if attempt < CLI_CRASH_RETRIES:
+                logger.warning(
+                    "%s CLI returned empty output (exit 0) on attempt %d/%d for task %s, retrying",
+                    provider, attempt + 1, 1 + CLI_CRASH_RETRIES, task_id,
+                )
+                last_error = (
+                    f"{provider} CLI produced empty output (exit 0) "
+                    f"on attempt {attempt + 1}/{1 + CLI_CRASH_RETRIES}"
+                )
+                continue
+            raise RuntimeError(
+                f"{provider} CLI produced empty output after {1 + CLI_CRASH_RETRIES} attempts. "
+                f"stderr: {stderr_text[:500]}"
+            )
+
         # Success — got output
         preview = stdout_text[:200] + "..." if len(stdout_text) > 200 else stdout_text
         await progress.push_event(
