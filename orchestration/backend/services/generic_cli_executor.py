@@ -83,9 +83,10 @@ def _build_cmd_args(provider: str) -> tuple[list[str], str]:
         if not cmd:
             raise RuntimeError("Codex CLI not found on PATH or in npm global bin")
         model = get_model_id(ModelTier.CODEX_CLI)
-        # --full-auto enables workspace writes + auto-approval (no interactive prompts)
-        # --sandbox workspace-write allows file modifications in the working directory
-        cmd_args = [cmd, "exec", "--full-auto", "--sandbox", "workspace-write"]
+        # --full-auto + --sandbox workspace-write is broken on Windows (v0.112.0) —
+        # always resolves to read-only. Use bypass flag instead since the orchestrator
+        # controls the working directory and we trust the agent output.
+        cmd_args = [cmd, "exec", "--dangerously-bypass-approvals-and-sandbox"]
         if model:
             cmd_args.extend(["--model", model])
     else:

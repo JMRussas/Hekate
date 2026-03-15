@@ -42,7 +42,7 @@ _DEFAULT_MODELS = {
 
 _DEFAULT_CLI_FALLBACKS = {
     "gemini_cli": "gemini-2.5-pro",
-    "codex_cli": "gpt-4o",
+    "codex_cli": "gpt-5.4",
     "ollama": "qwen2.5-coder:14b",
 }
 
