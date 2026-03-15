@@ -1,9 +1,16 @@
 #  Orchestration Engine - Projects API Integration Tests
 #
-#  CRUD, plan approval, and execution state transitions.
+#  CRUD, plan approval, execution state transitions, and git branching.
 #
-#  Depends on: backend/routes/projects.py, tests/conftest.py
+#  Depends on: backend/routes/projects.py, backend/services/git_service.py, tests/conftest.py
 #  Used by:    pytest
+
+import time
+from unittest.mock import AsyncMock, patch
+
+from dependency_injector import providers
+
+from backend.services.git_service import GitService
 
 
 
@@ -166,3 +173,213 @@ class TestCancelProject:
         resp = await authed_client.post(f"/api/projects/{pid}/cancel")
         assert resp.status_code == 200
         assert resp.json()["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for execution/branching tests
+# ---------------------------------------------------------------------------
+
+async def _create_ready_project(authed_client, db, name="Branch Test", repo_path=None,
+                                git_base_branch=None):
+    """Create a project and set it to 'ready' state via direct DB update."""
+    payload = {"name": name, "requirements": "Build something"}
+    if repo_path:
+        payload["repo_path"] = repo_path
+    if git_base_branch:
+        payload["git_base_branch"] = git_base_branch
+
+    resp = await authed_client.post("/api/projects", json=payload)
+    assert resp.status_code == 201
+    pid = resp.json()["id"]
+
+    # Advance to ready (normally done by plan approval, shortcut via DB)
+    await db.execute_write(
+        "UPDATE projects SET status = 'ready', updated_at = ? WHERE id = ?",
+        (time.time(), pid),
+    )
+    return pid
+
+
+# ---------------------------------------------------------------------------
+# Execute endpoint — git branching
+# ---------------------------------------------------------------------------
+
+class TestExecuteBranching:
+    """Verify orch/ branch creation when project execution starts."""
+
+    async def test_execute_creates_branch(self, authed_client, tmp_db):
+        """Execute with repo_path creates orch/ branch and returns branch name."""
+        mock_git = AsyncMock(spec=GitService)
+        mock_git.ensure_feature_branch = AsyncMock(return_value=True)
+
+        from backend.app import container
+        container.git_service.override(providers.Object(mock_git))
+        try:
+            pid = await _create_ready_project(
+                authed_client, tmp_db,
+                name="My Cool Project",
+                repo_path="C:/repos/my-cool-project",
+            )
+            resp = await authed_client.post(f"/api/projects/{pid}/execute")
+            assert resp.status_code == 200
+
+            data = resp.json()
+            assert data["status"] == "executing"
+            assert data["branch"] == "orch/my-cool-project"
+
+            # Verify ensure_feature_branch was called with correct args
+            call_args = mock_git.ensure_feature_branch.call_args
+            assert call_args[0][1] == "orch/my-cool-project"
+            assert call_args[0][2] == "main"
+
+            # Verify DB has the branch stored
+            row = await tmp_db.fetchone(
+                "SELECT status, git_project_branch FROM projects WHERE id = ?", (pid,),
+            )
+            assert row["status"] == "executing"
+            assert row["git_project_branch"] == "orch/my-cool-project"
+        finally:
+            container.git_service.reset_override()
+
+    async def test_execute_custom_base_branch(self, authed_client, tmp_db):
+        """Execute uses the project's git_base_branch instead of default main."""
+        mock_git = AsyncMock(spec=GitService)
+        mock_git.ensure_feature_branch = AsyncMock(return_value=True)
+
+        from backend.app import container
+        container.git_service.override(providers.Object(mock_git))
+        try:
+            pid = await _create_ready_project(
+                authed_client, tmp_db,
+                name="Develop Branch",
+                repo_path="C:/repos/dev-project",
+                git_base_branch="develop",
+            )
+            resp = await authed_client.post(f"/api/projects/{pid}/execute")
+            assert resp.status_code == 200
+
+            call_args = mock_git.ensure_feature_branch.call_args
+            assert call_args[0][1] == "orch/develop-branch"
+            assert call_args[0][2] == "develop"
+        finally:
+            container.git_service.reset_override()
+
+    async def test_execute_no_repo_path_skips_branch(self, authed_client, tmp_db):
+        """Execute without repo_path skips branching silently."""
+        mock_git = AsyncMock(spec=GitService)
+        mock_git.ensure_feature_branch = AsyncMock(return_value=False)
+
+        from backend.app import container
+        container.git_service.override(providers.Object(mock_git))
+        try:
+            pid = await _create_ready_project(authed_client, tmp_db, name="No Repo")
+            resp = await authed_client.post(f"/api/projects/{pid}/execute")
+            assert resp.status_code == 200
+
+            data = resp.json()
+            assert data["status"] == "executing"
+            assert data["branch"] is None
+
+            # ensure_feature_branch still called (with None repo_path), returns False
+            mock_git.ensure_feature_branch.assert_awaited_once()
+
+            # DB should NOT have git_project_branch set
+            row = await tmp_db.fetchone(
+                "SELECT git_project_branch FROM projects WHERE id = ?", (pid,),
+            )
+            assert row["git_project_branch"] is None
+        finally:
+            container.git_service.reset_override()
+
+    async def test_execute_idempotent_reexecution(self, authed_client, tmp_db):
+        """Re-executing a paused project reuses the existing branch."""
+        mock_git = AsyncMock(spec=GitService)
+        mock_git.ensure_feature_branch = AsyncMock(return_value=True)
+
+        from backend.app import container
+        container.git_service.override(providers.Object(mock_git))
+        try:
+            pid = await _create_ready_project(
+                authed_client, tmp_db,
+                name="Pause Resume",
+                repo_path="C:/repos/pause-test",
+            )
+
+            # First execution
+            resp = await authed_client.post(f"/api/projects/{pid}/execute")
+            assert resp.status_code == 200
+            assert resp.json()["branch"] == "orch/pause-resume"
+
+            # Pause
+            resp = await authed_client.post(f"/api/projects/{pid}/pause")
+            assert resp.status_code == 200
+
+            # Re-execute — should call ensure_feature_branch again (idempotent)
+            mock_git.ensure_feature_branch.reset_mock()
+            resp = await authed_client.post(f"/api/projects/{pid}/execute")
+            assert resp.status_code == 200
+            assert resp.json()["branch"] == "orch/pause-resume"
+
+            call_args = mock_git.ensure_feature_branch.call_args
+            assert call_args[0][1] == "orch/pause-resume"
+            assert call_args[0][2] == "main"
+        finally:
+            container.git_service.reset_override()
+
+    async def test_execute_git_error_returns_500(self, authed_client, tmp_db):
+        """GitError during branch setup returns 500."""
+        from backend.exceptions import GitError
+
+        mock_git = AsyncMock(spec=GitService)
+        mock_git.ensure_feature_branch = AsyncMock(
+            side_effect=GitError("branch creation failed"),
+        )
+
+        from backend.app import container
+        container.git_service.override(providers.Object(mock_git))
+        try:
+            pid = await _create_ready_project(
+                authed_client, tmp_db,
+                name="Git Fail",
+                repo_path="C:/repos/bad-repo",
+            )
+            resp = await authed_client.post(f"/api/projects/{pid}/execute")
+            assert resp.status_code == 500
+            assert "Git branch setup failed" in resp.json()["detail"]
+        finally:
+            container.git_service.reset_override()
+
+    async def test_execute_draft_project_returns_400(self, authed_client):
+        """Cannot execute a project still in draft state."""
+        resp = await authed_client.post("/api/projects", json={
+            "name": "Draft", "requirements": "r",
+        })
+        pid = resp.json()["id"]
+        resp = await authed_client.post(f"/api/projects/{pid}/execute")
+        assert resp.status_code == 400
+
+    async def test_branch_name_slugified(self, authed_client, tmp_db):
+        """Special characters in project name are slugified in branch name."""
+        mock_git = AsyncMock(spec=GitService)
+        mock_git.ensure_feature_branch = AsyncMock(return_value=True)
+
+        from backend.app import container
+        container.git_service.override(providers.Object(mock_git))
+        try:
+            pid = await _create_ready_project(
+                authed_client, tmp_db,
+                name="My Project!!! (v2.0) @#$",
+                repo_path="C:/repos/slugtest",
+            )
+            resp = await authed_client.post(f"/api/projects/{pid}/execute")
+            assert resp.status_code == 200
+
+            branch = resp.json()["branch"]
+            # Should be lowercase, hyphens only, no special chars
+            assert branch.startswith("orch/")
+            assert "!" not in branch
+            assert "@" not in branch
+            assert "#" not in branch
+            assert "$" not in branch
+        finally:
+            container.git_service.reset_override()

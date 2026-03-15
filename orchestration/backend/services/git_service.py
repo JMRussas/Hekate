@@ -147,6 +147,33 @@ class GitService:
         )
         return ok
 
+    async def ensure_feature_branch(
+        self,
+        cwd: str | None,
+        branch_name: str,
+        base_branch: str = "main",
+    ) -> bool:
+        """Idempotent branch creation and checkout for project execution.
+
+        Creates branch_name from base_branch if it doesn't exist, then
+        checks it out. Skips silently if cwd is not set.
+
+        Returns True if the branch was checked out, False if skipped.
+        """
+        if not cwd:
+            return False
+
+        if not await self.branch_exists(cwd, branch_name):
+            await self.create_branch(cwd, branch_name, base=base_branch)
+            logger.info("Created branch %s from %s in %s", branch_name, base_branch, cwd)
+
+        current = await self.get_current_branch(cwd)
+        if current != branch_name:
+            await self.checkout(cwd, branch_name)
+            logger.info("Checked out branch %s in %s", branch_name, cwd)
+
+        return True
+
     async def delete_branch(self, cwd: str | Path, name: str) -> None:
         """Delete a local branch."""
         await asyncio.to_thread(

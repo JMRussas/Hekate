@@ -4,7 +4,7 @@
 #  All endpoints enforce ownership: users see/modify only their own projects.
 #  Admins can access all projects.
 #
-#  Depends on: container.py, models/schemas.py, services/planner.py, services/decomposer.py, middleware/auth.py
+#  Depends on: container.py, models/schemas.py, services/planner.py, services/decomposer.py, services/git_service.py, middleware/auth.py
 #  Used by:    app.py
 
 import json
@@ -14,10 +14,12 @@ import uuid
 from dependency_injector.wiring import inject, Provide
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from backend.config import GIT_BRANCH_PREFIX
 from backend.container import Container
 from backend.db.connection import Database
 from backend.exceptions import (
     CycleDetectedError,
+    GitError,
     NotFoundError,
     OrchestrationError,
 )
@@ -26,7 +28,9 @@ from backend.middleware.auth import get_current_user
 from backend.models.enums import PlanStatus, ProjectStatus, TaskStatus
 from backend.models.schemas import FindingOut, PlanOut, ProjectCreate, ProjectOut, ProjectUpdate
 from backend.services.decomposer import DecomposerService
+from backend.services.git_service import GitService
 from backend.services.planner import PlannerService
+from backend.utils.slug_utils import slugify
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -249,6 +253,79 @@ async def delete_project(
 
 
 # ---------------------------------------------------------------------------
+# Git Status
+# ---------------------------------------------------------------------------
+
+@router.get("/{project_id}/git-status")
+@inject
+async def get_git_status(
+    project_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(Provide[Container.db]),
+    git: GitService = Depends(Provide[Container.git_service]),
+):
+    """Return live git repository status for the project's repo_path.
+
+    Returns null if the project has no repo_path configured.
+    """
+    row = await _get_owned_project(db, project_id, current_user)
+
+    repo_path = row["repo_path"]
+    if not repo_path:
+        return None
+
+    try:
+        branch = await git.get_current_branch(repo_path)
+        status_output = await git.get_status(repo_path)
+        log_entries = await git.get_log(repo_path, count=1)
+    except GitError:
+        raise HTTPException(500, "Failed to read git status from repository")
+
+    # Parse dirty state from porcelain-style status
+    modified_lines = [
+        line for line in status_output.split("\n") if line.strip()
+    ]
+    is_dirty = len(modified_lines) > 0
+
+    # Last commit
+    last_commit = None
+    if log_entries:
+        entry = log_entries[0]
+        last_commit = {
+            "sha": entry["sha"][:7],
+            "message": entry["message"],
+            "date": entry["date"],
+        }
+
+    # Open PR discovery via gh CLI
+    open_pr_url = None
+    try:
+        result = await asyncio.to_thread(
+            lambda: subprocess.run(
+                ["gh", "pr", "list", "--head", branch, "--json", "url", "--limit", "1"],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        )
+        if result.returncode == 0:
+            pr_list = json.loads(result.stdout)
+            if pr_list:
+                open_pr_url = pr_list[0]["url"]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, json.JSONDecodeError):
+        pass  # gh unavailable or failed — skip PR info
+
+    return {
+        "branch": branch,
+        "is_dirty": is_dirty,
+        "modified_files_count": len(modified_lines),
+        "last_commit": last_commit,
+        "open_pr_url": open_pr_url,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Planning
 # ---------------------------------------------------------------------------
 
@@ -342,19 +419,37 @@ async def start_execution(
     project_id: str,
     current_user: dict = Depends(get_current_user),
     db: Database = Depends(Provide[Container.db]),
+    git: GitService = Depends(Provide[Container.git_service]),
 ):
     """Start executing approved tasks for a project."""
     row = await _get_owned_project(db, project_id, current_user)
     if row["status"] not in (ProjectStatus.READY, ProjectStatus.PAUSED):
         raise HTTPException(400, f"Project must be in 'ready' or 'paused' state, got '{row['status']}'")
 
-    await db.execute_write(
-        "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
-        (ProjectStatus.EXECUTING, time.time(), project_id),
-    )
+    # Create/checkout feature branch for this project's repo
+    repo_path = row["repo_path"]
+    base_branch = row["git_base_branch"] or "main"
+    branch_name = f"{GIT_BRANCH_PREFIX}/{slugify(row['name'])}"
+
+    try:
+        branched = await git.ensure_feature_branch(repo_path, branch_name, base_branch)
+    except GitError as e:
+        raise HTTPException(500, f"Git branch setup failed: {e}")
+
+    now = time.time()
+    if branched:
+        await db.execute_write(
+            "UPDATE projects SET status = ?, git_project_branch = ?, updated_at = ? WHERE id = ?",
+            (ProjectStatus.EXECUTING, branch_name, now, project_id),
+        )
+    else:
+        await db.execute_write(
+            "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+            (ProjectStatus.EXECUTING, now, project_id),
+        )
 
     # Executor will pick up tasks on its next tick
-    return {"status": "executing", "project_id": project_id}
+    return {"status": "executing", "project_id": project_id, "branch": branch_name if branched else None}
 
 
 @router.post("/{project_id}/pause")

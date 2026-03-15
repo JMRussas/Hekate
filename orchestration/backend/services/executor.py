@@ -7,7 +7,8 @@
 #  Depends on: backend/config.py, backend/db/connection.py,
 #              services/budget.py, services/model_router.py,
 #              services/resource_monitor.py, services/progress.py,
-#              services/task_lifecycle.py, tools/registry.py
+#              services/task_lifecycle.py, services/git_service.py,
+#              tools/registry.py
 #  Used by:    container.py, app.py (background task)
 
 import asyncio
@@ -19,6 +20,7 @@ import anthropic
 
 from backend.config import (
     ANTHROPIC_API_KEY,
+    GIT_BRANCH_PREFIX,
     MAX_CONCURRENT_TASKS,
     RESOURCE_SKIP_SECONDS,
     SHUTDOWN_GRACE_SECONDS,
@@ -28,7 +30,9 @@ from backend.config import (
 )
 from backend.models.enums import ModelTier, ProjectStatus, TaskStatus
 from backend.services.model_router import calculate_cost, get_model_id
+from backend.services.git_service import GitService
 from backend.services.task_lifecycle import execute_task
+from backend.utils.slug_utils import slugify
 
 logger = logging.getLogger("orchestration.executor")
 
@@ -61,6 +65,9 @@ class Executor:
         self._client: anthropic.AsyncAnthropic | None = None  # Shared Anthropic client
         self._retry_after: dict[str, float] = {}  # task_id → earliest retry timestamp
         self._resource_skip_until: dict[str, float] = {}  # resource → skip until timestamp
+        self._git = GitService(db=db)
+        self._branch_confirmed: set[str] = set()  # project IDs with branch already verified
+        self._repo_owner: dict[str, str] = {}  # repo_path → project_id (prevents concurrent branch conflicts)
 
     async def start(self):
         """Start the executor loop. Recovers stale tasks from prior crashes."""
@@ -122,6 +129,8 @@ class Executor:
         self._dispatched.clear()
         self._retry_after.clear()
         self._resource_skip_until.clear()
+        self._branch_confirmed.clear()
+        self._repo_owner.clear()
         logger.info("Executor stopped")
 
     async def _run_loop(self):
@@ -272,6 +281,13 @@ class Executor:
         for project in projects:
             pid = project["id"]
 
+            # Ensure feature branch is checked out (once per executor session).
+            # If the repo is owned by another project, skip this project entirely.
+            if pid not in self._branch_confirmed:
+                if not await self._ensure_project_branch(pid):
+                    continue  # Repo in use by another project
+                self._branch_confirmed.add(pid)
+
             # Check budget — skip for projects with only free/CLI tasks remaining.
             # All CLI tiers are subscription-billed ($0). When no API key is set,
             # haiku/sonnet/opus also route through CLI, making them effectively free.
@@ -297,6 +313,7 @@ class Executor:
                         "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
                         (ProjectStatus.PAUSED, time.time(), pid),
                     )
+                    self._release_repo(pid)
                     continue
 
             # Unblock tasks whose dependencies are now met
@@ -439,6 +456,7 @@ class Executor:
                             f"Wave {current_wave} complete. Resume to start wave {next_wave['w']}.",
                             wave=current_wave, next_wave=next_wave["w"],
                         )
+                        self._release_repo(pid)
                         continue
 
             # Check if all tasks are done
@@ -461,6 +479,7 @@ class Executor:
                 event_type = "project_complete" if not has_failures else "project_failed"
                 msg = "All tasks finished." if not has_failures else f"Project finished with {failed_cnt['cnt']} failed task(s)."
                 await self._progress.push_event(pid, event_type, msg)
+                self._release_repo(pid)
                 continue
 
             # Detect dead projects: no tasks are pending/queued/running, but some are blocked
@@ -482,6 +501,59 @@ class Executor:
                         pid, "project_failed",
                         f"No forward progress possible: {blocked['cnt']} task(s) blocked by failed dependencies.",
                     )
+                    self._release_repo(pid)
+
+    async def _ensure_project_branch(self, project_id: str) -> bool:
+        """Ensure the project's feature branch exists and is checked out.
+
+        Builds branch name as {GIT_BRANCH_PREFIX}/{project-name-slug}.
+        Skips silently if the project has no repo_path.
+
+        Returns True if the branch is ready (or no repo_path), False if the
+        repo is owned by another executing project (concurrent conflict).
+        """
+        row = await self._db.fetchone(
+            "SELECT name, repo_path, git_base_branch FROM projects WHERE id = ?",
+            (project_id,),
+        )
+        if not row or not row["repo_path"]:
+            return True
+
+        repo_path = row["repo_path"]
+
+        # Repo-level exclusion: prevent two projects from switching branches
+        # on the same repository concurrently (race condition guard).
+        current_owner = self._repo_owner.get(repo_path)
+        if current_owner and current_owner != project_id:
+            logger.warning(
+                "Repo %s owned by project %s, skipping branch setup for project %s",
+                repo_path, current_owner[:8], project_id[:8],
+            )
+            return False
+        self._repo_owner[repo_path] = project_id
+
+        branch_name = f"{GIT_BRANCH_PREFIX}/{slugify(row['name'])}"
+        base_branch = row["git_base_branch"] or "main"
+
+        try:
+            await self._git.ensure_feature_branch(
+                repo_path, branch_name, base_branch,
+            )
+            logger.info("Branch confirmed for project %s: %s", project_id[:8], branch_name)
+            return True
+        except Exception as e:
+            logger.warning("Failed to ensure branch for project %s: %s", project_id[:8], e)
+            return True  # Don't block execution if branch setup fails
+
+    def _release_repo(self, project_id: str) -> None:
+        """Release repo ownership when a project leaves executing state."""
+        self._branch_confirmed.discard(project_id)
+        to_remove = [
+            path for path, owner in self._repo_owner.items()
+            if owner == project_id
+        ]
+        for path in to_remove:
+            del self._repo_owner[path]
 
     async def _update_blocked_tasks(self, project_id: str):
         """Unblock tasks whose dependencies are all resolved.
@@ -524,8 +596,7 @@ class Executor:
             branch = repo_info["current_branch"]
             if branch in ("main", "master"):
                 # Create a feature branch from the wave's commits
-                wave_branch = f"orch/{project_name[:20]}-wave-{wave}"
-                wave_branch = wave_branch.lower().replace(" ", "-")
+                wave_branch = f"{GIT_BRANCH_PREFIX}/{slugify(project_name)}-wave-{wave}"
                 if await git.branch_exists(cwd, wave_branch):
                     return  # Already created
 
