@@ -769,7 +769,13 @@ async def execute_task(
                 # --- Code review cycle (post-verification) ---
                 # Reviews the git diff like a senior dev, iterates if needed,
                 # then commits approved changes.
-                if REVIEW_CYCLE_ENABLED and tier not in (ModelTier.OLLAMA,):
+                # Check both global config AND per-project config_json.
+                _project_cfg = json.loads(
+                    (await db.fetchone("SELECT config_json FROM projects WHERE id = ?", (project_id,))
+                     or {}).get("config_json") or "{}"
+                ) if not REVIEW_CYCLE_ENABLED else {}
+                _review_enabled = REVIEW_CYCLE_ENABLED or _project_cfg.get("review_cycle", {}).get("enabled", False)
+                if _review_enabled and tier not in (ModelTier.OLLAMA,):
                     review_blocked = await _run_review_cycle(
                         task_row=task_row,
                         task_id=task_id,
