@@ -23,6 +23,9 @@ var connStr = Environment.GetEnvironmentVariable("CODESTORAGE_CONNSTR")
 if (Environment.GetEnvironmentVariable("CODESTORAGE_CONNSTR") == null)
     Console.WriteLine("[WARN] CODESTORAGE_CONNSTR not set — using POC default credentials");
 
+// --- Schema migration (idempotent — safe to run on every startup) ---
+await CodeStoragePoc.DbLayer.Schema.Initialize(connStr);
+
 // --- DI Registration ---
 var repo = new NodeRepository(connStr);
 var embeddingService = new EmbeddingService();
