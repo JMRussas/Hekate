@@ -30,6 +30,9 @@ from backend.config import (
     CONTEXT_FORWARD_MAX_CHARS,
     DIAGNOSTIC_RAG_ENABLED,
     KNOWLEDGE_EXTRACTION_ENABLED,
+    REVIEW_AUTO_COMMIT,
+    REVIEW_CYCLE_ENABLED,
+    REVIEW_MAX_ITERATIONS,
     VERIFICATION_ENABLED,
 )
 from backend.logging_config import set_task_id
@@ -118,6 +121,148 @@ async def _push_telemetry(
         verification_outcome=verification_outcome,
         http_client=http_client,
     )
+
+
+async def _run_review_cycle(
+    *,
+    task_row,
+    task_id: str,
+    project_id: str,
+    result: dict,
+    tier: ModelTier,
+    db,
+    budget,
+    progress,
+    client,
+    tool_registry,
+    http_client,
+    semaphore,
+    dispatched,
+    retry_after,
+) -> bool:
+    """Run the code review cycle: review → iterate → commit.
+
+    Returns True if the task was re-queued (review requested changes),
+    False if the review passed (caller should proceed to completion).
+    """
+    from backend.services.code_reviewer import review_code, format_review_feedback
+    from backend.services.cli_common import resolve_cwd
+
+    cwd = await resolve_cwd(db, project_id)
+    if not cwd:
+        logger.debug("No repo_path for project %s, skipping review cycle", project_id)
+        return False
+
+    # Get git diff for review
+    diff_text = None
+    try:
+        from backend.services.git_service import GitService
+        git = GitService(db=db)
+        status = await git.get_status(cwd)
+        if status.strip():
+            # There are uncommitted changes — diff against HEAD
+            diff_text = await git.get_diff_working(cwd)
+            # Also include untracked files in diff context
+            staged = await git.get_diff_staged(cwd)
+            if staged:
+                diff_text = (diff_text or "") + "\n" + staged
+    except Exception as e:
+        logger.debug("Failed to get git diff for review: %s", e)
+
+    # Get the review iteration count from context
+    ctx = json.loads(task_row["context_json"] or "[]")
+    review_iterations = sum(1 for c in ctx if c.get("type") == "review_feedback")
+
+    prior_feedback = None
+    if review_iterations > 0:
+        feedbacks = [c for c in ctx if c.get("type") == "review_feedback"]
+        if feedbacks:
+            prior_feedback = feedbacks[-1].get("content", "")
+
+    review = await review_code(
+        task_title=task_row["title"],
+        task_description=task_row["description"],
+        output_text=result["output"],
+        diff_text=diff_text,
+        task_type=task_row["task_type"],
+        iteration=review_iterations,
+        prior_feedback=prior_feedback,
+    )
+
+    verdict = review["verdict"]
+    summary = review.get("summary", "")
+
+    await progress.push_event(
+        project_id, "task_output",
+        f"Code review: {verdict} — {summary}",
+        task_id=task_id,
+    )
+
+    if verdict == "approved":
+        # Auto-commit if enabled and there are changes
+        if REVIEW_AUTO_COMMIT and diff_text:
+            try:
+                git = GitService(db=db)
+                sha = await git.stage_and_commit(
+                    cwd,
+                    f"feat({task_row['title'][:40]}): task {task_id[:8]} — reviewed and approved",
+                )
+                if sha:
+                    await progress.push_event(
+                        project_id, "task_output",
+                        f"Committed: {sha[:8]}",
+                        task_id=task_id,
+                    )
+                    logger.info("Auto-committed task %s: %s", task_id, sha[:8])
+            except Exception as e:
+                logger.warning("Auto-commit failed for task %s: %s", task_id, e)
+        return False  # Proceed to completion
+
+    # Changes requested — check iteration limit
+    if review_iterations >= REVIEW_MAX_ITERATIONS:
+        logger.info(
+            "Review iteration limit (%d) reached for task %s, sending to human review",
+            REVIEW_MAX_ITERATIONS, task_id,
+        )
+        await db.execute_write(
+            "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+            (
+                TaskStatus.NEEDS_REVIEW,
+                f"Code review found issues after {review_iterations} iterations: {summary}",
+                time.time(), task_id,
+            ),
+        )
+        await progress.push_event(
+            project_id, "task_needs_review",
+            f"{task_row['title']}: review iteration limit reached — {summary}",
+            task_id=task_id,
+        )
+        return True
+
+    # Append review feedback to context and re-queue for iteration
+    feedback_text = format_review_feedback(review)
+    non_feedbacks = [c for c in ctx if c.get("type") != "review_feedback"]
+    feedbacks = [c for c in ctx if c.get("type") == "review_feedback"]
+    feedbacks.append({"type": "review_feedback", "content": feedback_text})
+
+    updated_ctx = non_feedbacks + feedbacks
+
+    await db.execute_write(
+        "UPDATE tasks SET status = ?, context_json = ?, error = NULL, updated_at = ? WHERE id = ?",
+        (TaskStatus.PENDING, json.dumps(updated_ctx), time.time(), task_id),
+    )
+
+    await progress.push_event(
+        project_id, "task_output",
+        f"Review requested changes (iteration {review_iterations + 1}/{REVIEW_MAX_ITERATIONS}): {summary}",
+        task_id=task_id,
+    )
+
+    logger.info(
+        "Task %s sent back for iteration %d: %s",
+        task_id, review_iterations + 1, summary,
+    )
+    return True
 
 
 async def _search_diagnostic_rag(error_text: str, rag_cache, http_client) -> str | None:
@@ -620,6 +765,29 @@ async def execute_task(
                     )
                     if verification_overridden:
                         return  # Task was reset to PENDING or NEEDS_REVIEW
+
+                # --- Code review cycle (post-verification) ---
+                # Reviews the git diff like a senior dev, iterates if needed,
+                # then commits approved changes.
+                if REVIEW_CYCLE_ENABLED and tier not in (ModelTier.OLLAMA,):
+                    review_blocked = await _run_review_cycle(
+                        task_row=task_row,
+                        task_id=task_id,
+                        project_id=project_id,
+                        result=result,
+                        tier=tier,
+                        db=db,
+                        budget=budget,
+                        progress=progress,
+                        client=client,
+                        tool_registry=tool_registry,
+                        http_client=http_client,
+                        semaphore=semaphore,
+                        dispatched=dispatched,
+                        retry_after=retry_after,
+                    )
+                    if review_blocked:
+                        return  # Task re-queued for iteration or sent to review
 
                 await progress.push_event(
                     project_id, "task_complete", task_row["title"],

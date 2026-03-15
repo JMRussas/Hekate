@@ -141,6 +141,12 @@ TELEMETRY_FEEDBACK_ENABLED = cfg("telemetry_feedback.enabled", True)
 TELEMETRY_FEEDBACK_URL = cfg("telemetry_feedback.context_store_url", "http://localhost:5102")
 TELEMETRY_FEEDBACK_EMBED_OUTCOMES = cfg("telemetry_feedback.embed_outcomes", True)
 
+# Review Cycle — execute → review → iterate → commit → PR
+REVIEW_CYCLE_ENABLED = cfg("review_cycle.enabled", False)
+REVIEW_MAX_ITERATIONS = cfg("review_cycle.max_iterations", 2)
+REVIEW_AUTO_COMMIT = cfg("review_cycle.auto_commit", True)
+REVIEW_PR_ON_WAVE = cfg("review_cycle.pr_on_wave_complete", True)
+
 # Model pricing
 MODEL_PRICING = cfg("model_pricing", {})
 
