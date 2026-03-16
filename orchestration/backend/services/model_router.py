@@ -157,48 +157,45 @@ def estimate_task_cost(
 # Default: CLI-first routing — subscription CLIs are $0/call vs API billing.
 # Ollama for simple tasks (free, local), CLI for medium/complex.
 # API tiers (haiku/sonnet) available but not default — use config override.
-# NOTE: CODEX_CLI and GEMINI_CLI disabled for NSSM service deployment.
-# - codex: ChatGPT subscription doesn't support codex exec mode
-# - gemini: OAuth tokens stored in Windows Credential Manager, inaccessible
-#   to NSSM services running as LocalSystem
-# All tasks routed to CLAUDE_CODE (working) or OLLAMA (local/free).
+# NOTE: CODEX_CLI disabled — ChatGPT subscription doesn't support codex exec.
+# GEMINI_CLI enabled — requires GEMINI_FORCE_FILE_STORAGE=true in NSSM env.
 _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     # Code tasks
-    ("code", "simple"): ModelTier.CLAUDE_CODE,
+    ("code", "simple"): ModelTier.GEMINI_CLI,
     ("code", "medium"): ModelTier.CLAUDE_CODE,
     ("code", "complex"): ModelTier.CLAUDE_CODE,
     # Research
-    ("research", "simple"): ModelTier.CLAUDE_CODE,
-    ("research", "medium"): ModelTier.CLAUDE_CODE,
+    ("research", "simple"): ModelTier.GEMINI_CLI,
+    ("research", "medium"): ModelTier.GEMINI_CLI,
     ("research", "complex"): ModelTier.CLAUDE_CODE,
     # Analysis
     ("analysis", "simple"): ModelTier.OLLAMA,
-    ("analysis", "medium"): ModelTier.CLAUDE_CODE,
+    ("analysis", "medium"): ModelTier.GEMINI_CLI,
     ("analysis", "complex"): ModelTier.CLAUDE_CODE,
     # Asset generation
     ("asset", "simple"): ModelTier.OLLAMA,
     ("asset", "medium"): ModelTier.OLLAMA,
     ("asset", "complex"): ModelTier.OLLAMA,
     # Integration
-    ("integration", "simple"): ModelTier.CLAUDE_CODE,
+    ("integration", "simple"): ModelTier.GEMINI_CLI,
     ("integration", "medium"): ModelTier.CLAUDE_CODE,
     ("integration", "complex"): ModelTier.CLAUDE_CODE,
     # Documentation
     ("documentation", "simple"): ModelTier.OLLAMA,
-    ("documentation", "medium"): ModelTier.CLAUDE_CODE,
+    ("documentation", "medium"): ModelTier.GEMINI_CLI,
     ("documentation", "complex"): ModelTier.CLAUDE_CODE,
     # Claude Code CLI — for tasks requiring file I/O, git, MCP tools
     ("code_cli", "simple"): ModelTier.CLAUDE_CODE,
     ("code_cli", "medium"): ModelTier.CLAUDE_CODE,
     ("code_cli", "complex"): ModelTier.CLAUDE_CODE,
     # Game development task types
-    ("game_design", "simple"): ModelTier.CLAUDE_CODE,
-    ("game_design", "medium"): ModelTier.CLAUDE_CODE,
+    ("game_design", "simple"): ModelTier.GEMINI_CLI,
+    ("game_design", "medium"): ModelTier.GEMINI_CLI,
     ("game_design", "complex"): ModelTier.CLAUDE_CODE,
-    ("game_content", "simple"): ModelTier.CLAUDE_CODE,
-    ("game_content", "medium"): ModelTier.CLAUDE_CODE,
+    ("game_content", "simple"): ModelTier.GEMINI_CLI,
+    ("game_content", "medium"): ModelTier.GEMINI_CLI,
     ("game_content", "complex"): ModelTier.CLAUDE_CODE,
-    ("game_code", "simple"): ModelTier.CLAUDE_CODE,
+    ("game_code", "simple"): ModelTier.GEMINI_CLI,
     ("game_code", "medium"): ModelTier.CLAUDE_CODE,
     ("game_code", "complex"): ModelTier.CLAUDE_CODE,
     ("game_ui", "simple"): ModelTier.CLAUDE_CODE,
