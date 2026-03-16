@@ -76,19 +76,31 @@ def get_model_id(tier: ModelTier) -> str:
     if override:
         return override
 
-    # 2. Discovery cache — live model list from provider APIs.
+    # 2. Discovery cache — check if the preferred fallback model is available.
+    #    Don't blindly return models[0] — discovery may return a model that
+    #    the CLI tool can't use (e.g., gpt-4o when we want gpt-5.4).
+    #    Instead, check if our preferred model is in the discovered list.
     if _discovery is not None:
         available = _discovery.get_available_models()
         if tier == ModelTier.GEMINI_CLI:
             models = available.get("google", [])
+            preferred = _DEFAULT_CLI_FALLBACKS["gemini_cli"]
+            if preferred in models:
+                return preferred
             if models:
                 return models[0]
         elif tier == ModelTier.CODEX_CLI:
             models = available.get("openai", [])
+            preferred = _DEFAULT_CLI_FALLBACKS["codex_cli"]
+            if preferred in models:
+                return preferred
             if models:
                 return models[0]
         elif tier == ModelTier.OLLAMA:
             models = available.get("ollama", [])
+            preferred = _DEFAULT_CLI_FALLBACKS["ollama"]
+            if preferred in models:
+                return preferred
             if models:
                 return models[0]
         else:

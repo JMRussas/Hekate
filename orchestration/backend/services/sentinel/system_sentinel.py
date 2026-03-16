@@ -199,11 +199,20 @@ class SystemSentinel:
             )
             return existing
 
+        # Create InterventionExecutor with DB access for tier reassignment
+        from backend.services.sentinel.intervention_executor import InterventionExecutor
+        executor = InterventionExecutor(
+            base_url="http://localhost:5200",
+            bus=self._bus,
+            db=self._db,
+        )
+
         sentinel = PlanSentinel(
             project_id=project_id,
             bus=self._bus,
             progress_manager=self._progress_manager,
             db=self._db,
+            intervention_executor=executor,
         )
         await sentinel.start()
         self._plan_sentinels[project_id] = sentinel
