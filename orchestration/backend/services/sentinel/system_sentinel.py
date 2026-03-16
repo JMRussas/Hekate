@@ -75,6 +75,7 @@ class SystemSentinel:
         bus: SentinelBus | None = None,
         context_client: SentinelContextClient | None = None,
         db: Database | None = None,
+        progress_manager=None,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         window_size: int = DEFAULT_WINDOW_SIZE,
         max_concurrent_tasks: int | None = None,
@@ -83,6 +84,7 @@ class SystemSentinel:
         self._bus = bus or SentinelBus()
         self._context_client = context_client
         self._db = db
+        self._progress_manager = progress_manager
         self._poll_interval = poll_interval
         self._window_size = window_size
 
@@ -184,7 +186,11 @@ class SystemSentinel:
             )
             return existing
 
-        sentinel = PlanSentinel(project_id=project_id, bus=self._bus)
+        sentinel = PlanSentinel(
+            project_id=project_id,
+            bus=self._bus,
+            progress_manager=self._progress_manager,
+        )
         await sentinel.start()
         self._plan_sentinels[project_id] = sentinel
         logger.info(

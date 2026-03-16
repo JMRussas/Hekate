@@ -78,7 +78,7 @@ class Container(containers.DeclarativeContainer):
     provider_quota = providers.Singleton(ProviderQuotaManager, db=db)
     resource_monitor = providers.Singleton(ResourceMonitor)
     system_sentinel = providers.Singleton(
-        SystemSentinel, resource_monitor=resource_monitor,
+        SystemSentinel, resource_monitor=resource_monitor, progress_manager=progress,
     )
     diagnostic_ingester = providers.Singleton(DiagnosticIngester)
     model_discovery = providers.Singleton(ModelDiscoveryService)
