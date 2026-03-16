@@ -31,6 +31,12 @@ from backend.services.sentinel.models import (
 
 from backend.services.sentinel.intervention_executor import InterventionExecutor
 from backend.services.sentinel.reasoner import SentinelReasoner
+from backend.services.sentinel.rules import (
+    check_task_stuck as _rule_task_stuck_fn,
+    check_wave_stalled as _rule_wave_stalled_fn,
+    check_cascade_failure as _rule_cascade_failure_fn,
+    check_budget_warning as _rule_budget_warning_fn,
+)
 
 if TYPE_CHECKING:
     from backend.services.sentinel.bus import SentinelBus
@@ -605,167 +611,31 @@ class PlanSentinel:
 
     def _rule_task_stuck(self) -> list[SentinelObservation]:
         """Detect tasks running > STUCK_THRESHOLD_SECS with no progress."""
-        now = time.time()
-        results: list[SentinelObservation] = []
-        for task_id, status in self._state.task_statuses.items():
-            if status != TaskState.RUNNING:
-                continue
-            timing = self._state.task_timing.get(task_id)
-            if timing is None or timing.last_progress_at is None:
-                continue
-            elapsed = now - timing.last_progress_at
-            if elapsed > self.STUCK_THRESHOLD_SECS:
-                results.append(SentinelObservation(
-                    category="task_stuck",
-                    message=(
-                        f"Task {task_id[:8]} has had no progress for "
-                        f"{elapsed:.0f}s (threshold: {self.STUCK_THRESHOLD_SECS:.0f}s)"
-                    ),
-                    severity=Severity.WARNING,
-                    project_id=self._project_id,
-                    task_id=task_id,
-                    details={
-                        "rule": "task_stuck",
-                        "elapsed_secs": round(elapsed, 1),
-                        "threshold_secs": self.STUCK_THRESHOLD_SECS,
-                    },
-                ))
-        return results
+        return _rule_task_stuck_fn(
+            self._state, self._project_id,
+            stuck_threshold_secs=self.STUCK_THRESHOLD_SECS,
+        )
 
     def _rule_wave_stalled(self) -> list[SentinelObservation]:
         """Detect when all tasks in the current wave are failed or stuck."""
-        if self._state.current_wave is None:
-            return []
-
-        now = time.time()
-        wave_tasks: list[str] = []
-        for task_id, status in self._state.task_statuses.items():
-            # Heuristic: tasks in current wave are those currently running,
-            # failed, or stuck. We consider all non-completed active tasks.
-            if status in (
-                TaskState.RUNNING, TaskState.FAILED,
-                TaskState.PENDING, TaskState.QUEUED, TaskState.BLOCKED,
-            ):
-                wave_tasks.append(task_id)
-
-        if not wave_tasks:
-            return []
-
-        all_stalled = True
-        for task_id in wave_tasks:
-            status = self._state.task_statuses[task_id]
-            if status == TaskState.FAILED:
-                continue  # counts as stalled
-            if status == TaskState.RUNNING:
-                timing = self._state.task_timing.get(task_id)
-                if timing and timing.last_progress_at:
-                    elapsed = now - timing.last_progress_at
-                    if elapsed <= self.STUCK_THRESHOLD_SECS:
-                        all_stalled = False
-                        break
-                else:
-                    all_stalled = False
-                    break
-            else:
-                # PENDING/QUEUED/BLOCKED — not failed or stuck, wave not stalled
-                all_stalled = False
-                break
-
-        if not all_stalled:
-            return []
-
-        return [SentinelObservation(
-            category="wave_stalled",
-            message=(
-                f"Wave {self._state.current_wave} is stalled: all "
-                f"{len(wave_tasks)} tasks are failed or stuck"
-            ),
-            severity=Severity.CRITICAL,
-            project_id=self._project_id,
-            details={
-                "rule": "wave_stalled",
-                "wave": self._state.current_wave,
-                "task_count": len(wave_tasks),
-                "task_ids": wave_tasks,
-            },
-        )]
+        return _rule_wave_stalled_fn(
+            self._state, self._project_id,
+            stuck_threshold_secs=self.STUCK_THRESHOLD_SECS,
+        )
 
     def _rule_cascade_failure(self) -> list[SentinelObservation]:
-        """Detect 3+ consecutive task failures in the same wave.
-
-        Walks the wave_outcomes list (ordered by time) and finds the longest
-        current run of consecutive failures.  A successful completion resets
-        the run counter.
-        """
-        results: list[SentinelObservation] = []
-        for wave, outcomes in self._state.wave_outcomes.items():
-            consecutive_failures: list[str] = []
-            max_run: list[str] = []
-
-            for task_id, outcome in outcomes:
-                if outcome == "failed":
-                    consecutive_failures.append(task_id)
-                else:
-                    # Success breaks the consecutive run
-                    if len(consecutive_failures) > len(max_run):
-                        max_run = list(consecutive_failures)
-                    consecutive_failures = []
-
-            # Check the trailing run
-            if len(consecutive_failures) > len(max_run):
-                max_run = consecutive_failures
-
-            if len(max_run) >= self.CASCADE_FAILURE_MIN:
-                obs_key = f"cascade_failure:wave_{wave}"
-                if obs_key in self._state.emitted_observations:
-                    continue
-                self._state.emitted_observations.add(obs_key)
-                results.append(SentinelObservation(
-                    category="cascade_failure",
-                    message=(
-                        f"Cascade failure in wave {wave}: "
-                        f"{len(max_run)} consecutive failures"
-                    ),
-                    severity=Severity.CRITICAL,
-                    project_id=self._project_id,
-                    details={
-                        "rule": "cascade_failure",
-                        "wave": wave,
-                        "consecutive_failure_count": len(max_run),
-                        "failed_task_ids": max_run,
-                    },
-                ))
-        return results
+        """Detect 3+ consecutive task failures in the same wave."""
+        return _rule_cascade_failure_fn(
+            self._state, self._project_id,
+            cascade_failure_min=self.CASCADE_FAILURE_MIN,
+        )
 
     def _rule_budget_warning(self) -> list[SentinelObservation]:
-        """Detect budget usage exceeding 80% by evaluating spend vs limit."""
-        if self._state.budget_limit <= 0:
-            return []
-        ratio = self._state.budget_spent / self._state.budget_limit
-        if ratio < self.BUDGET_PERCENT_THRESHOLD:
-            return []
-
-        obs_key = "budget_warning"
-        if obs_key in self._state.emitted_observations:
-            return []
-        self._state.emitted_observations.add(obs_key)
-
-        pct = ratio * 100
-        return [SentinelObservation(
-            category="budget_warning",
-            message=(
-                f"Budget warning: spending at {pct:.1f}% of limit "
-                f"(${self._state.budget_spent:.2f} / ${self._state.budget_limit:.2f})"
-            ),
-            severity=Severity.WARNING,
-            project_id=self._project_id,
-            details={
-                "rule": "budget_warning",
-                "budget_spent": self._state.budget_spent,
-                "budget_limit": self._state.budget_limit,
-                "usage_percent": round(pct, 1),
-            },
-        )]
+        """Detect budget usage exceeding threshold."""
+        return _rule_budget_warning_fn(
+            self._state, self._project_id,
+            budget_percent_threshold=self.BUDGET_PERCENT_THRESHOLD,
+        )
 
     # ------------------------------------------------------------------
     # Observation publishing

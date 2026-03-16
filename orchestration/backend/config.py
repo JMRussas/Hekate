@@ -127,6 +127,10 @@ KNOWLEDGE_EXTRACTION_ENABLED = cfg("execution.knowledge_extraction_enabled", Tru
 KNOWLEDGE_EXTRACTION_MODEL = cfg("execution.knowledge_extraction_model", "claude-haiku-4-5-20251001")
 KNOWLEDGE_EXTRACTION_MAX_TOKENS = cfg("execution.knowledge_extraction_max_tokens", 1024)
 KNOWLEDGE_INJECTION_MAX_CHARS = cfg("execution.knowledge_injection_max_chars", 3000)
+
+# Sentinel orchestrator mode — when enabled, sentinel owns project lifecycle
+# and executor becomes a worker pool. Default false (legacy executor-driven mode).
+SENTINEL_ORCHESTRATOR_ENABLED = cfg("sentinel.orchestrator_enabled", False)
 KNOWLEDGE_MIN_OUTPUT_LENGTH = cfg("execution.knowledge_min_output_length", 200)
 EXTERNAL_CLAIM_TIMEOUT_SECONDS = cfg("execution.external_claim_timeout_seconds", 3600)
 

@@ -106,6 +106,181 @@ class HealthTrend:
         return second_half > first_half * 1.3
 
 
+class SentinelCommand(Enum):
+    """Commands the sentinel can issue to the orchestration layer."""
+    DISPATCH_TASK = "dispatch_task"
+    CANCEL_TASK = "cancel_task"
+    PAUSE_PROJECT = "pause_project"
+    RESUME_PROJECT = "resume_project"
+    ADVANCE_WAVE = "advance_wave"
+    RETRY_TASK = "retry_task"
+    REASSIGN_TIER = "reassign_tier"
+    SKIP_TASK = "skip_task"
+
+
+@dataclass
+class DecisionRecord:
+    """Record of a sentinel decision for audit and replay."""
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    project_id: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    command: SentinelCommand = SentinelCommand.DISPATCH_TASK
+    reasoning: str = ""
+    confidence: float = 1.0
+    outcome: str = ""  # filled after execution
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "timestamp": self.timestamp.isoformat(),
+            "command": self.command.value,
+            "reasoning": self.reasoning,
+            "confidence": self.confidence,
+            "outcome": self.outcome,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DecisionRecord:
+        return cls(
+            id=data["id"],
+            project_id=data["project_id"],
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            command=SentinelCommand(data["command"]),
+            reasoning=data["reasoning"],
+            confidence=data["confidence"],
+            outcome=data.get("outcome", ""),
+        )
+
+
+@dataclass
+class TaskWorldState:
+    """Snapshot of a single task's state within the world model."""
+    id: str = ""
+    status: str = "pending"
+    wave: int = 0
+    model_tier: str = ""
+    retry_count: int = 0
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    output_summary: str = ""
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "status": self.status,
+            "wave": self.wave,
+            "model_tier": self.model_tier,
+            "retry_count": self.retry_count,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "output_summary": self.output_summary,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskWorldState:
+        started = data.get("started_at")
+        completed = data.get("completed_at")
+        return cls(
+            id=data["id"],
+            status=data["status"],
+            wave=data["wave"],
+            model_tier=data.get("model_tier", ""),
+            retry_count=data.get("retry_count", 0),
+            started_at=datetime.fromisoformat(started) if started else None,
+            completed_at=datetime.fromisoformat(completed) if completed else None,
+            output_summary=data.get("output_summary", ""),
+            error=data.get("error", ""),
+        )
+
+
+@dataclass
+class ExecutionStrategy:
+    """Configuration for how the sentinel should execute a project."""
+    max_concurrent: int = 4
+    model_preferences: dict[str, str] = field(default_factory=dict)
+    retry_policy: dict[str, Any] = field(default_factory=lambda: {
+        "max_retries": 3,
+        "backoff_seconds": 30,
+    })
+    checkpoint_on_wave: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_concurrent": self.max_concurrent,
+            "model_preferences": self.model_preferences,
+            "retry_policy": self.retry_policy,
+            "checkpoint_on_wave": self.checkpoint_on_wave,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ExecutionStrategy:
+        return cls(
+            max_concurrent=data.get("max_concurrent", 4),
+            model_preferences=data.get("model_preferences", {}),
+            retry_policy=data.get("retry_policy", {"max_retries": 3, "backoff_seconds": 30}),
+            checkpoint_on_wave=data.get("checkpoint_on_wave", True),
+        )
+
+
+@dataclass
+class ProjectWorldModel:
+    """Complete snapshot of a project's state as seen by the sentinel."""
+    project_id: str = ""
+    status: str = "pending"
+    tasks: dict[str, TaskWorldState] = field(default_factory=dict)
+    current_wave: int = 0
+    completed_waves: list[int] = field(default_factory=list)
+    budget_spent: float = 0.0
+    budget_limit: float = 0.0
+    resource_health: dict[str, str] = field(default_factory=dict)
+    timing: dict[str, Any] = field(default_factory=dict)
+    decision_log: list[DecisionRecord] = field(default_factory=list)
+    strategy: ExecutionStrategy = field(default_factory=ExecutionStrategy)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "status": self.status,
+            "tasks": {k: v.to_dict() for k, v in self.tasks.items()},
+            "current_wave": self.current_wave,
+            "completed_waves": self.completed_waves,
+            "budget_spent": self.budget_spent,
+            "budget_limit": self.budget_limit,
+            "resource_health": self.resource_health,
+            "timing": self.timing,
+            "decision_log": [d.to_dict() for d in self.decision_log],
+            "strategy": self.strategy.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProjectWorldModel:
+        tasks = {
+            k: TaskWorldState.from_dict(v)
+            for k, v in data.get("tasks", {}).items()
+        }
+        decisions = [
+            DecisionRecord.from_dict(d)
+            for d in data.get("decision_log", [])
+        ]
+        strategy = ExecutionStrategy.from_dict(data.get("strategy", {}))
+        return cls(
+            project_id=data["project_id"],
+            status=data["status"],
+            tasks=tasks,
+            current_wave=data.get("current_wave", 0),
+            completed_waves=data.get("completed_waves", []),
+            budget_spent=data.get("budget_spent", 0.0),
+            budget_limit=data.get("budget_limit", 0.0),
+            resource_health=data.get("resource_health", {}),
+            timing=data.get("timing", {}),
+            decision_log=decisions,
+            strategy=strategy,
+        )
+
+
 @dataclass
 class SentinelObservation:
     """Persistent observation saved to the context store."""

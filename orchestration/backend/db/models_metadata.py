@@ -267,3 +267,19 @@ Index("idx_sentinel_obs_project", sentinel_observations.c.project_id)
 Index("idx_sentinel_obs_severity", sentinel_observations.c.severity)
 Index("idx_sentinel_obs_category", sentinel_observations.c.category)
 Index("idx_sentinel_obs_created", sentinel_observations.c.created_at)
+
+# -- Sentinel decisions (orchestrator command log) --
+sentinel_decisions = Table(
+    "sentinel_decisions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("timestamp", Float, nullable=False),
+    Column("command", Text, nullable=False),
+    Column("reasoning", Text, nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("outcome", Text, nullable=True),
+    Column("details_json", Text, nullable=True),
+)
+Index("idx_sentinel_dec_project", sentinel_decisions.c.project_id)
+Index("idx_sentinel_dec_timestamp", sentinel_decisions.c.timestamp)

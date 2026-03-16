@@ -26,12 +26,19 @@ SentinelTopic = Literal[
 ]
 
 VALID_TOPICS: frozenset[str] = frozenset({
+    # Existing observation topics
     "resource_alert",
     "contention_advisory",
     "stall_notification",
     "intervention_proposal",
     "sentinel_heartbeat",
     "plan_sentinel_stopped",
+    # Orchestrator command topics (Phase 0+)
+    "dispatch_command",
+    "worker_event",
+    "decision_made",
+    "state_change",
+    "dispatch_advisory",
 })
 
 # Type alias for async subscriber callbacks
