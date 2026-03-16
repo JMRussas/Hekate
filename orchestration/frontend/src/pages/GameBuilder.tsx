@@ -10,7 +10,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { listProjects, createProject, generatePlan, approvePlan, startExecution,
-  listPlans, listTasks, pauseExecution } from '../api/projects'
+  listPlans, listTasks, pauseExecution, sendChat, updateProject } from '../api/projects'
+import type { ChatMessage as ApiChatMessage } from '../api/projects'
 import { useFetch } from '../hooks/useFetch'
 import { useSSE } from '../hooks/useSSE'
 import type { Project, Task, SSEEvent } from '../types'
@@ -207,13 +208,85 @@ export default function GameBuilder() {
     }
 
     setChatLoading(true)
-    // For now, the chat creates a new project requirement update.
-    // Future: route through orchestration's chat/planning endpoints.
-    setMessages(prev => [...prev, {
-      role: 'assistant',
-      content: `Noted: "${userMsg}". To act on this, create a new plan iteration from the project page, or use the orchestration MCP tools directly.`,
-      timestamp: Date.now(),
-    }])
+    try {
+      // Build game-dev context for the system prompt
+      const taskList = (tasks ?? []).map(t => `[${t.status}] ${t.title}`).join('\n')
+      const context = [
+        'You are a game development director assistant for a NoZ 2D game engine project.',
+        'NoZ is a C# immediate-mode 2D engine with WebGPU rendering, skeletal animation, VFX particles, and an immediate-mode UI system.',
+        'Games implement IApplication with Update(), UpdateUI(), FixedUpdate() lifecycle methods.',
+        'Asset types: Sprite, Skeleton, Animation, VFX, Font, Shader, Sound, Atlas, Bundle.',
+        activeProject ? `Project: ${activeProject.name} (${activeProject.status})` : '',
+        taskList ? `Current tasks:\n${taskList}` : '',
+        'If the user request requires code changes or new features, respond with a clear description of what to build.',
+        'If it requires replanning, start your response with [REPLAN] followed by updated requirements.',
+      ].filter(Boolean).join('\n\n')
+
+      // Convert chat history to API format (exclude system messages, keep last 20)
+      const apiMessages: ApiChatMessage[] = messages
+        .filter(m => m.role !== 'system')
+        .slice(-20)
+        .map(m => ({ role: m.role, content: m.content }))
+
+      const response = await sendChat({
+        prompt: userMsg,
+        context,
+        provider: 'claude',
+        messages: apiMessages,
+      })
+
+      const aiText = response.response
+
+      // Check for [REPLAN] tag — AI wants to regenerate the plan
+      if (aiText.startsWith('[REPLAN]')) {
+        const newDirection = aiText.slice('[REPLAN]'.length).trim()
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `Replanning: ${newDirection}`,
+          timestamp: Date.now(),
+        }])
+
+        try {
+          // Append direction to project requirements
+          const currentReqs = activeProject?.requirements ?? ''
+          await updateProject(activeProjectId, {
+            requirements: `${currentReqs}\n\nDirector update: ${newDirection}`,
+          })
+
+          // Generate new plan
+          setMessages(prev => [...prev, {
+            role: 'system',
+            content: 'Generating updated plan...',
+            timestamp: Date.now(),
+          }])
+          const planResult = await generatePlan(activeProjectId)
+          setMessages(prev => [...prev, {
+            role: 'system',
+            content: `New plan generated (cost: $${planResult.cost_usd?.toFixed(4) ?? '?'}). Review and start execution when ready.`,
+            timestamp: Date.now(),
+          }])
+          refetchTasks()
+        } catch (planErr) {
+          setMessages(prev => [...prev, {
+            role: 'system',
+            content: `Replan error: ${planErr instanceof Error ? planErr.message : String(planErr)}`,
+            timestamp: Date.now(),
+          }])
+        }
+      } else {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: aiText,
+          timestamp: Date.now(),
+        }])
+      }
+    } catch (e) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `Error: ${e instanceof Error ? e.message : String(e)}`,
+        timestamp: Date.now(),
+      }])
+    }
     setChatLoading(false)
   }
 

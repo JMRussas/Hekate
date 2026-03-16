@@ -118,3 +118,35 @@ export const bulkTaskAction = (action: 'retry' | 'cancel', taskIds: string[]) =>
 
 export const fetchGitStatus = (projectId: string) =>
   apiFetch<GitStatus | null>(`/projects/${projectId}/git-status`)
+
+// ---------------------------------------------------------------------------
+// Internal chat — routes to Claude/Gemini/Codex CLI or Ollama
+// ---------------------------------------------------------------------------
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+}
+
+export interface SendChatOptions {
+  prompt: string
+  context?: string
+  provider?: 'claude' | 'gemini' | 'codex' | 'ollama'
+  messages?: ChatMessage[]
+  model?: string
+}
+
+export interface ChatResponse {
+  response: string
+  provider?: string
+  model_used?: string
+}
+
+export const sendChat = (opts: SendChatOptions) =>
+  apiPost<ChatResponse>('/internal/chat', {
+    prompt: opts.prompt,
+    context: opts.context,
+    provider: opts.provider,
+    messages: opts.messages,
+    model: opts.model,
+  })
