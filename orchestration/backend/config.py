@@ -154,6 +154,11 @@ REVIEW_PR_ON_WAVE = cfg("review_cycle.pr_on_wave_complete", True)
 # Model pricing
 MODEL_PRICING = cfg("model_pricing", {})
 
+# Hekate MCP (code analysis)
+HEKATE_MCP_URL = cfg("hekate_mcp.url", "http://192.168.1.164:5110")
+HEKATE_MCP_TIMEOUT = cfg("hekate_mcp.timeout", 60.0)
+HEKATE_MCP_DEFAULT_PROJECT = cfg("hekate_mcp.default_project", "")
+
 # Resource check
 RESOURCE_CHECK_INTERVAL = cfg("resource_check_interval_sec", 30)
 
