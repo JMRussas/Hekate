@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -92,6 +93,7 @@ class InterventionAction(str, Enum):
     RELEASE_CLAIM = "release_claim"
     SKIP_TASK = "skip_task"
     REORDER_WAVE = "reorder_wave"
+    REASSIGN_TIER = "reassign_tier"
 
 
 # Map observation categories to the intervention they trigger
@@ -147,6 +149,12 @@ class PlanState:
 
     # Set of observation keys already emitted (to avoid duplicate alerts)
     emitted_observations: set[str] = field(default_factory=set)
+
+    # task_id → error text from last failure (for reasoner diagnosis)
+    task_errors: dict[str, str] = field(default_factory=dict)
+
+    # task_id → model tier used (for reassignment decisions)
+    task_tiers: dict[str, str] = field(default_factory=dict)
 
 
 class PlanSentinel:
@@ -471,6 +479,13 @@ class PlanSentinel:
         timing = self._state.task_timing.setdefault(task_id, TaskTiming())
         timing.last_progress_at = ts
 
+        # Capture error text and model tier for reasoner diagnosis
+        error_text = event.get("error") or event.get("message") or ""
+        model_tier = event.get("model_tier") or ""
+        self._state.task_errors[task_id] = error_text[:1000]
+        if model_tier:
+            self._state.task_tiers[task_id] = model_tier
+
         # Track wave-level outcomes for consecutive-failure detection
         if self._state.current_wave is not None:
             wave = self._state.current_wave
@@ -484,8 +499,8 @@ class PlanSentinel:
         tws.retry_count = self._state.failure_counts[task_id]
 
         logger.debug(
-            "Plan Sentinel: task_failed %s (failures: %d)",
-            task_id[:8], self._state.failure_counts[task_id],
+            "Plan Sentinel: task_failed %s (failures: %d, tier: %s)",
+            task_id[:8], self._state.failure_counts[task_id], model_tier or "?",
         )
 
         # Trigger immediate detection check — cascade failures and wave
@@ -942,16 +957,26 @@ class PlanSentinel:
     # Intervention handling
     # ------------------------------------------------------------------
 
+    # Map reasoner recommended_action strings to InterventionAction enum
+    _REASONER_ACTION_MAP: dict[str, InterventionAction] = {
+        "retry_task": InterventionAction.RETRY_TASK,
+        "release_claim": InterventionAction.RELEASE_CLAIM,
+        "skip_task": InterventionAction.SKIP_TASK,
+        "reorder_wave": InterventionAction.REORDER_WAVE,
+        "reassign_tier": InterventionAction.REASSIGN_TIER,
+    }
+
     async def _handle_intervention(self, obs: SentinelObservation) -> None:
         """Determine and execute the appropriate intervention for an observation.
 
-        Consults the SentinelReasoner (if available) before acting.  If the
-        reasoner's confidence is below 0.5, auto-tier interventions are
-        escalated to supervised.  Supervised proposals always include the LLM
-        diagnosis when available.
+        Runs the iterative 5-Whys reasoner (if available) to investigate root
+        cause before deciding on an action.  Routes based on the reasoning
+        result:
+        - Confident result (>= threshold) → use reasoner's recommended action
+        - Low confidence or knowledge gaps → escalate with full why-chain
+        - Reasoner unavailable → fall back to rule-based category mapping
 
-        Auto-tier actions are delegated to the InterventionExecutor when
-        present, falling back to the legacy inline HTTP calls otherwise.
+        The full reasoning chain is logged to the sentinel_decisions table.
         """
         entry = _CATEGORY_TO_INTERVENTION.get(obs.category)
         if entry is None:
@@ -959,15 +984,23 @@ class PlanSentinel:
 
         action, tier = entry
 
-        # For cascade failures, try auto-retry on the last failed task first
+        # For cascade failures: if all failures are on the same tier,
+        # auto-reassign to a fallback tier instead of retrying or escalating.
+        # This handles the "codex_cli is broken, switch to gemini_cli" case.
         if obs.category == "cascade_failure" and obs.details:
-            failed_ids = obs.details.get("failed_task_ids", [])
-            if failed_ids:
-                last_failed = failed_ids[-1]
-                retries = self._state.retry_counts.get(last_failed, 0)
-                if retries < MAX_AUTO_RETRIES:
-                    action = InterventionAction.RETRY_TASK
-                    tier = InterventionTier.AUTO
+            same_tier = obs.details.get("same_tier_failure", False)
+            if same_tier:
+                action = InterventionAction.REASSIGN_TIER
+                tier = InterventionTier.AUTO
+            else:
+                # Mixed tiers — try auto-retry on the last failed task
+                failed_ids = obs.details.get("failed_task_ids", [])
+                if failed_ids:
+                    last_failed = failed_ids[-1]
+                    retries = self._state.retry_counts.get(last_failed, 0)
+                    if retries < MAX_AUTO_RETRIES:
+                        action = InterventionAction.RETRY_TASK
+                        tier = InterventionTier.AUTO
 
         # Deduplication: avoid repeating the same intervention
         dedup_target = obs.task_id or str(obs.details.get("wave", ""))
@@ -976,7 +1009,7 @@ class PlanSentinel:
             return
         self._state.handled_interventions.add(dedup_key)
 
-        # --- Consult reasoner for LLM-powered diagnosis ---
+        # --- Run iterative 5-Whys reasoner ---
         reasoning_result = None
         if self._reasoner:
             try:
@@ -989,17 +1022,35 @@ class PlanSentinel:
                     obs.observation_id,
                 )
 
-        # If reasoner confidence is low, escalate auto-tier to supervised
-        if (
-            reasoning_result is not None
-            and tier == InterventionTier.AUTO
-            and reasoning_result.confidence < 0.5
-        ):
-            logger.info(
-                "Reasoner confidence %.2f < 0.5 for %s — escalating to supervised",
-                reasoning_result.confidence, obs.observation_id[:8],
+        # --- Route based on reasoning result ---
+        if reasoning_result is not None:
+            # Override action if the reasoner recommends a specific intervention
+            reasoner_action = self._REASONER_ACTION_MAP.get(
+                reasoning_result.recommended_action,
             )
-            tier = InterventionTier.SUPERVISED
+
+            if reasoning_result.escalation_reason or reasoning_result.confidence < 0.5:
+                # Knowledge gap or low confidence → always escalate
+                logger.info(
+                    "Reasoner escalating for %s (confidence=%.2f, gaps=%d, reason=%s)",
+                    obs.observation_id[:8],
+                    reasoning_result.confidence,
+                    len(reasoning_result.knowledge_gaps),
+                    reasoning_result.escalation_reason or "low confidence",
+                )
+                tier = InterventionTier.SUPERVISED
+            elif reasoner_action is not None:
+                # Confident with a concrete action → use it
+                action = reasoner_action
+                logger.info(
+                    "Reasoner recommends %s for %s (confidence=%.2f, root_cause=%s)",
+                    action.value, obs.observation_id[:8],
+                    reasoning_result.confidence,
+                    reasoning_result.root_cause[:80],
+                )
+
+            # Log the full reasoning chain to sentinel_decisions
+            await self._log_reasoning_decision(obs, reasoning_result, action)
 
         if tier == InterventionTier.AUTO:
             await self._execute_auto_intervention(
@@ -1008,6 +1059,64 @@ class PlanSentinel:
         else:
             await self._publish_intervention_proposal(
                 action, obs, reasoning_result=reasoning_result,
+            )
+
+    async def _log_reasoning_decision(
+        self,
+        obs: SentinelObservation,
+        result: Any,
+        action: InterventionAction,
+    ) -> None:
+        """Persist the full reasoning chain to the sentinel_decisions table."""
+        if not self._db:
+            return
+
+        # Serialize why_chain for storage
+        chain_data = []
+        for step in result.why_chain:
+            chain_data.append({
+                "question": step.question,
+                "sources_queried": step.sources_queried,
+                "evidence_found": step.evidence_found,
+                "conclusion": step.conclusion,
+            })
+
+        details = {
+            "observation_id": obs.observation_id,
+            "category": obs.category,
+            "why_chain": chain_data,
+            "root_cause": result.root_cause,
+            "knowledge_gaps": result.knowledge_gaps,
+            "escalation_reason": result.escalation_reason,
+            "recommended_action": result.recommended_action,
+        }
+
+        reasoning_summary = (
+            f"5-Whys ({len(result.why_chain)} steps): "
+            f"root_cause={result.root_cause}, "
+            f"action={result.recommended_action}"
+        )
+
+        try:
+            await self._db.execute_write(
+                "INSERT OR IGNORE INTO sentinel_decisions "
+                "(id, project_id, timestamp, command, reasoning, confidence, "
+                "outcome, details_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    uuid.uuid4().hex,
+                    self._project_id,
+                    time.time(),
+                    action.value,
+                    reasoning_summary,
+                    result.confidence,
+                    None,  # outcome filled after execution
+                    json.dumps(details, default=str),
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to log reasoning decision for %s", obs.observation_id,
             )
 
     # --- Auto-tier interventions ---
@@ -1036,6 +1145,11 @@ class PlanSentinel:
                         self._state.task_statuses[task_id] = TaskState.PENDING
                     elif action == InterventionAction.RELEASE_CLAIM:
                         self._state.task_statuses[task_id] = TaskState.PENDING
+                if success and action == InterventionAction.REASSIGN_TIER:
+                    # Mark all reassigned tasks as pending in internal state
+                    for tid in (obs.details or {}).get("failed_task_ids", []):
+                        self._state.task_statuses[tid] = TaskState.PENDING
+                        self._state.failure_counts[tid] = 0
             else:
                 # Legacy fallback — inline HTTP calls
                 if action == InterventionAction.RETRY_TASK:
@@ -1156,6 +1270,8 @@ class PlanSentinel:
             return await self._executor.skip_task(obs)
         elif action == InterventionAction.REORDER_WAVE:
             return await self._executor.reorder_wave(obs)
+        elif action == InterventionAction.REASSIGN_TIER:
+            return await self._executor.reassign_tier(obs)
         return InterventionResult(
             action=action.value, success=False, detail="unknown action",
         )
@@ -1249,8 +1365,9 @@ class PlanSentinel:
         """Publish a supervised intervention proposal for user approval.
 
         When a ``reasoning_result`` is provided (from SentinelReasoner), its
-        diagnosis, confidence, and evidence are included in the proposal
-        payload so the human reviewer has full LLM context.
+        full why-chain, root cause, confidence, and knowledge gaps are
+        included in the proposal payload so the human reviewer has full
+        investigation context.
         """
         payload: dict[str, Any] = {
             "type": "intervention_proposal",
@@ -1280,13 +1397,22 @@ class PlanSentinel:
                 "Consider reordering remaining work or manual intervention."
             )
 
-        # Include LLM diagnosis when available
+        # Include full reasoning chain when available
         if reasoning_result is not None:
+            chain_summary = []
+            for step in reasoning_result.why_chain:
+                chain_summary.append({
+                    "question": step.question,
+                    "sources_queried": step.sources_queried,
+                    "conclusion": step.conclusion,
+                })
             payload["llm_diagnosis"] = {
-                "diagnosis": reasoning_result.diagnosis,
+                "root_cause": reasoning_result.root_cause,
                 "recommended_action": reasoning_result.recommended_action,
                 "confidence": reasoning_result.confidence,
-                "supporting_evidence": reasoning_result.supporting_evidence,
+                "why_chain": chain_summary,
+                "knowledge_gaps": reasoning_result.knowledge_gaps,
+                "escalation_reason": reasoning_result.escalation_reason,
             }
 
         msg = SentinelMessage(
