@@ -428,6 +428,15 @@ class PlanSentinel:
             task_id[:8], self._state.failure_counts[task_id],
         )
 
+        # Trigger immediate detection check — cascade failures and wave
+        # stalls happen fast and the periodic tick may not fire in time.
+        total_failures = sum(
+            1 for s in self._state.task_statuses.values()
+            if s == TaskState.FAILED
+        )
+        if total_failures >= self.CASCADE_FAILURE_MIN:
+            asyncio.ensure_future(self._tick())
+
     def _on_task_output(
         self, event: dict, task_id: str | None, ts: float,
     ) -> None:
@@ -506,6 +515,8 @@ class PlanSentinel:
         logger.info(
             "Plan Sentinel: project_failed for %s", self._project_id,
         )
+        # Final detection sweep before teardown
+        asyncio.ensure_future(self._tick())
 
     def _on_project_blocked(
         self, event: dict, task_id: str | None, ts: float,
