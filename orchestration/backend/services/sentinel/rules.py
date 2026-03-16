@@ -218,15 +218,129 @@ def check_budget_warning(
 
 
 # -----------------------------------------------------------------------
-# New rules operating on ProjectWorldModel (for future orchestrator)
+# Pure state detection functions (Phase 2 — sentinel-as-orchestrator)
+#
+# These derive answers purely from ProjectWorldModel, no DB queries.
+# Used by the sentinel orchestrator for state decisions.
+# -----------------------------------------------------------------------
+
+def detect_tasks_ready(world: ProjectWorldModel) -> list[str]:
+    """Return task IDs in the current wave that are pending and ready for dispatch.
+
+    A task is ready when:
+    - It belongs to the current wave
+    - Its status is "pending"
+    """
+    return [
+        tid for tid, t in world.tasks.items()
+        if t.status == "pending" and t.wave == world.current_wave
+    ]
+
+
+def detect_wave_complete(world: ProjectWorldModel) -> bool:
+    """Return True when all tasks in the current wave are in a terminal state."""
+    terminal = {"completed", "failed", "cancelled"}
+    wave_tasks = [t for t in world.tasks.values() if t.wave == world.current_wave]
+    if not wave_tasks:
+        return False
+    return all(t.status in terminal for t in wave_tasks)
+
+
+def detect_project_complete(world: ProjectWorldModel) -> tuple[bool, str]:
+    """Return (done, reason) — True when all tasks are terminal."""
+    if not world.tasks:
+        return False, ""
+
+    terminal = {"completed", "failed", "cancelled"}
+    all_terminal = all(t.status in terminal for t in world.tasks.values())
+    if not all_terminal:
+        return False, ""
+
+    completed = sum(1 for t in world.tasks.values() if t.status == "completed")
+    failed = sum(1 for t in world.tasks.values() if t.status == "failed")
+    cancelled = sum(1 for t in world.tasks.values() if t.status == "cancelled")
+    total = len(world.tasks)
+
+    reason = f"{completed}/{total} succeeded, {failed} failed, {cancelled} cancelled"
+    return True, reason
+
+
+def detect_dead_project(world: ProjectWorldModel) -> bool:
+    """Return True when project is blocked with no active or pending tasks.
+
+    A project is dead when it has tasks but none are running or pending —
+    everything is failed, cancelled, or there's a mix of completed and
+    failed/cancelled with nothing left to dispatch.
+    """
+    if not world.tasks:
+        return False
+
+    active_statuses = {"pending", "running", "queued"}
+    has_active = any(t.status in active_statuses for t in world.tasks.values())
+    if has_active:
+        return False
+
+    # All tasks are terminal — dead if none succeeded, or if there are
+    # still undispatched waves with no way to reach them
+    has_completed = any(t.status == "completed" for t in world.tasks.values())
+    all_terminal = all(
+        t.status in ("completed", "failed", "cancelled")
+        for t in world.tasks.values()
+    )
+    if not all_terminal:
+        return False
+
+    # If everything completed successfully, that's project_complete, not dead
+    if has_completed and not any(
+        t.status in ("failed", "cancelled") for t in world.tasks.values()
+    ):
+        return False
+
+    # Dead if all failed/cancelled, or if remaining waves can't proceed
+    # because the current wave has failures blocking progress
+    all_failed_or_cancelled = all(
+        t.status in ("failed", "cancelled") for t in world.tasks.values()
+    )
+    if all_failed_or_cancelled:
+        return True
+
+    # Mixed terminal: check if future waves exist with pending-like tasks
+    max_wave = max(t.wave for t in world.tasks.values())
+    if world.current_wave < max_wave:
+        # There are future waves but nothing can dispatch — blocked
+        current_wave_tasks = [
+            t for t in world.tasks.values() if t.wave == world.current_wave
+        ]
+        current_all_failed = all(
+            t.status in ("failed", "cancelled") for t in current_wave_tasks
+        )
+        if current_all_failed:
+            return True
+
+    return False
+
+
+def detect_hollow_completions(world: ProjectWorldModel) -> list[str]:
+    """Return task IDs that completed but produced no meaningful output.
+
+    These are "hollow" completions — the task says it's done but there's
+    nothing to show for it, which usually indicates a silent failure.
+    """
+    return [
+        tid for tid, t in world.tasks.items()
+        if t.status == "completed" and not t.output_summary.strip()
+    ]
+
+
+# -----------------------------------------------------------------------
+# Observation-emitting wrappers (backward compat with existing tick loop)
+#
+# These delegate to detect_* for logic, then wrap results as observations.
 # -----------------------------------------------------------------------
 
 def check_tasks_ready(world: ProjectWorldModel) -> list[SentinelObservation]:
     """Detect tasks that are pending and could be dispatched."""
-    ready_ids = [
-        tid for tid, t in world.tasks.items()
-        if t.status == "pending"
-    ]
+    ready_ids = detect_tasks_ready(world)
     if not ready_ids:
         return []
     return [SentinelObservation(
@@ -244,18 +358,11 @@ def check_tasks_ready(world: ProjectWorldModel) -> list[SentinelObservation]:
 
 def check_wave_complete(world: ProjectWorldModel) -> list[SentinelObservation]:
     """Detect when all tasks in the current wave have completed."""
+    if not detect_wave_complete(world):
+        return []
+
     wave = world.current_wave
-    wave_tasks = [
-        t for t in world.tasks.values()
-        if t.wave == wave
-    ]
-    if not wave_tasks:
-        return []
-
-    all_done = all(t.status in ("completed", "failed", "cancelled") for t in wave_tasks)
-    if not all_done:
-        return []
-
+    wave_tasks = [t for t in world.tasks.values() if t.wave == wave]
     completed = sum(1 for t in wave_tasks if t.status == "completed")
     failed = sum(1 for t in wave_tasks if t.status == "failed")
 
@@ -279,12 +386,8 @@ def check_wave_complete(world: ProjectWorldModel) -> list[SentinelObservation]:
 
 def check_project_complete(world: ProjectWorldModel) -> list[SentinelObservation]:
     """Detect when all tasks in the project are in a terminal state."""
-    if not world.tasks:
-        return []
-
-    terminal = {"completed", "failed", "cancelled"}
-    all_terminal = all(t.status in terminal for t in world.tasks.values())
-    if not all_terminal:
+    done, reason = detect_project_complete(world)
+    if not done:
         return []
 
     completed = sum(1 for t in world.tasks.values() if t.status == "completed")
@@ -310,13 +413,7 @@ def check_project_complete(world: ProjectWorldModel) -> list[SentinelObservation
 
 def check_dead_project(world: ProjectWorldModel) -> list[SentinelObservation]:
     """Detect a project where all tasks have failed — nothing left to run."""
-    if not world.tasks:
-        return []
-
-    all_failed = all(
-        t.status in ("failed", "cancelled") for t in world.tasks.values()
-    )
-    if not all_failed:
+    if not detect_dead_project(world):
         return []
 
     return [SentinelObservation(
@@ -331,5 +428,23 @@ def check_dead_project(world: ProjectWorldModel) -> list[SentinelObservation]:
             "rule": "dead_project",
             "total": len(world.tasks),
             "failed_ids": [t.id for t in world.tasks.values()],
+        },
+    )]
+
+
+def check_hollow_completions(world: ProjectWorldModel) -> list[SentinelObservation]:
+    """Detect tasks that completed with empty output (silent failures)."""
+    hollow_ids = detect_hollow_completions(world)
+    if not hollow_ids:
+        return []
+    return [SentinelObservation(
+        category="hollow_completion",
+        message=f"{len(hollow_ids)} task(s) completed with empty output",
+        severity=Severity.WARNING,
+        project_id=world.project_id,
+        details={
+            "rule": "hollow_completion",
+            "task_ids": hollow_ids,
+            "count": len(hollow_ids),
         },
     )]

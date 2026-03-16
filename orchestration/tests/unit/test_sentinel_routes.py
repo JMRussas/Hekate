@@ -453,6 +453,137 @@ class TestRejectIntervention:
 
 
 # ---------------------------------------------------------------------------
+# GET /decisions — decision audit trail
+# ---------------------------------------------------------------------------
+
+async def _seed_decision(client, decision_id, project_id, command, reasoning, confidence, outcome=None, details=None, ts=None):
+    """Insert a decision row directly into the test DB."""
+    import time as _time
+    from backend.app import container
+    db = container.db()
+    # Ensure project exists for FK
+    now = _time.time()
+    await db.execute_write(
+        "INSERT OR IGNORE INTO projects (id, name, requirements, status, created_at, updated_at) "
+        "VALUES (?, 'Test', 'test', 'draft', ?, ?)",
+        (project_id, now, now),
+    )
+    await db.execute_write(
+        """INSERT INTO sentinel_decisions
+           (id, project_id, timestamp, command, reasoning, confidence, outcome, details_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            decision_id, project_id, ts or _time.time(), command,
+            reasoning, confidence, outcome,
+            json.dumps(details) if details else None,
+        ),
+    )
+
+
+class TestListDecisions:
+    async def test_decisions_empty(self, sentinel_client):
+        client, _ = sentinel_client
+        resp = await client.get("/api/sentinel/decisions")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_decisions_returns_all(self, sentinel_client):
+        client, _ = sentinel_client
+        await _seed_decision(client, "d1", "p1", "retry_task", "stuck", 0.8)
+        await _seed_decision(client, "d2", "p2", "skip_task", "cascade", 0.6)
+
+        resp = await client.get("/api/sentinel/decisions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+
+    async def test_decisions_filter_by_project(self, sentinel_client):
+        client, _ = sentinel_client
+        await _seed_decision(client, "d1", "p1", "retry_task", "r1", 0.8)
+        await _seed_decision(client, "d2", "p2", "retry_task", "r2", 0.7)
+
+        resp = await client.get("/api/sentinel/decisions?project_id=p1")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["project_id"] == "p1"
+
+    async def test_decisions_filter_by_command(self, sentinel_client):
+        client, _ = sentinel_client
+        await _seed_decision(client, "d1", "p1", "retry_task", "r1", 0.8)
+        await _seed_decision(client, "d2", "p1", "skip_task", "r2", 0.6)
+
+        resp = await client.get("/api/sentinel/decisions?project_id=p1&command=skip_task")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["command"] == "skip_task"
+
+    async def test_decisions_command_only_filter(self, sentinel_client):
+        """command filter without project_id uses query_similar_decisions."""
+        client, _ = sentinel_client
+        await _seed_decision(client, "d1", "p1", "retry_task", "r1", 0.8)
+        await _seed_decision(client, "d2", "p2", "retry_task", "r2", 0.7)
+        await _seed_decision(client, "d3", "p1", "skip_task", "r3", 0.6)
+
+        resp = await client.get("/api/sentinel/decisions?command=retry_task")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert all(d["command"] == "retry_task" for d in data)
+
+    async def test_decisions_limit(self, sentinel_client):
+        client, _ = sentinel_client
+        import time as _time
+        base = _time.time()
+        for i in range(10):
+            await _seed_decision(client, f"d{i}", "p1", "retry_task", f"r{i}", 0.5, ts=base + i)
+
+        resp = await client.get("/api/sentinel/decisions?limit=3")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 3
+
+    async def test_decisions_sorted_newest_first(self, sentinel_client):
+        client, _ = sentinel_client
+        import time as _time
+        base = _time.time()
+        await _seed_decision(client, "old", "p1", "retry_task", "old", 0.5, ts=base)
+        await _seed_decision(client, "new", "p1", "retry_task", "new", 0.5, ts=base + 100)
+
+        resp = await client.get("/api/sentinel/decisions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["decision_id"] == "new"
+        assert data[1]["decision_id"] == "old"
+
+    async def test_decisions_response_format(self, sentinel_client):
+        client, _ = sentinel_client
+        await _seed_decision(
+            client, "d1", "p1", "retry_task", "5-whys analysis",
+            0.85, outcome="retried", details={"depth": 3},
+        )
+
+        resp = await client.get("/api/sentinel/decisions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        record = data[0]
+        assert record["decision_id"] == "d1"
+        assert record["project_id"] == "p1"
+        assert record["command"] == "retry_task"
+        assert record["reasoning"] == "5-whys analysis"
+        assert record["confidence"] == 0.85
+        assert record["outcome"] == "retried"
+        assert record["details"] == {"depth": 3}
+        assert "timestamp" in record  # ISO format string
+
+    async def test_decisions_requires_auth(self, app_client):
+        resp = await app_client.get("/api/sentinel/decisions")
+        assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # GET /events — SSE stream
 # ---------------------------------------------------------------------------
 

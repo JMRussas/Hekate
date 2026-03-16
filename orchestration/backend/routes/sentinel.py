@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.container import Container
 from backend.middleware.auth import get_current_user, get_user_from_sse_token
+from backend.services.sentinel.decision_logger import DecisionLogger
 from backend.services.sentinel.models import HealthState, Severity
 from backend.services.sentinel.system_sentinel import SystemSentinel
 
@@ -199,57 +200,71 @@ async def list_observations(
 @router.get("/interventions")
 @inject
 async def list_interventions(
-    status: str | None = Query(default=None, description="Filter by status: pending, approved, rejected"),
+    status: str | None = Query(default=None, description="Filter by status: pending, approved, rejected, executed"),
     project_id: str | None = Query(default=None, description="Filter by project ID"),
     limit: int = Query(default=50, ge=1, le=200),
     current_user: dict = Depends(get_current_user),
-    sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
+    db=Depends(Provide[Container.db]),
 ):
-    """Return intervention proposals from the sentinel bus history.
+    """Return intervention proposals and results from the durable store.
 
-    Collects interventions from active Plan Sentinel state — handled_interventions
-    tracks what's been acted on, while the bus carries proposal payloads.
+    Queries sentinel_observations WHERE category IN ('intervention_proposal',
+    'intervention_result') so interventions survive PlanSentinel teardown.
     """
+    sql = (
+        "SELECT id, project_id, task_id, category, severity, message, details_json, created_at "
+        "FROM sentinel_observations "
+        "WHERE category IN ('intervention_proposal', 'intervention_result')"
+    )
+    params: list = []
+
+    if project_id is not None:
+        sql += " AND project_id = ?"
+        params.append(project_id)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = await db.fetchall(sql, tuple(params))
+    except Exception:
+        logger.exception("Failed to query interventions from DB")
+        rows = []
+
     interventions = []
+    for row in rows:
+        details = {}
+        if row["details_json"]:
+            try:
+                details = json.loads(row["details_json"])
+            except (json.JSONDecodeError, TypeError):
+                details = {}
 
-    for pid, ps in sentinel.plan_sentinels.items():
-        for obs in ps._observation_history:
-            # Only include observations that map to interventions
-            from backend.services.sentinel.plan_sentinel import _CATEGORY_TO_INTERVENTION
-            entry = _CATEGORY_TO_INTERVENTION.get(obs.category)
-            if entry is None:
-                continue
+        # intervention_result rows from auto-execution have implicit "executed" status
+        if row["category"] == "intervention_result":
+            row_status = "executed"
+        else:
+            row_status = details.get("status", "pending")
 
-            action, tier = entry
-            dedup_target = obs.task_id or str(obs.details.get("wave", ""))
-            dedup_key = (action.value, dedup_target)
-            is_handled = dedup_key in ps.state.handled_interventions
+        intervention = {
+            "id": row["id"],
+            "action": details.get("action", "unknown"),
+            "tier": details.get("tier", "unknown"),
+            "status": row_status,
+            "category": row["category"],
+            "severity": row["severity"],
+            "message": row["message"],
+            "project_id": row["project_id"],
+            "task_id": row["task_id"],
+            "details": details,
+            "timestamp": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
+        }
+        interventions.append(intervention)
 
-            intervention = {
-                "id": obs.observation_id,
-                "action": action.value,
-                "tier": tier.value,
-                "status": "executed" if is_handled else "pending",
-                "category": obs.category,
-                "severity": obs.severity.value,
-                "message": obs.message,
-                "project_id": obs.project_id,
-                "task_id": obs.task_id,
-                "details": obs.details,
-                "timestamp": obs.timestamp.isoformat() if isinstance(obs.timestamp, datetime) else str(obs.timestamp),
-            }
-            interventions.append(intervention)
-
-    # Apply filters
+    # Apply status filter in Python (since status lives in details_json)
     if status is not None:
         interventions = [i for i in interventions if i["status"] == status]
-    if project_id is not None:
-        interventions = [i for i in interventions if i["project_id"] == project_id]
 
-    # Sort by timestamp descending
-    interventions.sort(key=lambda i: i["timestamp"], reverse=True)
-
-    return interventions[:limit]
+    return interventions
 
 
 # ---------------------------------------------------------------------------
@@ -262,37 +277,72 @@ async def approve_intervention(
     intervention_id: str,
     current_user: dict = Depends(get_current_user),
     sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
+    db=Depends(Provide[Container.db]),
 ):
     """Approve a pending supervised intervention and trigger execution."""
-    # Find the observation across all plan sentinels
-    for pid, ps in sentinel.plan_sentinels.items():
-        for obs in ps._observation_history:
-            if obs.observation_id != intervention_id:
-                continue
+    # Look up the intervention proposal in DB
+    row = await db.fetchone(
+        "SELECT id, project_id, task_id, category, severity, message, details_json, created_at "
+        "FROM sentinel_observations WHERE id = ? AND category = 'intervention_proposal'",
+        (intervention_id,),
+    )
+    if row is None:
+        raise HTTPException(404, f"Intervention {intervention_id} not found")
 
-            from backend.services.sentinel.plan_sentinel import _CATEGORY_TO_INTERVENTION
-            entry = _CATEGORY_TO_INTERVENTION.get(obs.category)
-            if entry is None:
-                raise HTTPException(400, "Observation does not map to an intervention")
+    details = {}
+    if row["details_json"]:
+        try:
+            details = json.loads(row["details_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
 
-            action, tier = entry
+    if details.get("status") in ("approved", "rejected"):
+        raise HTTPException(400, f"Intervention already {details['status']}")
 
-            # Execute the intervention via the plan sentinel
-            await ps._execute_auto_intervention(action, obs)
+    action_str = details.get("action")
+    if not action_str:
+        raise HTTPException(400, "Intervention record missing action")
 
-            logger.info(
-                "Intervention %s approved by user %s for project %s",
-                intervention_id[:8], current_user.get("username", "?"), pid,
-            )
+    pid = row["project_id"]
 
-            return {
-                "id": intervention_id,
-                "action": action.value,
-                "status": "approved",
-                "project_id": pid,
-            }
+    # If the plan sentinel is still running, execute the intervention
+    from backend.services.sentinel.plan_sentinel import InterventionAction
+    action = InterventionAction(action_str)
+    ps = sentinel.plan_sentinels.get(pid)
+    if ps is not None:
+        # Reconstruct a minimal SentinelObservation for execution
+        from backend.services.sentinel.models import SentinelObservation, Severity as SevEnum
+        obs = SentinelObservation(
+            observation_id=details.get("observation_id", intervention_id),
+            category=row["category"],
+            message=row["message"],
+            severity=SevEnum(row["severity"]),
+            project_id=pid,
+            task_id=row["task_id"],
+            details=details,
+        )
+        await ps._execute_auto_intervention(action, obs)
 
-    raise HTTPException(404, f"Intervention {intervention_id} not found")
+    # Update the DB record with approved status
+    details["status"] = "approved"
+    details["approved_by"] = current_user.get("username", "unknown")
+    details["approved_at"] = datetime.now(timezone.utc).isoformat()
+    await db.execute_write(
+        "UPDATE sentinel_observations SET details_json = ? WHERE id = ?",
+        (json.dumps(details), intervention_id),
+    )
+
+    logger.info(
+        "Intervention %s approved by user %s for project %s",
+        intervention_id[:8], current_user.get("username", "?"), pid,
+    )
+
+    return {
+        "id": intervention_id,
+        "action": action_str,
+        "status": "approved",
+        "project_id": pid,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -305,35 +355,116 @@ async def reject_intervention(
     intervention_id: str,
     current_user: dict = Depends(get_current_user),
     sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
+    db=Depends(Provide[Container.db]),
 ):
     """Reject a pending supervised intervention — marks it as handled without executing."""
-    for pid, ps in sentinel.plan_sentinels.items():
-        for obs in ps._observation_history:
-            if obs.observation_id != intervention_id:
-                continue
+    row = await db.fetchone(
+        "SELECT id, project_id, task_id, category, details_json "
+        "FROM sentinel_observations WHERE id = ? AND category = 'intervention_proposal'",
+        (intervention_id,),
+    )
+    if row is None:
+        raise HTTPException(404, f"Intervention {intervention_id} not found")
 
-            from backend.services.sentinel.plan_sentinel import _CATEGORY_TO_INTERVENTION
-            entry = _CATEGORY_TO_INTERVENTION.get(obs.category)
-            if entry is None:
-                raise HTTPException(400, "Observation does not map to an intervention")
+    details = {}
+    if row["details_json"]:
+        try:
+            details = json.loads(row["details_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
 
-            action, tier = entry
+    if details.get("status") in ("approved", "rejected"):
+        raise HTTPException(400, f"Intervention already {details['status']}")
 
-            # Mark as handled so it won't be proposed again
-            dedup_target = obs.task_id or str(obs.details.get("wave", ""))
-            dedup_key = (action.value, dedup_target)
-            ps.state.handled_interventions.add(dedup_key)
+    action_str = details.get("action", "unknown")
+    pid = row["project_id"]
 
-            logger.info(
-                "Intervention %s rejected by user %s for project %s",
-                intervention_id[:8], current_user.get("username", "?"), pid,
+    # Mark as handled in the plan sentinel's in-memory state (if still running)
+    # so the same issue won't be re-proposed
+    ps = sentinel.plan_sentinels.get(pid)
+    if ps is not None:
+        dedup_target = row["task_id"] or str(details.get("wave", ""))
+        dedup_key = (action_str, dedup_target)
+        ps.state.handled_interventions.add(dedup_key)
+
+    # Update the DB record with rejected status
+    details["status"] = "rejected"
+    details["rejected_by"] = current_user.get("username", "unknown")
+    details["rejected_at"] = datetime.now(timezone.utc).isoformat()
+    await db.execute_write(
+        "UPDATE sentinel_observations SET details_json = ? WHERE id = ?",
+        (json.dumps(details), intervention_id),
+    )
+
+    logger.info(
+        "Intervention %s rejected by user %s for project %s",
+        intervention_id[:8], current_user.get("username", "?"), pid,
+    )
+
+    return {
+        "id": intervention_id,
+        "action": action_str,
+        "status": "rejected",
+        "project_id": pid,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /decisions — audit trail of sentinel decisions
+# ---------------------------------------------------------------------------
+
+@router.get("/decisions")
+@inject
+async def list_decisions(
+    project_id: str | None = Query(default=None, description="Filter by project ID"),
+    command: str | None = Query(default=None, description="Filter by command type (e.g. retry_task, skip_task)"),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(Provide[Container.db]),
+):
+    """Return sentinel decision audit trail, sorted by timestamp descending.
+
+    Each record includes the full reasoning chain, confidence score,
+    outcome, and any additional details attached at decision time.
+    """
+    decision_logger = DecisionLogger(db)
+
+    if project_id:
+        records = await decision_logger.query_decisions(
+            project_id=project_id,
+            limit=limit,
+            command=command,
+        )
+    elif command:
+        records = await decision_logger.query_similar_decisions(
+            command=command,
+            limit=limit,
+        )
+    else:
+        # No filters — fetch all recent decisions across projects
+        try:
+            rows = await db.fetchall(
+                """SELECT id, project_id, timestamp, command, reasoning,
+                          confidence, outcome, details_json
+                   FROM sentinel_decisions
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (limit,),
             )
+            records = [DecisionLogger._row_to_record(r) for r in rows]
+        except Exception:
+            logger.debug("Failed to query all decisions", exc_info=True)
+            records = []
 
-            return {
-                "id": intervention_id,
-                "action": action.value,
-                "status": "rejected",
-                "project_id": pid,
-            }
-
-    raise HTTPException(404, f"Intervention {intervention_id} not found")
+    return [
+        {
+            "decision_id": r.id,
+            "project_id": r.project_id,
+            "timestamp": r.timestamp.isoformat(),
+            "command": r.command.value,
+            "reasoning": r.reasoning,
+            "confidence": r.confidence,
+            "outcome": r.outcome,
+            "details": getattr(r, "details", {}),
+        }
+        for r in records
+    ]

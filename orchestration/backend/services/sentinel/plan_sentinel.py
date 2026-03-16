@@ -18,15 +18,18 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from backend.services.sentinel.models import (
+    ProjectWorldModel,
     SentinelMessage,
     SentinelObservation,
     Severity,
+    TaskWorldState,
 )
 
 from backend.services.sentinel.intervention_executor import InterventionExecutor
@@ -36,11 +39,18 @@ from backend.services.sentinel.rules import (
     check_wave_stalled as _rule_wave_stalled_fn,
     check_cascade_failure as _rule_cascade_failure_fn,
     check_budget_warning as _rule_budget_warning_fn,
+    # Phase 2: world-model-based state detection rules
+    check_tasks_ready as _rule_tasks_ready_fn,
+    check_wave_complete as _rule_wave_complete_fn,
+    check_project_complete as _rule_project_complete_fn,
+    check_dead_project as _rule_dead_project_fn,
+    check_hollow_completions as _rule_hollow_completions_fn,
 )
 
 if TYPE_CHECKING:
     from backend.services.sentinel.bus import SentinelBus
     from backend.services.sentinel.context_client import SentinelContextClient
+    from backend.services.sentinel.decision_logger import DecisionLogger
     from backend.services.progress import ProgressManager
 
 logger = logging.getLogger(__name__)
@@ -160,6 +170,7 @@ class PlanSentinel:
         auth_token: str | None = None,
         reasoner: SentinelReasoner | None = None,
         intervention_executor: InterventionExecutor | None = None,
+        decision_logger: DecisionLogger | None = None,
     ) -> None:
         self._project_id = project_id
         self._bus = bus
@@ -171,9 +182,11 @@ class PlanSentinel:
         self._running = False
         self._task: asyncio.Task | None = None
         self._state = PlanState()
+        self._world_model = ProjectWorldModel(project_id=project_id)
         self._http_client: httpx.AsyncClient | None = None
         self._reasoner = reasoner
         self._executor = intervention_executor
+        self._decision_logger = decision_logger
         # Recent observations for reasoner context
         self._observation_history: list[SentinelObservation] = []
 
@@ -193,6 +206,11 @@ class PlanSentinel:
     def state(self) -> PlanState:
         """Read-only access to the current plan state."""
         return self._state
+
+    @property
+    def world_model(self) -> ProjectWorldModel:
+        """Read-only access to the ProjectWorldModel (Phase 2 state detection)."""
+        return self._world_model
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -382,6 +400,25 @@ class PlanSentinel:
                 event_type, self._project_id,
             )
 
+    # --- World model helpers ---
+
+    def _ensure_task_world_state(
+        self, task_id: str, event: dict,
+    ) -> TaskWorldState:
+        """Get or create a TaskWorldState entry in the world model.
+
+        Extracts wave and model_tier from the event if available (first
+        time a task appears), otherwise preserves existing values.
+        """
+        if task_id not in self._world_model.tasks:
+            wave = event.get("wave", self._world_model.current_wave)
+            self._world_model.tasks[task_id] = TaskWorldState(
+                id=task_id,
+                wave=wave if wave is not None else 0,
+                model_tier=event.get("model_tier", ""),
+            )
+        return self._world_model.tasks[task_id]
+
     # --- Individual event handlers ---
 
     def _on_task_start(
@@ -393,6 +430,10 @@ class PlanSentinel:
         timing = self._state.task_timing.setdefault(task_id, TaskTiming())
         timing.started_at = ts
         timing.last_progress_at = ts
+        # Update world model
+        tws = self._ensure_task_world_state(task_id, event)
+        tws.status = "running"
+        tws.started_at = datetime.fromtimestamp(ts, tz=timezone.utc)
         logger.debug("Plan Sentinel: task_start %s", task_id[:8])
 
     def _on_task_complete(
@@ -411,6 +452,11 @@ class PlanSentinel:
             wave = self._state.current_wave
             outcomes = self._state.wave_outcomes.setdefault(wave, [])
             outcomes.append((task_id, "completed"))
+        # Update world model
+        tws = self._ensure_task_world_state(task_id, event)
+        tws.status = "completed"
+        tws.completed_at = datetime.fromtimestamp(ts, tz=timezone.utc)
+        tws.output_summary = event.get("output_summary", "") or event.get("output", "")
         logger.debug("Plan Sentinel: task_complete %s", task_id[:8])
 
     def _on_task_failed(
@@ -430,6 +476,12 @@ class PlanSentinel:
             wave = self._state.current_wave
             outcomes = self._state.wave_outcomes.setdefault(wave, [])
             outcomes.append((task_id, "failed"))
+
+        # Update world model
+        tws = self._ensure_task_world_state(task_id, event)
+        tws.status = "failed"
+        tws.error = event.get("error", "") or event.get("message", "")
+        tws.retry_count = self._state.failure_counts[task_id]
 
         logger.debug(
             "Plan Sentinel: task_failed %s (failures: %d)",
@@ -453,6 +505,8 @@ class PlanSentinel:
             return
         timing = self._state.task_timing.setdefault(task_id, TaskTiming())
         timing.last_progress_at = ts
+        # Update world model timing
+        self._world_model.timing[f"task:{task_id}:last_progress"] = ts
 
     def _on_task_needs_review(
         self, event: dict, task_id: str | None, ts: float,
@@ -462,6 +516,9 @@ class PlanSentinel:
         self._state.task_statuses[task_id] = TaskState.NEEDS_REVIEW
         timing = self._state.task_timing.setdefault(task_id, TaskTiming())
         timing.last_progress_at = ts
+        # Update world model
+        tws = self._ensure_task_world_state(task_id, event)
+        tws.status = "needs_review"
 
     def _on_task_zombie_recovered(
         self, event: dict, task_id: str | None, ts: float,
@@ -473,6 +530,10 @@ class PlanSentinel:
         timing = self._state.task_timing.setdefault(task_id, TaskTiming())
         timing.started_at = None
         timing.last_progress_at = ts
+        # Update world model
+        tws = self._ensure_task_world_state(task_id, event)
+        tws.status = "pending"
+        tws.started_at = None
 
     def _on_wave_checkpoint(
         self, event: dict, task_id: str | None, ts: float,
@@ -483,6 +544,13 @@ class PlanSentinel:
             self._state.current_wave = next_wave
         elif completed_wave is not None:
             self._state.current_wave = completed_wave
+        # Update world model
+        if completed_wave is not None and completed_wave not in self._world_model.completed_waves:
+            self._world_model.completed_waves.append(completed_wave)
+        if next_wave is not None:
+            self._world_model.current_wave = next_wave
+        elif completed_wave is not None:
+            self._world_model.current_wave = completed_wave
         logger.debug(
             "Plan Sentinel: wave_checkpoint wave=%s next=%s",
             completed_wave, next_wave,
@@ -496,8 +564,10 @@ class PlanSentinel:
         limit = event.get("limit") or event.get("budget_limit")
         if spent is not None:
             self._state.budget_spent = float(spent)
+            self._world_model.budget_spent = float(spent)
         if limit is not None:
             self._state.budget_limit = float(limit)
+            self._world_model.budget_limit = float(limit)
         logger.debug(
             "Plan Sentinel: budget_warning spent=%.2f limit=%.2f",
             self._state.budget_spent, self._state.budget_limit,
@@ -516,6 +586,7 @@ class PlanSentinel:
         logger.info(
             "Plan Sentinel: project_complete for %s", self._project_id,
         )
+        self._world_model.status = "completed"
         asyncio.ensure_future(self._final_sweep_and_stop("completed"))
 
     def _on_project_failed(
@@ -524,6 +595,7 @@ class PlanSentinel:
         logger.info(
             "Plan Sentinel: project_failed for %s", self._project_id,
         )
+        self._world_model.status = "failed"
         asyncio.ensure_future(self._final_sweep_and_stop("failed"))
 
     def _on_project_blocked(
@@ -532,6 +604,7 @@ class PlanSentinel:
         logger.info(
             "Plan Sentinel: project_blocked for %s", self._project_id,
         )
+        self._world_model.status = "blocked"
         asyncio.ensure_future(self._final_sweep_and_stop("blocked"))
 
     async def _final_sweep_and_stop(self, reason: str) -> None:
@@ -591,6 +664,11 @@ class PlanSentinel:
             await self._publish_observation(obs)
             await self._handle_intervention(obs)
 
+        # Phase 2: evaluate state detection rules against the world model
+        from backend.config import SENTINEL_ORCHESTRATOR_ENABLED
+        if SENTINEL_ORCHESTRATOR_ENABLED:
+            await self._evaluate_state_detection_rules()
+
     # ------------------------------------------------------------------
     # Rule-based detection engine
     # ------------------------------------------------------------------
@@ -636,6 +714,156 @@ class PlanSentinel:
             self._state, self._project_id,
             budget_percent_threshold=self.BUDGET_PERCENT_THRESHOLD,
         )
+
+    # ------------------------------------------------------------------
+    # Phase 2: State detection (world-model rules)
+    # ------------------------------------------------------------------
+
+    # Map state detection categories to bus topics
+    _STATE_CATEGORY_TO_TOPIC: dict[str, str] = {
+        "wave_complete": "state_change",
+        "project_complete": "state_change",
+        "dead_project": "state_change",
+        "tasks_ready": "dispatch_advisory",
+        "hollow_completion": "stall_notification",
+    }
+
+    async def _evaluate_state_detection_rules(self) -> None:
+        """Run Phase 2 state detection rules against the world model.
+
+        When rules fire, publishes state observations to the bus and logs
+        each detection as a decision in the sentinel_decisions table.
+        """
+        state_observations: list[SentinelObservation] = []
+        state_observations.extend(_rule_tasks_ready_fn(self._world_model))
+        state_observations.extend(_rule_wave_complete_fn(self._world_model))
+        state_observations.extend(_rule_project_complete_fn(self._world_model))
+        state_observations.extend(_rule_dead_project_fn(self._world_model))
+        state_observations.extend(_rule_hollow_completions_fn(self._world_model))
+
+        for obs in state_observations:
+            # Dedup: skip if already emitted this observation category+key
+            dedup_key = self._state_obs_dedup_key(obs)
+            if dedup_key in self._state.emitted_observations:
+                continue
+            self._state.emitted_observations.add(dedup_key)
+
+            # Publish to bus with the appropriate topic
+            await self._publish_state_observation(obs)
+
+            # Log decision with reasoning chain
+            await self._log_state_decision(obs)
+
+    def _state_obs_dedup_key(self, obs: SentinelObservation) -> str:
+        """Generate a deduplication key for a state detection observation."""
+        details = obs.details or {}
+        if obs.category == "wave_complete":
+            return f"state:wave_complete:{details.get('wave', '')}"
+        if obs.category == "project_complete":
+            return "state:project_complete"
+        if obs.category == "dead_project":
+            return "state:dead_project"
+        if obs.category == "tasks_ready":
+            task_ids = sorted(details.get("task_ids", []))
+            return f"state:tasks_ready:{','.join(task_ids)}"
+        if obs.category == "hollow_completion":
+            task_ids = sorted(details.get("task_ids", []))
+            return f"state:hollow:{','.join(task_ids)}"
+        return f"state:{obs.category}:{obs.observation_id}"
+
+    async def _publish_state_observation(self, obs: SentinelObservation) -> None:
+        """Publish a state detection observation to the bus."""
+        topic = self._STATE_CATEGORY_TO_TOPIC.get(obs.category, "state_change")
+
+        # Track for reasoner context
+        self._observation_history.append(obs)
+        if len(self._observation_history) > 50:
+            self._observation_history = self._observation_history[-50:]
+
+        msg = SentinelMessage(
+            topic=topic,
+            source=f"plan_sentinel:{self._project_id}",
+            payload={
+                "observation_id": obs.observation_id,
+                "category": obs.category,
+                "severity": obs.severity.value,
+                "message": obs.message,
+                "project_id": obs.project_id,
+                "details": obs.details,
+            },
+        )
+        try:
+            await self._bus.publish(msg)
+            logger.info(
+                "Plan Sentinel state detection [%s]: %s (project %s)",
+                obs.category, obs.message, self._project_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to publish state observation %s to bus",
+                obs.observation_id,
+            )
+
+    async def _log_state_decision(self, obs: SentinelObservation) -> None:
+        """Log a state detection as a decision in the sentinel_decisions table."""
+        if not self._decision_logger:
+            return
+
+        details = obs.details or {}
+        rule = details.get("rule", obs.category)
+
+        # Build a reasoning chain describing what the rule detected and why
+        reasoning_parts = [f"Rule '{rule}' triggered: {obs.message}"]
+        if obs.category == "wave_complete":
+            reasoning_parts.append(
+                f"Wave {details.get('wave')}: {details.get('completed', 0)} completed, "
+                f"{details.get('failed', 0)} failed out of {details.get('total', 0)} tasks"
+            )
+        elif obs.category == "project_complete":
+            reasoning_parts.append(
+                f"All {details.get('total', 0)} tasks terminal: "
+                f"{details.get('completed', 0)} completed, {details.get('failed', 0)} failed"
+            )
+        elif obs.category == "dead_project":
+            reasoning_parts.append(
+                f"All {details.get('total', 0)} tasks failed or cancelled — "
+                "no active or pending work remains"
+            )
+        elif obs.category == "tasks_ready":
+            reasoning_parts.append(
+                f"{details.get('count', 0)} pending task(s) in current wave ready for dispatch: "
+                f"{details.get('task_ids', [])}"
+            )
+        elif obs.category == "hollow_completion":
+            reasoning_parts.append(
+                f"{details.get('count', 0)} task(s) completed with empty output — "
+                f"possible silent failures: {details.get('task_ids', [])}"
+            )
+
+        # Map category to a SentinelCommand-compatible string
+        command_map = {
+            "wave_complete": "advance_wave",
+            "project_complete": "pause_project",
+            "dead_project": "pause_project",
+            "tasks_ready": "dispatch_task",
+            "hollow_completion": "retry_task",
+        }
+        command = command_map.get(obs.category, obs.category)
+
+        try:
+            await self._decision_logger.log_decision(
+                project_id=self._project_id,
+                command=command,
+                reasoning=" | ".join(reasoning_parts),
+                confidence=1.0,  # rule-based detections are deterministic
+                outcome=obs.category,
+                details=details,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to log state decision for %s", obs.observation_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Observation publishing
@@ -774,7 +1002,9 @@ class PlanSentinel:
             tier = InterventionTier.SUPERVISED
 
         if tier == InterventionTier.AUTO:
-            await self._execute_auto_intervention(action, obs)
+            await self._execute_auto_intervention(
+                action, obs, reasoning_result=reasoning_result,
+            )
         else:
             await self._publish_intervention_proposal(
                 action, obs, reasoning_result=reasoning_result,
@@ -784,6 +1014,7 @@ class PlanSentinel:
 
     async def _execute_auto_intervention(
         self, action: InterventionAction, obs: SentinelObservation,
+        *, reasoning_result=None,
     ) -> None:
         """Execute an auto-tier intervention via the InterventionExecutor
         (or legacy inline calls) and publish the outcome."""
@@ -842,6 +1073,73 @@ class PlanSentinel:
             logger.exception(
                 "Failed to publish intervention result for %s", obs.observation_id,
             )
+
+        # Persist to DB (durable — survives sentinel teardown)
+        if self._db:
+            try:
+                import uuid as _uuid
+                details = {
+                    "action": action.value,
+                    "tier": InterventionTier.AUTO.value,
+                    "reasoning": result_detail,
+                    "success": success,
+                    "observation_id": obs.observation_id,
+                    "task_id": obs.task_id,
+                }
+                await self._db.execute_write(
+                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "(id, project_id, task_id, category, severity, message, details_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(_uuid.uuid4()),
+                        self._project_id,
+                        obs.task_id,
+                        "intervention_result",
+                        obs.severity.value,
+                        f"Auto {action.value}: {'succeeded' if success else 'failed'} — {result_detail}",
+                        json.dumps(details),
+                        time.time(),
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist intervention result for %s", self._project_id,
+                )
+
+        # Log decision to audit trail
+        if self._decision_logger:
+            reasoning_parts = [
+                f"Auto intervention '{action.value}' triggered by {obs.category}: {obs.message}",
+            ]
+            if reasoning_result is not None:
+                reasoning_parts.append(f"5-whys diagnosis: {reasoning_result.diagnosis}")
+                if reasoning_result.supporting_evidence:
+                    reasoning_parts.append(
+                        f"Evidence: {'; '.join(reasoning_result.supporting_evidence)}"
+                    )
+            reasoning_parts.append(
+                f"Outcome: {'succeeded' if success else 'failed'} — {result_detail}"
+            )
+            try:
+                await self._decision_logger.log_decision(
+                    project_id=self._project_id,
+                    command=action.value,
+                    reasoning=" | ".join(reasoning_parts),
+                    confidence=reasoning_result.confidence if reasoning_result else 1.0,
+                    outcome="succeeded" if success else "failed",
+                    details={
+                        "tier": InterventionTier.AUTO.value,
+                        "observation_id": obs.observation_id,
+                        "task_id": obs.task_id,
+                        "category": obs.category,
+                        "result_detail": result_detail,
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to log auto intervention decision for %s",
+                    obs.observation_id, exc_info=True,
+                )
 
     async def _dispatch_via_executor(
         self, action: InterventionAction, obs: SentinelObservation,
@@ -1008,3 +1306,76 @@ class PlanSentinel:
                 "Failed to publish intervention proposal %s for %s",
                 action.value, self._project_id,
             )
+
+        # Persist to DB (durable — survives sentinel teardown)
+        if self._db:
+            try:
+                import uuid as _uuid
+                details = {
+                    "action": action.value,
+                    "tier": InterventionTier.SUPERVISED.value,
+                    "reasoning": payload.get("recommendation", ""),
+                    "observation_id": obs.observation_id,
+                    "task_id": obs.task_id,
+                }
+                if reasoning_result is not None:
+                    details["llm_diagnosis"] = payload.get("llm_diagnosis")
+                await self._db.execute_write(
+                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "(id, project_id, task_id, category, severity, message, details_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(_uuid.uuid4()),
+                        self._project_id,
+                        obs.task_id,
+                        "intervention_proposal",
+                        obs.severity.value,
+                        f"Proposed {action.value}: {payload.get('recommendation', obs.message)}",
+                        json.dumps(details),
+                        time.time(),
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist intervention proposal for %s", self._project_id,
+                )
+
+        # Log decision to audit trail
+        if self._decision_logger:
+            reasoning_parts = [
+                f"Supervised proposal '{action.value}' for {obs.category}: {obs.message}",
+            ]
+            if reasoning_result is not None:
+                reasoning_parts.append(f"5-whys diagnosis: {reasoning_result.diagnosis}")
+                reasoning_parts.append(
+                    f"Recommended action: {reasoning_result.recommended_action}"
+                )
+                reasoning_parts.append(f"Confidence: {reasoning_result.confidence:.2f}")
+                if reasoning_result.supporting_evidence:
+                    reasoning_parts.append(
+                        f"Evidence: {'; '.join(reasoning_result.supporting_evidence)}"
+                    )
+            reasoning_parts.append(
+                f"Recommendation: {payload.get('recommendation', obs.message)}"
+            )
+            try:
+                await self._decision_logger.log_decision(
+                    project_id=self._project_id,
+                    command=action.value,
+                    reasoning=" | ".join(reasoning_parts),
+                    confidence=reasoning_result.confidence if reasoning_result else 0.5,
+                    outcome="proposed",
+                    details={
+                        "tier": InterventionTier.SUPERVISED.value,
+                        "observation_id": obs.observation_id,
+                        "task_id": obs.task_id,
+                        "category": obs.category,
+                        "recommendation": payload.get("recommendation", ""),
+                        "llm_diagnosis": payload.get("llm_diagnosis"),
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to log supervised proposal decision for %s",
+                    obs.observation_id, exc_info=True,
+                )
