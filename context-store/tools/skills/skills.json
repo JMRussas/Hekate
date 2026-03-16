@@ -65,6 +65,41 @@
       }
     },
     {
+      "name": "orchestrate",
+      "description": "Create a project in the orchestration engine, generate a plan, and optionally start execution. Use this when asked to build, implement, or execute a multi-step task that should be planned and dispatched to AI agents.",
+      "handler": "mcp",
+      "permissionLevel": 2,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Project name (short, descriptive)"
+          },
+          "requirements": {
+            "type": "string",
+            "description": "What needs to be built or done — detailed requirements"
+          },
+          "repo_path": {
+            "type": "string",
+            "description": "Working directory / repository path for the project"
+          },
+          "rigor": {
+            "type": "string",
+            "description": "Planning rigor level: L0 (roadmap), L1 (quick), L2 (standard), L3 (thorough)",
+            "enum": ["L0", "L1", "L2", "L3"],
+            "default": "L2"
+          },
+          "auto_start": {
+            "type": "boolean",
+            "description": "Whether to auto-approve the plan and start execution (default: false)",
+            "default": false
+          }
+        },
+        "required": ["name", "requirements"]
+      }
+    },
+    {
       "name": "list_threads",
       "description": "List open conversation threads with their status and recent activity. Use this when asked about ongoing conversations, active topics, or what's being discussed.",
       "handler": "mcp",

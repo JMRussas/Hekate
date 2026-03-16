@@ -31,6 +31,7 @@ from backend.models.enums import PlanStatus, ProjectStatus, TaskStatus
 from backend.models.schemas import FindingOut, PlanOut, ProjectCreate, ProjectOut, ProjectUpdate
 from backend.services.decomposer import DecomposerService
 from backend.services.git_service import GitService
+from backend.services.plan_sync import PlanSyncService
 from backend.services.planner import PlannerService
 from backend.utils.slug_utils import slugify
 
@@ -351,6 +352,7 @@ async def trigger_plan(
     current_user: dict = Depends(get_current_user),
     db: Database = Depends(Provide[Container.db]),
     planner: PlannerService = Depends(Provide[Container.planner]),
+    plan_sync: PlanSyncService = Depends(Provide[Container.plan_sync]),
 ):
     """Generate a plan from the project's requirements using Claude."""
     row = await _get_owned_project(db, project_id, current_user)
@@ -360,6 +362,18 @@ async def trigger_plan(
         raise HTTPException(400, f"Cannot plan a project in '{row['status']}' state")
 
     result = await planner.generate(project_id)
+
+    # Fire-and-forget: sync plan to context store for cross-conversation tracking
+    asyncio.ensure_future(
+        plan_sync.sync_plan(
+            project_name=row["name"],
+            repo_path=row["repo_path"],
+            plan_data=result["plan"],
+            plan_id=result["plan_id"],
+            project_id=project_id,
+        )
+    )
+
     return result
 
 

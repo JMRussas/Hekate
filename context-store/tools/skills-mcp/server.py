@@ -13,8 +13,10 @@
 
 import json
 import logging
+import os
 from pathlib import Path
 
+import httpx
 import psycopg2
 import psycopg2.extras
 from mcp.server.fastmcp import FastMCP
@@ -100,6 +102,7 @@ def execute_skill(name: str, params: str = "{}") -> str:
         "search_ideas": _handle_search_ideas,
         "get_node_details": _handle_get_node_details,
         "list_threads": _handle_list_threads,
+        "orchestrate": _handle_orchestrate,
     }
 
     handler = handlers.get(name)
@@ -268,6 +271,96 @@ def _handle_list_threads(params: dict) -> dict:
             for r in rows
         ],
     }
+
+
+def _handle_orchestrate(params: dict) -> dict:
+    """Create an orchestration project, generate a plan, and optionally start execution."""
+    name = params.get("name")
+    requirements = params.get("requirements")
+    if not name or not requirements:
+        return {"error": "name and requirements are required"}
+
+    repo_path = params.get("repo_path")
+    rigor = params.get("rigor", "L2")
+    auto_start = params.get("auto_start", False)
+
+    orch_url = os.environ.get("ORCHESTRATION_URL", "http://localhost:5200")
+    api_key = os.environ.get("ORCHESTRATION_API_KEY", "")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        client = httpx.Client(timeout=60.0)
+
+        # 1. Create project
+        create_body = {
+            "name": name,
+            "requirements": requirements,
+            "planning_rigor": rigor,
+        }
+        if repo_path:
+            create_body["repo_path"] = repo_path
+
+        resp = client.post(f"{orch_url}/api/projects", json=create_body, headers=headers)
+        resp.raise_for_status()
+        project = resp.json()
+        project_id = project["id"]
+
+        result = {
+            "project_id": project_id,
+            "name": name,
+            "status": "created",
+        }
+
+        # 2. Generate plan
+        resp = client.post(f"{orch_url}/api/projects/{project_id}/plan", headers=headers)
+        resp.raise_for_status()
+        plan_result = resp.json()
+        result["plan_id"] = plan_result.get("plan_id")
+        result["plan_summary"] = plan_result.get("plan", {}).get("summary", "")
+        result["status"] = "planned"
+
+        # Count tasks across phases
+        plan = plan_result.get("plan", {})
+        task_count = 0
+        phases = plan.get("phases", [])
+        if phases:
+            for phase in phases:
+                task_count += len(phase.get("tasks", []))
+        else:
+            task_count = len(plan.get("tasks", []))
+        result["task_count"] = task_count
+
+        # 3. Optionally approve and start
+        if auto_start and result.get("plan_id"):
+            # Approve plan (decomposes into tasks)
+            resp = client.post(
+                f"{orch_url}/api/projects/{project_id}/plans/{result['plan_id']}/approve",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            decompose_result = resp.json()
+            result["tasks_created"] = decompose_result.get("tasks_created", 0)
+
+            # Start execution
+            resp = client.post(f"{orch_url}/api/projects/{project_id}/execute", headers=headers)
+            resp.raise_for_status()
+            result["status"] = "executing"
+
+        client.close()
+        return result
+
+    except httpx.HTTPStatusError as exc:
+        return {
+            "error": f"Orchestration API error: {exc.response.status_code}",
+            "detail": exc.response.text[:500],
+        }
+    except httpx.ConnectError:
+        return {"error": f"Cannot connect to orchestration engine at {orch_url}"}
+    except Exception as exc:
+        return {"error": f"Orchestration failed: {str(exc)}"}
 
 
 if __name__ == "__main__":
