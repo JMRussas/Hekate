@@ -322,7 +322,7 @@ class Executor:
                         "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
                         (ProjectStatus.PAUSED, time.time(), pid),
                     )
-                    await self._teardown_plan_sentinel(pid)
+                    # PlanSentinel self-terminates on project_complete/failed/blocked
                     self._release_repo(pid)
                     continue
 
@@ -476,7 +476,7 @@ class Executor:
                             f"Wave {current_wave} complete. Resume to start wave {next_wave['w']}.",
                             wave=current_wave, next_wave=next_wave["w"],
                         )
-                        await self._teardown_plan_sentinel(pid)
+                        # PlanSentinel self-terminates on project_complete/failed/blocked
                         self._release_repo(pid)
                         continue
 
@@ -510,7 +510,7 @@ class Executor:
                         "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
                         (ProjectStatus.PAUSED, time.time(), pid),
                     )
-                    await self._teardown_plan_sentinel(pid)
+                    # PlanSentinel self-terminates on project_complete/failed/blocked
                     self._release_repo(pid)
                     continue
 
@@ -527,7 +527,7 @@ class Executor:
                 event_type = "project_complete" if not has_failures else "project_failed"
                 msg = "All tasks finished." if not has_failures else f"Project finished with {failed_cnt['cnt']} failed task(s)."
                 await self._progress.push_event(pid, event_type, msg)
-                await self._teardown_plan_sentinel(pid)
+                # PlanSentinel self-terminates on project_complete/failed/blocked
                 self._release_repo(pid)
                 continue
 
@@ -553,7 +553,7 @@ class Executor:
                         pid, "project_failed",
                         f"No forward progress possible: {blocked['cnt']} task(s) blocked by failed dependencies.",
                     )
-                    await self._teardown_plan_sentinel(pid)
+                    # PlanSentinel self-terminates on project_complete/failed/blocked
                     self._release_repo(pid)
 
     async def _ensure_project_branch(self, project_id: str) -> bool:

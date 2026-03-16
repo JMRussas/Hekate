@@ -117,7 +117,20 @@ class SystemSentinel:
             return
         self._running = True
         self._task = asyncio.create_task(self._run_loop(), name="system_sentinel")
+        # Listen for PlanSentinels that self-terminated
+        self._bus.on("plan_sentinel_stopped", self._on_plan_sentinel_stopped)
         logger.info("System Sentinel started (poll_interval=%.0fs)", self._poll_interval)
+
+    async def _on_plan_sentinel_stopped(self, msg) -> None:
+        """Remove a self-terminated PlanSentinel from the registry."""
+        project_id = msg.payload.get("project_id")
+        reason = msg.payload.get("reason", "unknown")
+        if project_id and project_id in self._plan_sentinels:
+            del self._plan_sentinels[project_id]
+            logger.info(
+                "Plan Sentinel removed for project %s (reason=%s, remaining=%d)",
+                project_id, reason, len(self._plan_sentinels),
+            )
 
     async def stop(self) -> None:
         """Stop the sentinel and clean up resources."""

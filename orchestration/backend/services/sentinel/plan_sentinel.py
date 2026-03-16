@@ -508,6 +508,7 @@ class PlanSentinel:
         logger.info(
             "Plan Sentinel: project_complete for %s", self._project_id,
         )
+        asyncio.ensure_future(self._final_sweep_and_stop("completed"))
 
     def _on_project_failed(
         self, event: dict, task_id: str | None, ts: float,
@@ -515,8 +516,7 @@ class PlanSentinel:
         logger.info(
             "Plan Sentinel: project_failed for %s", self._project_id,
         )
-        # Final detection sweep before teardown
-        asyncio.ensure_future(self._tick())
+        asyncio.ensure_future(self._final_sweep_and_stop("failed"))
 
     def _on_project_blocked(
         self, event: dict, task_id: str | None, ts: float,
@@ -524,6 +524,36 @@ class PlanSentinel:
         logger.info(
             "Plan Sentinel: project_blocked for %s", self._project_id,
         )
+        asyncio.ensure_future(self._final_sweep_and_stop("blocked"))
+
+    async def _final_sweep_and_stop(self, reason: str) -> None:
+        """Run final detection rules, then self-terminate.
+
+        The sentinel owns its own lifecycle — the executor does not tear
+        it down. This ensures terminal events are fully processed before
+        the sentinel stops.
+        """
+        try:
+            await self._tick()
+            logger.info(
+                "Plan Sentinel final sweep done for %s (reason=%s, observations=%d)",
+                self._project_id, reason, len(self._observation_history),
+            )
+        except Exception:
+            logger.exception(
+                "Plan Sentinel final sweep failed for %s", self._project_id,
+            )
+        finally:
+            self._running = False
+            # Notify SystemSentinel to clean us from the registry
+            try:
+                await self._bus.emit(SentinelMessage(
+                    topic="plan_sentinel_stopped",
+                    source=f"plan_sentinel:{self._project_id}",
+                    payload={"project_id": self._project_id, "reason": reason},
+                ))
+            except Exception:
+                pass
 
     # Event type → handler mapping
     _EVENT_HANDLERS: dict[str, Any] = {
