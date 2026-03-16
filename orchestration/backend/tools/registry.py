@@ -81,6 +81,18 @@ class ToolRegistry:
                 raise RuntimeError("dotnet CLI not found — skipping DotNetReflectionTool")
             return DotNetReflectionTool()
 
+        def _hekate_analyze():
+            from backend.tools.hekate_mcp import HekateAnalyzeTool, HEKATE_MCP_URL
+            if not HEKATE_MCP_URL:
+                raise RuntimeError("hekate_mcp.url not configured — skipping HekateAnalyzeTool")
+            return HekateAnalyzeTool(http_client=self._http_client)
+
+        def _hekate_review():
+            from backend.tools.hekate_mcp import HekateReviewTool, HEKATE_MCP_URL
+            if not HEKATE_MCP_URL:
+                raise RuntimeError("hekate_mcp.url not configured — skipping HekateReviewTool")
+            return HekateReviewTool(http_client=self._http_client)
+
         tool_factories = [
             ("SearchKnowledgeTool", _search_knowledge),
             ("LookupTypeTool", _lookup_type),
@@ -89,6 +101,8 @@ class ToolRegistry:
             ("ReadFileTool", _read_file),
             ("WriteFileTool", _write_file),
             ("DotNetReflectionTool", _dotnet_reflection),
+            ("HekateAnalyzeTool", _hekate_analyze),
+            ("HekateReviewTool", _hekate_review),
         ]
 
         for name, factory in tool_factories:
