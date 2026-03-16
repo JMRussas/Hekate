@@ -68,6 +68,7 @@ class Executor:
         self._resource_skip_until: dict[str, float] = {}  # resource → skip until timestamp
         self._git = GitService(db=db)
         self._branch_confirmed: set[str] = set()  # project IDs with branch already verified
+        self._worktrees: dict[str, str] = {}  # project_id → worktree path
 
     async def start(self):
         """Start the executor loop. Recovers stale tasks from prior crashes."""
@@ -628,6 +629,14 @@ class Executor:
                         project_id, "branch_merged",
                         f"Branch {branch} merged to {base}",
                     )
+
+                    # Clean up: checkout base branch and delete local feature branch
+                    try:
+                        await self._git.checkout(repo_path, base)
+                        await self._git.delete_branch(repo_path, branch)
+                        logger.info("Auto-merge: cleaned up local branch %s, now on %s", branch, base)
+                    except Exception as cleanup_exc:
+                        logger.warning("Auto-merge: branch cleanup failed for %s: %s", branch, cleanup_exc)
                 else:
                     logger.warning("Auto-merge: gh merge failed: %s", result.stderr[:200])
             else:
@@ -637,35 +646,106 @@ class Executor:
             logger.warning("Auto-merge failed for %s: %s", name, exc)
 
     async def _ensure_project_branch(self, project_id: str) -> bool:
-        """Ensure the project's feature branch exists and is checked out.
+        """Ensure the project has an isolated worktree for its feature branch.
 
-        Builds branch name as {GIT_BRANCH_PREFIX}/{project-name-slug}.
-        Skips silently if the project has no repo_path.
+        Creates a git worktree at .worktrees/{branch-slug}/ so each project
+        gets its own copy of the repo. No branch switching on the main repo.
+        The worktree path is stored in self._worktrees for resolve_cwd().
 
-        Returns True if the branch is ready (or no repo_path), False if the
-        repo is owned by another executing project (concurrent conflict).
+        Returns True if the worktree is ready (or no repo_path).
         """
+        # Already set up
+        if project_id in self._worktrees:
+            return True
+
         row = await self._db.fetchone(
             "SELECT name, repo_path, git_base_branch FROM projects WHERE id = ?",
             (project_id,),
         )
         if not row or not row["repo_path"]:
-            return
+            return True
 
+        repo_path = row["repo_path"]
         branch_name = f"{GIT_BRANCH_PREFIX}/{slugify(row['name'])}"
         base_branch = row["git_base_branch"] or "main"
+        worktree_dir = str(Path(repo_path) / ".worktrees" / slugify(row["name"]))
+
+        # Pull latest base branch in the main repo
+        try:
+            await self._git.pull_branch(repo_path, base_branch)
+        except Exception as e:
+            logger.warning("Failed to pull %s for project %s: %s",
+                           base_branch, project_id[:8], e)
+
+        # Check if worktree already exists on disk (e.g., from server restart)
+        if Path(worktree_dir).exists():
+            self._worktrees[project_id] = worktree_dir
+            logger.info("Reusing existing worktree for %s: %s", project_id[:8], worktree_dir)
+            return True
+
+        # Check if branch already exists (from previous run)
+        try:
+            branch_exists = await self._git.branch_exists(repo_path, branch_name)
+        except Exception:
+            branch_exists = False
 
         try:
-            await self._git.ensure_feature_branch(
-                row["repo_path"], branch_name, base_branch,
+            if branch_exists:
+                # Branch exists — create worktree on existing branch
+                Path(worktree_dir).parent.mkdir(parents=True, exist_ok=True)
+                import asyncio as _aio
+                await _aio.to_thread(
+                    self._git._run_git_sync,
+                    "worktree", "add", worktree_dir, branch_name,
+                    cwd=repo_path,
+                )
+            else:
+                # New branch — create_worktree creates branch + worktree
+                await self._git.create_worktree(repo_path, worktree_dir, branch_name)
+
+            self._worktrees[project_id] = worktree_dir
+            logger.info(
+                "Worktree created for project %s: %s (branch: %s)",
+                project_id[:8], worktree_dir, branch_name,
             )
-            logger.info("Branch confirmed for project %s: %s", project_id[:8], branch_name)
+
+            # Update project row with branch name
+            await self._db.execute_write(
+                "UPDATE projects SET git_project_branch = ? WHERE id = ? AND git_project_branch IS NULL",
+                (branch_name, project_id),
+            )
+            return True
+
         except Exception as e:
-            logger.warning("Failed to ensure branch for project %s: %s", project_id[:8], e)
+            logger.warning("Failed to create worktree for project %s: %s", project_id[:8], e)
+            # Fallback: use repo_path directly (old behavior)
+            self._worktrees[project_id] = repo_path
+            try:
+                await self._git.ensure_feature_branch(repo_path, branch_name, base_branch)
+            except Exception:
+                pass
+            return True
 
     def _release_repo(self, project_id: str) -> None:
-        """Clear branch-confirmed cache when a project leaves executing state."""
+        """Clean up worktree and caches when a project leaves executing state."""
         self._branch_confirmed.discard(project_id)
+        worktree_path = self._worktrees.pop(project_id, None)
+        if worktree_path and worktree_path != self._worktrees.get("__repo_path__"):
+            # Schedule async worktree removal (don't block the tick)
+            asyncio.ensure_future(self._cleanup_worktree(project_id, worktree_path))
+
+    async def _cleanup_worktree(self, project_id: str, worktree_path: str) -> None:
+        """Remove a worktree after project completion."""
+        try:
+            # Find the main repo_path
+            row = await self._db.fetchone(
+                "SELECT repo_path FROM projects WHERE id = ?", (project_id,),
+            )
+            if row and row["repo_path"] and worktree_path != row["repo_path"]:
+                await self._git.remove_worktree(row["repo_path"], worktree_path)
+                logger.info("Cleaned up worktree for project %s: %s", project_id[:8], worktree_path)
+        except Exception as e:
+            logger.warning("Failed to clean up worktree for %s: %s", project_id[:8], e)
 
     async def _teardown_plan_sentinel(self, project_id: str) -> None:
         """Tear down the Plan Sentinel for a project leaving execution."""

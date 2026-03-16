@@ -49,16 +49,65 @@ def build_prompt(task_row) -> str:
     for ctx in context:
         # Sanitize tag name to prevent prompt injection via crafted context types
         ctx_type = re.sub(r"[^a-zA-Z0-9_]", "_", ctx.get("type", "context"))
-        content = ctx.get("content", "")
-        if content:
-            parts.append(f"<{ctx_type}>\n{content}\n</{ctx_type}>")
+
+        if ctx_type == "project_knowledge":
+            content = ctx.get("content")
+            if isinstance(content, list):
+                knowledge_block = ""
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+
+                    finding = item.get("finding", "")
+                    rationale = item.get("rationale")
+                    alternatives = item.get("alternatives_considered")
+                    confidence = item.get("confidence")
+                    category = item.get("category", "unknown")
+
+                    knowledge_block += f'  <finding category="{category}">\n'
+                    knowledge_block += f"    <statement>{finding}</statement>\n"
+                    if rationale:
+                        knowledge_block += f"    <rationale>{rationale}</rationale>\n"
+                    if alternatives:
+                        knowledge_block += f"    <alternatives_considered>{alternatives}</alternatives_considered>\n"
+                    if confidence:
+                        knowledge_block += f"    <confidence>{confidence}</confidence>\n"
+                    knowledge_block += "  </finding>\n"
+
+                if knowledge_block:
+                    parts.append(f"<project_knowledge>\n{knowledge_block}</project_knowledge>")
+            elif isinstance(content, str) and content:  # Fallback for old format
+                parts.append(f"<project_knowledge>\n{content}\n</project_knowledge>")
+
+        else:
+            content = ctx.get("content", "")
+            if content:
+                parts.append(f"<{ctx_type}>\n{content}\n</{ctx_type}>")
 
     parts.append(task_row["description"])
     return "\n\n".join(parts)
 
 
 async def resolve_cwd(db, project_id: str) -> str | None:
-    """Look up the project's repo_path for use as working directory."""
+    """Look up the project's working directory.
+
+    Prefers the worktree path (isolated copy) if the executor created one.
+    Falls back to repo_path (shared repo).
+    """
+    # Check if executor has a worktree for this project
+    try:
+        from backend.services.executor import Executor
+        # Access the singleton executor's worktree map
+        # This is set by _ensure_project_branch() before any tasks dispatch
+        import backend.container as _container
+        executor = _container.Container.executor()
+        worktree = executor._worktrees.get(project_id)
+        if worktree:
+            return worktree
+    except Exception:
+        pass  # Container not wired or executor not available
+
+    # Fallback to repo_path
     try:
         row = await db.fetchone(
             "SELECT repo_path FROM projects WHERE id = ?",

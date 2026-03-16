@@ -31,3 +31,4 @@ __pycache__/
 # Shared
 .claude/settings.local.json
 .env
+.worktrees/
