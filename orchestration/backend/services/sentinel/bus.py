@@ -31,6 +31,7 @@ VALID_TOPICS: frozenset[str] = frozenset({
     "stall_notification",
     "intervention_proposal",
     "sentinel_heartbeat",
+    "plan_sentinel_stopped",
 })
 
 # Type alias for async subscriber callbacks
