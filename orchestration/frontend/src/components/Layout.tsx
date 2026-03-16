@@ -18,6 +18,9 @@ export default function Layout() {
         <NavLink to="/" className={({ isActive }) => isActive ? 'active' : ''} end>
           Plans
         </NavLink>
+        <NavLink to="/game-builder" className={({ isActive }) => isActive ? 'active' : ''}>
+          Game Builder
+        </NavLink>
         <NavLink to="/workspaces" className={({ isActive }) => isActive ? 'active' : ''}>
           Workspaces
         </NavLink>

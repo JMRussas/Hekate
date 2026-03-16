@@ -20,6 +20,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': 'http://localhost:5200',
+      '/context-api': {
+        target: 'http://localhost:5102',
+        rewrite: (path) => path.replace(/^\/context-api/, '/api'),
+      },
     },
   },
 })
