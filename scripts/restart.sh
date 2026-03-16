@@ -1,114 +1,130 @@
 #!/bin/bash
-# Hekate — stop and restart all services
-# Usage: bash scripts/restart.sh [stop|start|restart]
+# Hekate — stop and restart all services via NSSM
+# Usage: bash scripts/restart.sh [stop|start|restart|status]
 #
-# Services:
-#   - Orchestration API (port 5200) — Python 3.11
-#   - Context Store API (port 5102) — .NET 8
+# NSSM Services:
+#   - HekateOrchestration (port 5200)
+#   - HekateContextStore  (port 5102)
+#   - HekateServer        (hekate-mcp)
+#   - HekatePythonWorker
+#   - HekateTypeScriptWorker
+#   - HekateCppWorker
+#   - Ollama
+#   - ComfyUI
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON311="C:/Users/jruss/AppData/Local/Programs/Python/Python311/python.exe"
-
-# Colors (Windows terminal compatible)
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Core services (always managed)
+CORE_SERVICES=(HekateOrchestration HekateContextStore)
+
+# All services (for full restart)
+ALL_SERVICES=(HekateOrchestration HekateContextStore HekateServer HekatePythonWorker HekateTypeScriptWorker HekateCppWorker)
+
+# Pick service set
+SERVICES=("${CORE_SERVICES[@]}")
+if [ "$2" = "--all" ] || [ "$2" = "-a" ]; then
+    SERVICES=("${ALL_SERVICES[@]}")
+fi
+
 stop_services() {
     echo -e "${YELLOW}Stopping services...${NC}"
-
-    # Orchestration — find by port 5200
-    ORCH_PID=$(netstat -ano 2>/dev/null | grep ":5200 " | grep LISTEN | awk '{print $5}' | head -1)
-    if [ -n "$ORCH_PID" ]; then
-        taskkill.exe //PID "$ORCH_PID" //F > /dev/null 2>&1
-        echo -e "  Orchestration (PID $ORCH_PID): ${RED}stopped${NC}"
-    else
-        echo -e "  Orchestration: ${RED}not running${NC}"
-    fi
-
-    # Context Store — find by port 5102
-    CS_PID=$(netstat -ano 2>/dev/null | grep ":5102 " | grep LISTEN | awk '{print $5}' | head -1)
-    if [ -n "$CS_PID" ]; then
-        taskkill.exe //PID "$CS_PID" //F > /dev/null 2>&1
-        if [ $? -ne 0 ]; then
-            # Try by image name if PID kill fails (access denied from different session)
-            taskkill.exe //IM Api.exe //F > /dev/null 2>&1
-        fi
-        echo -e "  Context Store (PID $CS_PID): ${RED}stopped${NC}"
-    else
-        echo -e "  Context Store: ${RED}not running${NC}"
-    fi
-
-    sleep 1
+    for svc in "${SERVICES[@]}"; do
+        nssm stop "$svc" > /dev/null 2>&1
+        STATUS=$(nssm status "$svc" 2>/dev/null)
+        echo -e "  $svc: ${RED}$STATUS${NC}"
+    done
 }
 
 start_services() {
     echo -e "${YELLOW}Starting services...${NC}"
+    for svc in "${SERVICES[@]}"; do
+        nssm start "$svc" > /dev/null 2>&1
+        STATUS=$(nssm status "$svc" 2>/dev/null)
+        if [ "$STATUS" = "SERVICE_RUNNING" ]; then
+            echo -e "  $svc: ${GREEN}UP${NC}"
+        else
+            echo -e "  $svc: ${RED}$STATUS${NC}"
+        fi
+    done
 
-    # Context Store
-    cd "$REPO_ROOT/context-store"
-    dotnet run --project Api/Api.csproj > /dev/null 2>&1 &
-    CS_BG=$!
-
-    # Orchestration
-    cd "$REPO_ROOT/orchestration"
-    "$PYTHON311" run.py > /dev/null 2>&1 &
-    ORCH_BG=$!
-
-    # Wait for both to come up
-    echo -n "  Waiting"
-    for i in $(seq 1 20); do
-        ORCH_UP=false
-        CS_UP=false
-        curl -s http://localhost:5200/api/health > /dev/null 2>&1 && ORCH_UP=true
-        curl -s http://localhost:5102/api/health > /dev/null 2>&1 && CS_UP=true
-
-        if $ORCH_UP && $CS_UP; then
-            echo ""
-            echo -e "  Orchestration: ${GREEN}UP${NC} (port 5200)"
-            echo -e "  Context Store: ${GREEN}UP${NC} (port 5102)"
+    # Wait for health checks
+    echo -n "  Health checks"
+    for i in $(seq 1 15); do
+        ORCH=$(curl -s http://localhost:5200/api/health 2>/dev/null)
+        CS=$(curl -s http://localhost:5102/api/health 2>/dev/null)
+        if echo "$ORCH" | grep -q "ok" && echo "$CS" | grep -q "ok"; then
+            echo -e " ${GREEN}OK${NC}"
             return 0
         fi
         echo -n "."
         sleep 1
     done
+    echo -e " ${RED}TIMEOUT${NC}"
+}
 
-    echo ""
-    curl -s http://localhost:5200/api/health > /dev/null 2>&1 \
-        && echo -e "  Orchestration: ${GREEN}UP${NC}" \
-        || echo -e "  Orchestration: ${RED}FAILED${NC}"
-    curl -s http://localhost:5102/api/health > /dev/null 2>&1 \
-        && echo -e "  Context Store: ${GREEN}UP${NC}" \
-        || echo -e "  Context Store: ${RED}FAILED${NC}"
+restart_services() {
+    echo -e "${YELLOW}Restarting services...${NC}"
+    for svc in "${SERVICES[@]}"; do
+        nssm restart "$svc" > /dev/null 2>&1
+        STATUS=$(nssm status "$svc" 2>/dev/null)
+        if [ "$STATUS" = "SERVICE_RUNNING" ]; then
+            echo -e "  $svc: ${GREEN}UP${NC}"
+        else
+            echo -e "  $svc: ${RED}$STATUS${NC}"
+        fi
+    done
+
+    echo -n "  Health checks"
+    for i in $(seq 1 15); do
+        ORCH=$(curl -s http://localhost:5200/api/health 2>/dev/null)
+        CS=$(curl -s http://localhost:5102/api/health 2>/dev/null)
+        if echo "$ORCH" | grep -q "ok" && echo "$CS" | grep -q "ok"; then
+            echo -e " ${GREEN}OK${NC}"
+            return 0
+        fi
+        echo -n "."
+        sleep 1
+    done
+    echo -e " ${RED}TIMEOUT${NC}"
 }
 
 status() {
-    echo -e "${YELLOW}Service status:${NC}"
+    echo -e "${YELLOW}NSSM Services:${NC}"
+    for svc in "${ALL_SERVICES[@]}" Ollama ComfyUI; do
+        STATUS=$(nssm status "$svc" 2>/dev/null)
+        if [ "$STATUS" = "SERVICE_RUNNING" ]; then
+            echo -e "  $svc: ${GREEN}$STATUS${NC}"
+        elif [ "$STATUS" = "SERVICE_STOPPED" ]; then
+            echo -e "  $svc: ${RED}$STATUS${NC}"
+        else
+            echo -e "  $svc: ${YELLOW}${STATUS:-NOT_FOUND}${NC}"
+        fi
+    done
+
+    echo -e "\n${YELLOW}Health checks:${NC}"
     curl -s http://localhost:5200/api/health > /dev/null 2>&1 \
-        && echo -e "  Orchestration: ${GREEN}UP${NC} (port 5200)" \
-        || echo -e "  Orchestration: ${RED}DOWN${NC}"
+        && echo -e "  Orchestration (5200): ${GREEN}UP${NC}" \
+        || echo -e "  Orchestration (5200): ${RED}DOWN${NC}"
     curl -s http://localhost:5102/api/health > /dev/null 2>&1 \
-        && echo -e "  Context Store: ${GREEN}UP${NC} (port 5102)" \
-        || echo -e "  Context Store: ${RED}DOWN${NC}"
+        && echo -e "  Context Store (5102): ${GREEN}UP${NC}" \
+        || echo -e "  Context Store (5102): ${RED}DOWN${NC}"
+    curl -s http://localhost:5179 > /dev/null 2>&1 \
+        && echo -e "  Context Store UI (5179): ${GREEN}UP${NC}" \
+        || echo -e "  Context Store UI (5179): ${RED}DOWN${NC}"
 }
 
 case "${1:-restart}" in
-    stop)
-        stop_services
-        ;;
-    start)
-        start_services
-        ;;
-    restart)
-        stop_services
-        start_services
-        ;;
-    status)
-        status
-        ;;
+    stop)    stop_services ;;
+    start)   start_services ;;
+    restart) restart_services ;;
+    status)  status ;;
     *)
-        echo "Usage: bash scripts/restart.sh [stop|start|restart|status]"
+        echo "Usage: bash scripts/restart.sh [stop|start|restart|status] [--all]"
+        echo "  Default: restarts core services (Orchestration + Context Store)"
+        echo "  --all:   includes MCP server and language workers"
         exit 1
         ;;
 esac
