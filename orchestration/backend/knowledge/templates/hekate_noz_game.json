@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 2,
+  "projectType": "noz-game",
+  "defaultRole": "game",
+  "analysis": {
+    "callGraphDepth": 8,
+    "similarityThreshold": 0.3,
+    "maxAnalogs": 10
+  },
+  "pathRules": [
+    { "pattern": "src/**", "role": "game" },
+    { "pattern": "platform/**", "role": "platform" },
+    { "pattern": "assets/**", "role": "assets" },
+    { "pattern": "**", "role": "general" }
+  ],
+  "roles": {
+    "game": {
+      "name": "game",
+      "entryPoints": [
+        "Update", "UpdateUI", "FixedUpdate", "LateUpdate",
+        "Init", "Shutdown", "LoadAssets", "UnloadAssets"
+      ],
+      "constraints": [],
+      "detectPatterns": ["immediate-mode-ui", "static-style-structs"],
+      "trustRules": [
+        { "condition": "default", "level": "L1", "label": "game code — follows IApplication pattern" }
+      ],
+      "guidelines": ["managed-collections-in-hot-path", "ui-style-allocation"]
+    },
+    "platform": {
+      "name": "platform",
+      "entryPoints": [],
+      "constraints": [],
+      "detectPatterns": [],
+      "trustRules": [
+        { "condition": "default", "level": "L1", "label": "platform bootstrap" }
+      ],
+      "guidelines": []
+    },
+    "assets": {
+      "name": "assets",
+      "entryPoints": [],
+      "constraints": [],
+      "detectPatterns": ["asset-registry"],
+      "trustRules": [
+        { "condition": "default", "level": "L1", "label": "asset definitions" }
+      ],
+      "guidelines": []
+    },
+    "general": {
+      "name": "general",
+      "entryPoints": [],
+      "constraints": [],
+      "detectPatterns": [],
+      "trustRules": [
+        { "condition": "default", "level": "L1", "label": "standard" }
+      ],
+      "guidelines": []
+    }
+  },
+  "constraintDefs": {},
+  "guidelineDefs": {
+    "managed-collections-in-hot-path": {
+      "why": "Managed collections allocate on the heap and trigger GC in per-frame code paths.",
+      "when": "isHotPath",
+      "avoid": "Dictionary<K,V>, List<T>, HashSet<T> in per-frame code",
+      "prefer": "Pre-allocated arrays or NoZ engine collections"
+    },
+    "ui-style-allocation": {
+      "why": "UI styles are applied every frame during UpdateUI. Allocating them per-frame defeats the immediate-mode pattern.",
+      "when": "hasPattern:immediate-mode-ui",
+      "avoid": "new ContainerStyle { ... } inside UpdateUI or per-frame methods",
+      "prefer": "static readonly style structs at class level"
+    }
+  },
+  "patternDefs": {
+    "immediate-mode-ui": {
+      "name": "Immediate-mode UI",
+      "description": "UI built every frame via NoZ ElementTree. Begin/End pairs, using-block scoping."
+    },
+    "static-style-structs": {
+      "name": "Static style structs",
+      "description": "ContainerStyle, LabelStyle, etc. declared as static readonly at class level."
+    },
+    "asset-registry": {
+      "name": "Asset registry",
+      "description": "Asset.Load<T> pattern with binary format and cache."
+    }
+  }
+}

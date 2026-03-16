@@ -5,11 +5,14 @@
 #  Depends on: backend/routes/projects.py, backend/services/git_service.py, tests/conftest.py
 #  Used by:    pytest
 
+import json
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from dependency_injector import providers
 
+from backend.routes.projects import _bootstrap_hekate_config
 from backend.services.git_service import GitService
 
 
@@ -40,6 +43,40 @@ class TestCreateProject:
             "requirements": "no name",
         })
         assert resp.status_code == 422
+
+
+class TestBootstrapHekateConfig:
+    """Tests for _bootstrap_hekate_config auto-generation."""
+
+    def test_noz_project_gets_noz_template(self, tmp_path):
+        # Simulate a NoZ project (has noz/ subdir and a .sln)
+        (tmp_path / "noz").mkdir()
+        (tmp_path / "MyGame.sln").write_text("")
+        _bootstrap_hekate_config(str(tmp_path))
+        target = tmp_path / ".hekate.json"
+        assert target.exists()
+        config = json.loads(target.read_text())
+        assert config["projectType"] == "noz-game"
+        assert "game" in config["roles"]
+
+    def test_generic_cs_project_gets_generic_template(self, tmp_path):
+        # No noz/ dir, just a plain directory
+        _bootstrap_hekate_config(str(tmp_path))
+        target = tmp_path / ".hekate.json"
+        assert target.exists()
+        config = json.loads(target.read_text())
+        assert config["projectType"] == "csharp"
+        assert "app" in config["roles"]
+
+    def test_existing_file_not_overwritten(self, tmp_path):
+        existing = tmp_path / ".hekate.json"
+        existing.write_text('{"custom": true}')
+        _bootstrap_hekate_config(str(tmp_path))
+        assert json.loads(existing.read_text()) == {"custom": True}
+
+    def test_nonexistent_path_skipped(self):
+        _bootstrap_hekate_config("/nonexistent/path/that/does/not/exist")
+        # Should not raise
 
 
 class TestListProjects:

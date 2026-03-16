@@ -9,9 +9,11 @@
 
 import asyncio
 import json
+import logging
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 from dependency_injector.wiring import inject, Provide
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -36,6 +38,44 @@ from backend.services.planner import PlannerService
 from backend.utils.slug_utils import slugify
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+_log = logging.getLogger("orchestration.projects")
+
+_TEMPLATES_DIR = Path(__file__).parent.parent / "knowledge" / "templates"
+
+
+def _bootstrap_hekate_config(repo_path: str) -> None:
+    """Write a .hekate.json to repo_path if one doesn't already exist.
+
+    Detects NoZ projects (noz.sln or NoZ submodule) and uses the game template;
+    falls back to generic C# template for other projects.
+    """
+    repo = Path(repo_path)
+    target = repo / ".hekate.json"
+    if target.exists():
+        return
+
+    if not repo.is_dir():
+        return
+
+    # Detect NoZ project
+    is_noz = (
+        any(repo.glob("*.sln"))
+        and (repo / "noz").is_dir()
+        or any(f.name == "noz.sln" for f in repo.glob("*.sln"))
+    )
+
+    template_name = "hekate_noz_game.json" if is_noz else "hekate_generic_cs.json"
+    template_path = _TEMPLATES_DIR / template_name
+
+    if not template_path.exists():
+        _log.warning("Hekate template not found: %s", template_path)
+        return
+
+    try:
+        target.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
+        _log.info("Bootstrapped %s from %s", target, template_name)
+    except OSError as e:
+        _log.warning("Failed to bootstrap .hekate.json: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +163,10 @@ async def create_project(
          json.dumps(config), current_user["id"],
          body.repo_path, body.git_base_branch, now, now),
     )
+
+    # Auto-bootstrap .hekate.json if repo_path is set and file doesn't exist
+    if body.repo_path:
+        _bootstrap_hekate_config(body.repo_path)
 
     row = await db.fetchone("SELECT * FROM projects WHERE id = ?", (project_id,))
     return ProjectOut(**await _row_to_project(row, db))
