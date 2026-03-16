@@ -157,9 +157,12 @@ def estimate_task_cost(
 # Default: CLI-first routing — subscription CLIs are $0/call vs API billing.
 # Ollama for simple tasks (free, local), CLI for medium/complex.
 # API tiers (haiku/sonnet) available but not default — use config override.
+# NOTE: CODEX_CLI disabled — ChatGPT subscription doesn't support any model
+# in codex exec mode (gpt-5.4, o4-mini, o3 all return 401/unsupported).
+# All codex_cli entries routed to GEMINI_CLI until OpenAI fixes this.
 _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     # Code tasks
-    ("code", "simple"): ModelTier.CODEX_CLI,
+    ("code", "simple"): ModelTier.GEMINI_CLI,
     ("code", "medium"): ModelTier.CLAUDE_CODE,
     ("code", "complex"): ModelTier.CLAUDE_CODE,
     # Research
@@ -175,7 +178,7 @@ _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     ("asset", "medium"): ModelTier.OLLAMA,
     ("asset", "complex"): ModelTier.OLLAMA,
     # Integration
-    ("integration", "simple"): ModelTier.CODEX_CLI,
+    ("integration", "simple"): ModelTier.GEMINI_CLI,
     ("integration", "medium"): ModelTier.CLAUDE_CODE,
     ("integration", "complex"): ModelTier.CLAUDE_CODE,
     # Documentation
@@ -193,7 +196,7 @@ _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     ("game_content", "simple"): ModelTier.GEMINI_CLI,
     ("game_content", "medium"): ModelTier.GEMINI_CLI,
     ("game_content", "complex"): ModelTier.GEMINI_CLI,
-    ("game_code", "simple"): ModelTier.CODEX_CLI,
+    ("game_code", "simple"): ModelTier.GEMINI_CLI,
     ("game_code", "medium"): ModelTier.CLAUDE_CODE,
     ("game_code", "complex"): ModelTier.CLAUDE_CODE,
     ("game_ui", "simple"): ModelTier.CLAUDE_CODE,
