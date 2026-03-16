@@ -71,7 +71,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
-        policy.WithOrigins("http://localhost:5179")
+        policy.WithOrigins("http://localhost:5179", "http://192.168.1.164:5179")
               .AllowAnyHeader()
               .AllowAnyMethod());
 });
@@ -433,7 +433,7 @@ app.Lifetime.ApplicationStopping.Register(() =>
     dispatcher.DisposeAsync().AsTask().GetAwaiter().GetResult();
 });
 
-app.Run($"http://localhost:5102");
+app.Run($"http://0.0.0.0:5102");
 
 // --- Request DTOs ---
 record ChatRequest(string Message, Guid? ConversationId);
