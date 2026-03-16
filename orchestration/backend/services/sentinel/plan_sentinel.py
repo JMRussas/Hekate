@@ -149,6 +149,7 @@ class PlanSentinel:
         *,
         context_client: SentinelContextClient | None = None,
         progress_manager: ProgressManager | None = None,
+        db=None,
         base_url: str = DEFAULT_BASE_URL,
         auth_token: str | None = None,
         reasoner: SentinelReasoner | None = None,
@@ -158,6 +159,7 @@ class PlanSentinel:
         self._bus = bus
         self._context_client = context_client
         self._progress_manager = progress_manager
+        self._db = db
         self._base_url = base_url.rstrip("/")
         self._auth_token = auth_token
         self._running = False
@@ -805,13 +807,37 @@ class PlanSentinel:
                 "Failed to publish observation %s to bus", obs.observation_id,
             )
 
-        # Persist to context store
+        # Persist to SQLite (durable — survives sentinel teardown)
+        if self._db:
+            try:
+                import json as _json
+                await self._db.execute_write(
+                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "(id, project_id, task_id, category, severity, message, details_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        obs.observation_id,
+                        obs.project_id,
+                        obs.task_id,
+                        obs.category,
+                        obs.severity.value,
+                        obs.message,
+                        _json.dumps(obs.details) if obs.details else None,
+                        obs.timestamp.timestamp() if obs.timestamp else time.time(),
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist observation %s to DB", obs.observation_id,
+                )
+
+        # Persist to context store (knowledge graph — for semantic search)
         if self._context_client:
             try:
                 await self._context_client.save_observation(obs)
             except Exception:
                 logger.exception(
-                    "Failed to persist observation %s", obs.observation_id,
+                    "Failed to persist observation %s to context store", obs.observation_id,
                 )
 
     # ------------------------------------------------------------------

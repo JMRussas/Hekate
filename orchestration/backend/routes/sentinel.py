@@ -138,46 +138,58 @@ async def list_observations(
     limit: int = Query(default=50, ge=1, le=200),
     current_user: dict = Depends(get_current_user),
     sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
+    db=Depends(Provide[Container.db]),
 ):
-    """Return observations from active Plan Sentinels, with optional filtering.
+    """Return observations from the durable store, with optional filtering.
 
-    Collects observations from all active Plan Sentinel observation histories.
-    These are in-memory and cover the current session only.
+    Queries the sentinel_observations table so observations survive
+    PlanSentinel teardown. Falls back to in-memory if DB unavailable.
     """
-    # Validate severity if provided
     if severity is not None:
         valid_severities = {s.value for s in Severity}
         if severity not in valid_severities:
             raise HTTPException(400, f"Invalid severity '{severity}'. Must be one of: {', '.join(sorted(valid_severities))}")
 
-    observations = []
-
-    # Collect from all active plan sentinels
-    for pid, ps in sentinel.plan_sentinels.items():
-        for obs in ps._observation_history:
-            observations.append({
-                "observation_id": obs.observation_id,
-                "category": obs.category,
-                "message": obs.message,
-                "severity": obs.severity.value,
-                "project_id": obs.project_id,
-                "task_id": obs.task_id,
-                "details": obs.details,
-                "timestamp": obs.timestamp.isoformat() if isinstance(obs.timestamp, datetime) else str(obs.timestamp),
-            })
-
-    # Apply filters
+    # Build query with filters
+    sql = "SELECT id, project_id, task_id, category, severity, message, details_json, created_at FROM sentinel_observations WHERE 1=1"
+    params: list = []
     if project_id is not None:
-        observations = [o for o in observations if o["project_id"] == project_id]
+        sql += " AND project_id = ?"
+        params.append(project_id)
     if category is not None:
-        observations = [o for o in observations if o["category"] == category]
+        sql += " AND category = ?"
+        params.append(category)
     if severity is not None:
-        observations = [o for o in observations if o["severity"] == severity]
+        sql += " AND severity = ?"
+        params.append(severity)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
 
-    # Sort by timestamp descending (most recent first)
-    observations.sort(key=lambda o: o["timestamp"], reverse=True)
+    try:
+        rows = await db.fetchall(sql, tuple(params))
+    except Exception:
+        rows = []
 
-    return observations[:limit]
+    observations = []
+    for row in rows:
+        details = None
+        if row["details_json"]:
+            try:
+                details = json.loads(row["details_json"])
+            except (json.JSONDecodeError, TypeError):
+                details = row["details_json"]
+        observations.append({
+            "observation_id": row["id"],
+            "category": row["category"],
+            "message": row["message"],
+            "severity": row["severity"],
+            "project_id": row["project_id"],
+            "task_id": row["task_id"],
+            "details": details,
+            "timestamp": datetime.fromtimestamp(row["created_at"], tz=timezone.utc).isoformat(),
+        })
+
+    return observations
 
 
 # ---------------------------------------------------------------------------

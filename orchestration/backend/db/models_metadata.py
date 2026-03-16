@@ -249,3 +249,21 @@ Index("idx_rtf_family_id", refresh_token_families.c.family_id)
 Index("idx_rtf_user_id", refresh_token_families.c.user_id)
 Index("idx_knowledge_project", project_knowledge.c.project_id)
 Index("idx_knowledge_dedup", project_knowledge.c.project_id, project_knowledge.c.content_hash, unique=True)
+
+# -- Sentinel observations (durable store for monitoring data) --
+sentinel_observations = Table(
+    "sentinel_observations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("category", Text, nullable=False),
+    Column("severity", Text, nullable=False),
+    Column("message", Text, nullable=False),
+    Column("details_json", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+)
+Index("idx_sentinel_obs_project", sentinel_observations.c.project_id)
+Index("idx_sentinel_obs_severity", sentinel_observations.c.severity)
+Index("idx_sentinel_obs_category", sentinel_observations.c.category)
+Index("idx_sentinel_obs_created", sentinel_observations.c.created_at)

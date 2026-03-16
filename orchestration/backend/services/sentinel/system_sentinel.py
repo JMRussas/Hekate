@@ -203,6 +203,7 @@ class SystemSentinel:
             project_id=project_id,
             bus=self._bus,
             progress_manager=self._progress_manager,
+            db=self._db,
         )
         await sentinel.start()
         self._plan_sentinels[project_id] = sentinel
