@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "projectType": "csharp",
+  "defaultRole": "general",
+  "analysis": {
+    "callGraphDepth": 8,
+    "similarityThreshold": 0.3,
+    "maxAnalogs": 10
+  },
+  "pathRules": [
+    { "pattern": "src/**", "role": "app" },
+    { "pattern": "tests/**", "role": "test" },
+    { "pattern": "**", "role": "general" }
+  ],
+  "roles": {
+    "app": {
+      "name": "app",
+      "entryPoints": ["Main"],
+      "constraints": [],
+      "detectPatterns": [],
+      "trustRules": [
+        { "condition": "default", "level": "L1", "label": "application code" }
+      ],
+      "guidelines": []
+    },
+    "test": {
+      "name": "test",
+      "entryPoints": [],
+      "constraints": [],
+      "detectPatterns": [],
+      "trustRules": [
+        { "condition": "default", "level": "L1", "label": "test code" }
+      ],
+      "guidelines": []
+    },
+    "general": {
+      "name": "general",
+      "entryPoints": [],
+      "constraints": [],
+      "detectPatterns": [],
+      "trustRules": [
+        { "condition": "default", "level": "L1", "label": "standard" }
+      ],
+      "guidelines": []
+    }
+  },
+  "constraintDefs": {},
+  "guidelineDefs": {},
+  "patternDefs": {}
+}

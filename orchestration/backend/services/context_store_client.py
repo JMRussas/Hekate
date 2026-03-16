@@ -228,6 +228,74 @@ class ContextStoreClient:
             logger.debug("Context store update_attributes failed for %s: %s", node_id, exc)
             return False
 
+    async def get_node(self, node_id: str) -> dict | None:
+        """GET /api/node/{node_id} — retrieve a single node. Returns node dict or None."""
+        if self._is_circuit_open():
+            return None
+
+        url = f"{self._base_url}/api/node/{node_id}"
+        try:
+            resp = await self._get_client().get(url)
+            resp.raise_for_status()
+            self._record_success()
+            return resp.json()
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Context store get_node failed for %s: %s", node_id, exc)
+            return None
+
+    # ------------------------------------------------------------------
+    # Revision nodes (Athena Loop — wave reassessment)
+    # ------------------------------------------------------------------
+
+    async def create_revision_node(
+        self,
+        plan_node_id: str,
+        *,
+        wave_number: int,
+        outcome: str,
+        rationale: str,
+        delta: dict,
+        observation_ids: list[str] | None = None,
+    ) -> str | None:
+        """Create a 'revision' node as a child of the plan, then link it to triggering observations.
+
+        Args:
+            plan_node_id: Context store node ID of the plan being revised.
+            wave_number: Which wave triggered the reassessment.
+            outcome: The reassessment decision (e.g. replan_remaining, escalate_to_human).
+            rationale: LLM-generated explanation of why the plan changed.
+            delta: Dict describing what changed — added/removed/modified tasks/waves.
+            observation_ids: Sentinel observation node IDs that triggered the replanning.
+
+        Returns:
+            The revision node ID, or None if the context store is unavailable.
+        """
+        payload = {
+            "nodeType": "revision",
+            "name": f"Wave {wave_number} reassessment — {outcome}",
+            "value": rationale,
+            "attributes": {
+                "wave_number": str(wave_number),
+                "outcome": outcome,
+                "delta": str(delta),
+            },
+        }
+
+        revision_id = await self.create_node(plan_node_id, payload)
+        if revision_id is None:
+            return None
+
+        # Link revision → each triggering observation
+        for obs_id in (observation_ids or []):
+            await self.create_edge({
+                "sourceId": revision_id,
+                "targetId": obs_id,
+                "type": "triggered_by",
+            })
+
+        return revision_id
+
     async def create_edge(self, edge: dict) -> bool:
         """POST /api/graph/edges — create a graph edge."""
         if self._is_circuit_open():

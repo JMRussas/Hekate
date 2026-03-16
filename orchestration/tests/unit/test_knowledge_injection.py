@@ -1,31 +1,41 @@
 #  Orchestration Engine - Knowledge Injection Tests
 #
-#  Unit tests for project knowledge injection in claude_agent.py
+#  Unit tests for project knowledge injection in cli_common.py build_prompt
+#  and claude_agent.py system prompt assembly.
 #
 #  Depends on: conftest.py fixtures
 #  Used by:    CI pipeline
 
 import hashlib
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from backend.services.cli_common import build_prompt
 from tests.conftest import create_test_project
 
 
-def _make_task_row(project_id="proj1", task_id="task1"):
-    """Create a minimal task row dict for run_claude_task."""
-    return {
-        "id": task_id,
-        "project_id": project_id,
-        "model_tier": "sonnet",
-        "system_prompt": "You are a test executor.",
-        "context_json": "[]",
-        "tools_json": "[]",
-        "description": "Do the test task",
-        "max_tokens": 4096,
-    }
+async def _seed_knowledge(db, project_id, entries):
+    """Insert knowledge entries directly into the DB."""
+    now = time.time()
+    for i, entry in enumerate(entries):
+        content = entry["content"]
+        category = entry.get("category", "discovery")
+        rationale = entry.get("rationale", "")
+        alternatives = entry.get("alternatives_considered", "")
+        confidence = entry.get("confidence", "medium")
+        content_hash = hashlib.sha256(content.lower().encode()).hexdigest()[:32]
+        await db.execute_write(
+            "INSERT INTO project_knowledge "
+            "(id, project_id, task_id, category, content, content_hash, "
+            "rationale, alternatives_considered, confidence, "
+            "source_task_title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (f"k{i}", project_id, None, category, content,
+             content_hash, rationale, alternatives, confidence,
+             f"Source Task {i}", now - i),
+        )
 
 
 def _make_mock_client(output_text="Task completed successfully."):
@@ -40,24 +50,106 @@ def _make_mock_client(output_text="Task completed successfully."):
     return client
 
 
-async def _seed_knowledge(db, project_id, entries):
-    """Insert knowledge entries directly into the DB."""
-    now = time.time()
-    for i, entry in enumerate(entries):
-        content = entry["content"]
-        category = entry.get("category", "discovery")
-        content_hash = hashlib.sha256(content.lower().encode()).hexdigest()[:32]
-        await db.execute_write(
-            "INSERT INTO project_knowledge "
-            "(id, project_id, task_id, category, content, content_hash, "
-            "source_task_title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (f"k{i}", project_id, None, category, content,
-             content_hash, f"Source Task {i}", now - i),
-        )
+def _make_task_row(project_id="proj1", task_id="task1", context_json="[]"):
+    """Create a minimal task row dict."""
+    return {
+        "id": task_id,
+        "project_id": project_id,
+        "model_tier": "sonnet",
+        "system_prompt": "You are a test executor.",
+        "context_json": context_json,
+        "tools_json": "[]",
+        "description": "Do the test task",
+        "max_tokens": 4096,
+    }
+
+
+class TestBuildPromptKnowledgeInjection:
+    """Tests for knowledge injection via build_prompt (cli_common.py)."""
+
+    def test_rationale_included_in_prompt(self):
+        """Rationale appears in the prompt when present."""
+        context = [{
+            "type": "project_knowledge",
+            "content": [{
+                "finding": "SQLite is the chosen DB",
+                "category": "decision",
+                "rationale": "No concurrent writes needed",
+                "alternatives_considered": "Postgres, DuckDB",
+                "confidence": "high",
+            }],
+        }]
+        task_row = _make_task_row(context_json=json.dumps(context))
+
+        prompt = build_prompt(task_row)
+
+        assert "<project_knowledge>" in prompt
+        assert "SQLite is the chosen DB" in prompt
+        assert "<rationale>No concurrent writes needed</rationale>" in prompt
+        assert "<alternatives_considered>Postgres, DuckDB</alternatives_considered>" in prompt
+        assert "<confidence>high</confidence>" in prompt
+
+    def test_missing_rationale_omitted(self):
+        """When rationale is empty/missing, the tag is not rendered."""
+        context = [{
+            "type": "project_knowledge",
+            "content": [{
+                "finding": "API returns XML",
+                "category": "discovery",
+            }],
+        }]
+        task_row = _make_task_row(context_json=json.dumps(context))
+
+        prompt = build_prompt(task_row)
+
+        assert "API returns XML" in prompt
+        assert "<rationale>" not in prompt
+        assert "<alternatives_considered>" not in prompt
+        assert "<confidence>" not in prompt
+
+    def test_multiple_findings_with_mixed_rationale(self):
+        """Mix of findings with and without rationale renders correctly."""
+        context = [{
+            "type": "project_knowledge",
+            "content": [
+                {
+                    "finding": "Must use Python 3.11+",
+                    "category": "constraint",
+                    "rationale": "Type hint syntax requires it",
+                    "confidence": "high",
+                },
+                {
+                    "finding": "Library X breaks with 3.12",
+                    "category": "gotcha",
+                },
+            ],
+        }]
+        task_row = _make_task_row(context_json=json.dumps(context))
+
+        prompt = build_prompt(task_row)
+
+        assert "Must use Python 3.11+" in prompt
+        assert "<rationale>Type hint syntax requires it</rationale>" in prompt
+        assert "Library X breaks with 3.12" in prompt
+        # Second finding has no rationale — tag should appear only once
+        assert prompt.count("<rationale>") == 1
+
+    def test_old_format_string_content_fallback(self):
+        """Old format with string content still works."""
+        context = [{
+            "type": "project_knowledge",
+            "content": "- API rate limit is 100/min\n- Use WAL mode",
+        }]
+        task_row = _make_task_row(context_json=json.dumps(context))
+
+        prompt = build_prompt(task_row)
+
+        assert "<project_knowledge>" in prompt
+        assert "API rate limit is 100/min" in prompt
 
 
 class TestKnowledgeInjection:
-    """Tests for project knowledge injection into the system prompt."""
+    """Tests for project knowledge injection into the system prompt via claude_agent."""
 
     @pytest.mark.asyncio
     async def test_knowledge_injected_into_system_prompt(self, tmp_db):

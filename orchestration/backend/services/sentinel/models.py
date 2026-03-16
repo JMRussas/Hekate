@@ -314,3 +314,6 @@ class ReasoningResult:
     recommended_action: str = "escalate"
     knowledge_gaps: list[str] = field(default_factory=list)
     escalation_reason: str | None = None
+    # Retry diagnosis fields — populated when error text is analyzed
+    fix_type: str = "retry_as_is"  # reassign_tier | modify_prompt | skip | retry_as_is
+    fix_params: dict[str, Any] = field(default_factory=dict)  # new_tier, prompt_additions

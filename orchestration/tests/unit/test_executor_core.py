@@ -887,3 +887,87 @@ class TestTickDispatch:
 
         row = await tmp_db.fetchone("SELECT status FROM projects WHERE id = ?", ("proj_001",))
         assert row["status"] == ProjectStatus.FAILED
+
+
+# ---------------------------------------------------------------------------
+# TestEnsureProjectBranch
+# ---------------------------------------------------------------------------
+
+class TestEnsureProjectBranch:
+    """Tests for Executor._ensure_project_branch."""
+
+    async def test_pulls_base_branch_before_creating_feature_branch(self, tmp_db, executor_with_db):
+        """pull_branch is called before ensure_feature_branch."""
+        now = time.time()
+        await tmp_db.execute_write(
+            "INSERT INTO projects (id, name, requirements, status, repo_path, git_base_branch, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'executing', ?, ?, ?, ?)",
+            ("proj_branch", "Branch Test", "reqs", "/fake/repo", "main", now, now),
+        )
+
+        call_order = []
+        original_pull = executor_with_db._git.pull_branch
+        original_ensure = executor_with_db._git.ensure_feature_branch
+
+        async def mock_pull(*args, **kwargs):
+            call_order.append("pull_branch")
+
+        async def mock_ensure(*args, **kwargs):
+            call_order.append("ensure_feature_branch")
+            return True
+
+        executor_with_db._git.pull_branch = mock_pull
+        executor_with_db._git.ensure_feature_branch = mock_ensure
+
+        await executor_with_db._ensure_project_branch("proj_branch")
+
+        assert "pull_branch" in call_order
+        assert "ensure_feature_branch" in call_order
+        assert call_order.index("pull_branch") < call_order.index("ensure_feature_branch")
+
+    async def test_pull_failure_does_not_block_branch_creation(self, tmp_db, executor_with_db):
+        """If pull_branch raises, ensure_feature_branch is still called."""
+        now = time.time()
+        await tmp_db.execute_write(
+            "INSERT INTO projects (id, name, requirements, status, repo_path, git_base_branch, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'executing', ?, ?, ?, ?)",
+            ("proj_pull_fail", "Pull Fail Test", "reqs", "/fake/repo", "main", now, now),
+        )
+
+        async def mock_pull(*args, **kwargs):
+            raise OSError("network unreachable")
+
+        ensure_called = False
+
+        async def mock_ensure(*args, **kwargs):
+            nonlocal ensure_called
+            ensure_called = True
+            return True
+
+        executor_with_db._git.pull_branch = mock_pull
+        executor_with_db._git.ensure_feature_branch = mock_ensure
+
+        await executor_with_db._ensure_project_branch("proj_pull_fail")
+
+        assert ensure_called
+
+    async def test_no_repo_path_skips_pull(self, tmp_db, executor_with_db):
+        """Projects without repo_path skip git operations entirely."""
+        now = time.time()
+        await tmp_db.execute_write(
+            "INSERT INTO projects (id, name, requirements, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'executing', ?, ?)",
+            ("proj_no_repo", "No Repo", "reqs", now, now),
+        )
+
+        pull_called = False
+
+        async def mock_pull(*args, **kwargs):
+            nonlocal pull_called
+            pull_called = True
+
+        executor_with_db._git.pull_branch = mock_pull
+
+        await executor_with_db._ensure_project_branch("proj_no_repo")
+
+        assert not pull_called

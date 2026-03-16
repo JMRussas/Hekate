@@ -14,9 +14,12 @@
 #  Used by:    services/executor.py, routes/external.py
 
 import asyncio
+import glob
 import json
 import logging
+import os
 import random
+import re
 import time
 import uuid
 
@@ -94,6 +97,160 @@ def _row_get(row, key: str, default=None):
         return row[key]
     except (IndexError, KeyError):
         return default
+
+
+_MIGRATION_REVISION_RE = re.compile(r"^(\d{3})_")
+
+
+async def validate_migration_files(
+    *, db, project_id: str, task_id: str, output_text: str,
+) -> list[str]:
+    """Scan for new/modified migration files and validate conventions.
+
+    Checks:
+    - File name starts with NNN_ (three-digit revision).
+    - ``revision`` variable inside the file matches that NNN.
+    - ``down_revision`` matches the previous highest NNN in the versions dir.
+
+    Returns a list of error strings (empty = all valid).
+    Creates sentinel observations for each violation.
+    """
+    from backend.services.cli_common import resolve_cwd
+
+    cwd = await resolve_cwd(db, project_id)
+    if not cwd:
+        return []
+
+    versions_dir = os.path.join(cwd, "backend", "migrations", "versions")
+    if not os.path.isdir(versions_dir):
+        return []
+
+    # Collect all NNN-prefixed migration files
+    migration_files = sorted(glob.glob(os.path.join(versions_dir, "*.py")))
+    revisions: dict[str, str] = {}  # NNN -> filepath
+    for fpath in migration_files:
+        fname = os.path.basename(fpath)
+        m = _MIGRATION_REVISION_RE.match(fname)
+        if m:
+            revisions[m.group(1)] = fpath
+
+    if not revisions:
+        return []
+
+    # Determine which files were created/modified by this task.
+    # Heuristic: check output_text for mentions of migration version files,
+    # and also check any file whose mtime is within the last 10 minutes.
+    cutoff = time.time() - 600  # 10 minutes ago
+    candidate_files: list[tuple[str, str]] = []  # (NNN, filepath)
+    for nnn, fpath in revisions.items():
+        fname = os.path.basename(fpath)
+        recently_modified = False
+        try:
+            recently_modified = os.path.getmtime(fpath) > cutoff
+        except OSError:
+            pass
+        if recently_modified or fname in (output_text or ""):
+            candidate_files.append((nnn, fpath))
+
+    if not candidate_files:
+        return []
+
+    errors: list[str] = []
+    sorted_revisions = sorted(revisions.keys())
+
+    for nnn, fpath in candidate_files:
+        fname = os.path.basename(fpath)
+
+        # Validate filename pattern
+        if not _MIGRATION_REVISION_RE.match(fname):
+            errors.append(f"Migration file '{fname}' does not follow NNN_description.py naming")
+            continue
+
+        # Read file and validate revision/down_revision variables
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError as e:
+            errors.append(f"Could not read migration file '{fname}': {e}")
+            continue
+
+        # Extract revision = 'NNN'
+        rev_match = re.search(r"^revision:\s*str\s*=\s*['\"](\S+?)['\"]", content, re.MULTILINE)
+        if not rev_match:
+            rev_match = re.search(r"^revision\s*=\s*['\"](\S+?)['\"]", content, re.MULTILINE)
+        if not rev_match:
+            errors.append(f"Migration '{fname}': could not find revision variable")
+            continue
+
+        file_revision = rev_match.group(1)
+        if file_revision != nnn:
+            errors.append(
+                f"Migration '{fname}': revision '{file_revision}' does not match "
+                f"filename prefix '{nnn}'"
+            )
+
+        if not re.fullmatch(r"\d{3}", file_revision):
+            errors.append(
+                f"Migration '{fname}': revision '{file_revision}' is not a three-digit NNN string"
+            )
+
+        # Extract down_revision
+        down_match = re.search(
+            r"^down_revision[^=]*=\s*['\"](\S+?)['\"]", content, re.MULTILINE,
+        )
+        if not down_match:
+            # down_revision = None is valid only for the first migration (001)
+            if nnn != sorted_revisions[0]:
+                errors.append(
+                    f"Migration '{fname}': down_revision is None but this is not "
+                    f"the first migration"
+                )
+            continue
+
+        down_rev = down_match.group(1)
+        # Find expected previous revision
+        idx = sorted_revisions.index(nnn) if nnn in sorted_revisions else -1
+        if idx > 0:
+            expected_prev = sorted_revisions[idx - 1]
+            if down_rev != expected_prev:
+                errors.append(
+                    f"Migration '{fname}': down_revision '{down_rev}' does not match "
+                    f"expected previous revision '{expected_prev}'"
+                )
+        elif idx == 0:
+            # First migration should have down_revision = None, but it has a value
+            errors.append(
+                f"Migration '{fname}': first migration should have down_revision = None, "
+                f"got '{down_rev}'"
+            )
+
+    # Publish sentinel observations for any errors
+    if errors:
+        for err in errors:
+            logger.error("Migration validation failed for task %s: %s", task_id, err)
+
+        try:
+            from backend.services.sentinel.models import SentinelObservation, Severity
+            from backend.services.sentinel.context_client import SentinelContextClient
+
+            observation = SentinelObservation(
+                category="migration_validation",
+                message=f"Migration validation failed: {len(errors)} issue(s) found",
+                severity=Severity.WARNING,
+                project_id=project_id,
+                task_id=task_id,
+                details={"errors": errors},
+            )
+
+            ctx_client = SentinelContextClient()
+            await ctx_client.save_observation(observation, parent_id=project_id)
+        except Exception:
+            logger.debug(
+                "Failed to persist migration validation observation for task %s",
+                task_id, exc_info=True,
+            )
+
+    return errors
 
 
 def _get_provider_from_tier(tier: ModelTier) -> str:
@@ -734,12 +891,35 @@ async def execute_task(
                 enrichment_nodes = 0
                 enrichment_latency_ms = 0.0
 
+                # --- Project Knowledge Injection ---
+                try:
+                    knowledge_rows = await db.fetchall(
+                        "SELECT category, content AS finding, rationale, alternatives_considered, confidence "
+                        "FROM project_knowledge WHERE project_id = ? ORDER BY created_at DESC LIMIT 5",
+                        (project_id,)
+                    )
+                    if knowledge_rows:
+                        knowledge_items = [dict(r) for r in knowledge_rows]
+                        
+                        current_context = json.loads(_dispatch_row.get("context_json") or "[]")
+                        # Avoid duplicating on retries
+                        if not any(c.get("type") == "project_knowledge" for c in current_context):
+                            current_context.insert(0, {
+                                "type": "project_knowledge",
+                                "content": knowledge_items
+                            })
+                            # Need to create a new row object to modify it
+                            _dispatch_row = dict(_dispatch_row)
+                            _dispatch_row["context_json"] = json.dumps(current_context)
+                except Exception as e:
+                    logger.debug("Project knowledge injection failed for %s: %s", task_id, e)
+
                 if CONTEXT_ENRICHMENT_ENABLED:
                     from backend.services.enrichment_service import EnrichmentService
                     _enrichment = EnrichmentService()
                     _enrichment_result = await _enrichment.enrich(task_row["description"])
                     if _enrichment_result:
-                        _dispatch_row = dict(task_row)
+                        _dispatch_row = dict(_dispatch_row)
                         _dispatch_row["description"] = (
                             task_row["description"]
                             + "\n\n"
@@ -881,6 +1061,103 @@ async def execute_task(
                     if verification_overridden:
                         return  # Task was reset to PENDING or NEEDS_REVIEW
 
+                # --- File tracking: stage declared files, detect orphans ---
+                # Runs after output capture + verification but before review.
+                # Never blocks task completion.
+                try:
+                    from backend.services.cli_common import resolve_cwd
+                    from backend.services.git_service import GitService
+
+                    _ft_cwd = await resolve_cwd(db, project_id)
+                    if _ft_cwd:
+                        _ft_git = GitService(db=db)
+
+                        # Extract affected_files from context_json
+                        _ft_ctx = json.loads(task_row["context_json"] or "[]")
+                        _ft_affected: list[str] = []
+                        for _ft_entry in _ft_ctx:
+                            if _ft_entry.get("type") == "affected_files":
+                                _ft_affected = _ft_entry.get("content", "").split(", ")
+                                break
+                        if not _ft_affected:
+                            _ft_af_json = _row_get(task_row, "affected_files") or "[]"
+                            if isinstance(_ft_af_json, str):
+                                try:
+                                    _ft_affected = json.loads(_ft_af_json)
+                                except json.JSONDecodeError:
+                                    _ft_affected = []
+
+                        # Stage declared affected_files
+                        _ft_affected = [f.strip() for f in _ft_affected if f.strip()]
+                        if _ft_affected:
+                            for _ft_file in _ft_affected:
+                                try:
+                                    await asyncio.to_thread(
+                                        _ft_git._run_git_ok_sync,
+                                        "add", "--", _ft_file, cwd=_ft_cwd,
+                                    )
+                                except Exception:
+                                    logger.debug("Failed to stage %s", _ft_file)
+                            logger.info(
+                                "Staged %d declared file(s) for task %s",
+                                len(_ft_affected), task_id,
+                            )
+
+                        # Detect orphaned files (untracked/modified but not declared)
+                        _ft_status_ok, _ft_status = await asyncio.to_thread(
+                            _ft_git._run_git_ok_sync,
+                            "status", "--porcelain", cwd=_ft_cwd,
+                        )
+                        if _ft_status.strip():
+                            _ft_orphans = [
+                                line[3:] for line in _ft_status.split("\n")
+                                if line.strip() and line[3:].strip() not in _ft_affected
+                            ]
+                            if _ft_orphans:
+                                logger.warning(
+                                    "Task %s left %d orphaned file(s): %s",
+                                    task_id, len(_ft_orphans),
+                                    ", ".join(_ft_orphans[:10]),
+                                )
+                                try:
+                                    from backend.services.sentinel.models import (
+                                        SentinelObservation, Severity,
+                                    )
+                                    from backend.services.sentinel.context_client import (
+                                        SentinelContextClient,
+                                    )
+                                    _ft_obs = SentinelObservation(
+                                        category="orphaned_files",
+                                        message=(
+                                            f"Task {task_id} created {len(_ft_orphans)} "
+                                            f"file(s) not declared in affected_files"
+                                        ),
+                                        severity=Severity.WARNING,
+                                        project_id=project_id,
+                                        task_id=task_id,
+                                        details={
+                                            "orphaned_files": _ft_orphans[:50],
+                                            "declared_files": _ft_affected,
+                                        },
+                                    )
+                                    _ft_ctx_client = SentinelContextClient()
+                                    try:
+                                        await _ft_ctx_client.save_observation(
+                                            _ft_obs, parent_id=project_id,
+                                        )
+                                    finally:
+                                        await _ft_ctx_client.close()
+                                except Exception:
+                                    logger.debug(
+                                        "Failed to persist orphaned_files observation",
+                                        exc_info=True,
+                                    )
+                except Exception:
+                    logger.debug(
+                        "File tracking failed for task %s (non-blocking)",
+                        task_id, exc_info=True,
+                    )
+
                 # --- Code review cycle (post-verification) ---
                 # Reviews the git diff like a senior dev, iterates if needed,
                 # then commits approved changes.
@@ -913,6 +1190,26 @@ async def execute_task(
                     )
                     if review_blocked:
                         return  # Task re-queued for iteration or sent to review
+
+                # --- Migration file validation (post-completion) ---
+                # If the task created or modified Alembic migration files,
+                # validate naming and revision chain conventions.
+                try:
+                    migration_errors = await validate_migration_files(
+                        db=db, project_id=project_id,
+                        task_id=task_id, output_text=result["output"],
+                    )
+                    if migration_errors:
+                        await progress.push_event(
+                            project_id, "migration_validation_warning",
+                            f"{task_row['title']}: {len(migration_errors)} migration issue(s)",
+                            task_id=task_id,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Migration validation failed for task %s",
+                        task_id, exc_info=True,
+                    )
 
                 await progress.push_event(
                     project_id, "task_complete", task_row["title"],

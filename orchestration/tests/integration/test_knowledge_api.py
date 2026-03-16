@@ -20,13 +20,18 @@ async def _seed_knowledge_via_db(project_id: str, entries: list[dict]):
     for i, entry in enumerate(entries):
         content = entry["content"]
         category = entry.get("category", "discovery")
+        rationale = entry.get("rationale", "")
+        alternatives = entry.get("alternatives_considered", "")
+        confidence = entry.get("confidence", "medium")
         content_hash = hashlib.sha256(content.lower().encode()).hexdigest()[:32]
         await db.execute_write(
             "INSERT INTO project_knowledge "
             "(id, project_id, task_id, category, content, content_hash, "
-            "source_task_title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "rationale, alternatives_considered, confidence, "
+            "source_task_title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (f"finding_{i}", project_id, None, category, content,
-             content_hash, f"Task {i}", now - i),
+             content_hash, rationale, alternatives, confidence,
+             f"Task {i}", now - i),
         )
 
 
@@ -58,6 +63,57 @@ class TestKnowledgeAPI:
         categories = {f["category"] for f in data}
         assert "constraint" in categories
         assert "gotcha" in categories
+
+    @pytest.mark.asyncio
+    async def test_list_knowledge_includes_new_fields(self, authed_client):
+        """GET /knowledge returns rationale, alternatives_considered, and confidence."""
+        resp = await authed_client.post("/api/projects", json={
+            "name": "New Fields Test",
+            "requirements": "Build something",
+        })
+        project_id = resp.json()["id"]
+
+        await _seed_knowledge_via_db(project_id, [
+            {
+                "category": "decision",
+                "content": "Chose SQLite over Postgres",
+                "rationale": "Single-user app, no concurrent writes",
+                "alternatives_considered": "Postgres, DuckDB",
+                "confidence": "high",
+            },
+        ])
+
+        resp = await authed_client.get(f"/api/projects/{project_id}/knowledge")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        finding = data[0]
+        assert finding["content"] == "Chose SQLite over Postgres"
+        assert finding["rationale"] == "Single-user app, no concurrent writes"
+        assert finding["alternatives_considered"] == "Postgres, DuckDB"
+        assert finding["confidence"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_list_knowledge_default_new_fields(self, authed_client):
+        """Findings without explicit new fields get defaults."""
+        resp = await authed_client.post("/api/projects", json={
+            "name": "Defaults Test",
+            "requirements": "Build something",
+        })
+        project_id = resp.json()["id"]
+
+        await _seed_knowledge_via_db(project_id, [
+            {"category": "discovery", "content": "API returns XML"},
+        ])
+
+        resp = await authed_client.get(f"/api/projects/{project_id}/knowledge")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        finding = data[0]
+        assert finding["rationale"] == ""
+        assert finding["alternatives_considered"] == ""
+        assert finding["confidence"] == "medium"
 
     @pytest.mark.asyncio
     async def test_list_knowledge_filter_by_category(self, authed_client):

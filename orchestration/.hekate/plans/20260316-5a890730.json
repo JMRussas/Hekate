@@ -1,0 +1,65 @@
+{
+  "intent": "Refactor the orchestration engine so the Sentinel becomes the orchestration brain and the Executor becomes a dumb worker pool. The Sentinel should own project lifecycle (create, plan, execute, pause, retry, complete), make all intelligent decisions (model selection, wave dispatch, failure handling), and be the primary API surface for users and the extension. The Executor should only receive dispatch commands and report results. Map the current decision flow in executor.py and task_lifecycle.py, identify what moves to sentinel, and design the new control loop.",
+  "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration",
+  "depth": "full",
+  "candidates": [
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "TypeExtensions",
+      "memberName": null,
+      "kind": 0,
+      "line": 179,
+      "score": 2,
+      "explanation": "Type name matches: extension",
+      "matchedKeywords": [
+        "extension"
+      ],
+      "role": "general",
+      "isTemplate": false
+    }
+  ],
+  "verdict": {
+    "intent": "Refactor the orchestration engine so the Sentinel becomes the orchestration brain and the Executor becomes a dumb worker pool. The Sentinel should own project lifecycle (create, plan, execute, pause, retry, complete), make all intelligent decisions (model selection, wave dispatch, failure handling), and be the primary API surface for users and the extension. The Executor should only receive dispatch commands and report results. Map the current decision flow in executor.py and task_lifecycle.py, identify what moves to sentinel, and design the new control loop.",
+    "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration",
+    "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+    "trustLevel": "L1 \u2014 standard",
+    "patterns": [],
+    "constraints": [],
+    "guidelines": [],
+    "nearestAnalogs": [],
+    "role": "general",
+    "design": null,
+    "summary": "Role: general. File uses: . Trust level: L1 \u2014 standard. Allocations detected: 27. No similar files found."
+  },
+  "impact": [],
+  "suggestedSteps": [
+    {
+      "description": "Modify TypeExtensions",
+      "targetFile": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "targetSymbol": "TypeExtensions",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": [
+        {
+          "existingSymbol": "TypeExtensions",
+          "filePath": "orchestration/tools/dotnet-reflector/Program.cs",
+          "line": 179,
+          "signature": null,
+          "instruction": "Consider reusing TypeExtensions which matched [type, extensions]",
+          "confidence": 1
+        }
+      ]
+    }
+  ],
+  "summary": "Plan for: Refactor the orchestration engine so the Sentinel becomes the orchestration brain and the Executor becomes a dumb worker pool. The Sentinel should own project lifecycle (create, plan, execute, pause, retry, complete), make all intelligent decisions (model selection, wave dispatch, failure handling), and be the primary API surface for users and the extension. The Executor should only receive dispatch commands and report results. Map the current decision flow in executor.py and task_lifecycle.py, identify what moves to sentinel, and design the new control loop.. Start at TypeExtensions (c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs). Role: general (trust: L1 \u2014 standard).",
+  "callId": null,
+  "planId": "20260316-5a890730",
+  "status": "draft",
+  "createdAtUtc": "2026-03-16T01:10:38.1449271Z",
+  "revision": 0,
+  "gaps": [],
+  "reuseDirectives": []
+}

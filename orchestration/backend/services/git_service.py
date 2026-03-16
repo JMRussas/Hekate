@@ -444,6 +444,18 @@ class GitService:
     # Remote / PR
     # ------------------------------------------------------------------
 
+    async def pull_branch(
+        self,
+        cwd: str | Path,
+        branch: str,
+        remote: str | None = None,
+    ) -> None:
+        """Pull latest changes for a branch from remote."""
+        remote = remote or GIT_PR_REMOTE
+        await asyncio.to_thread(
+            self._run_git_sync, "pull", remote, branch, cwd=cwd,
+        )
+
     async def push_branch(
         self,
         cwd: str | Path,

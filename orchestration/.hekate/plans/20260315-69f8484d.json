@@ -1,0 +1,190 @@
+{
+  "intent": "Create a Sentinel monitoring system with two agent types: (1) Plan Sentinel - per-plan monitor that subscribes to SSE events, watches task states/wave progress/failures, and can intervene (retry, pause, escalate) using LLM-powered reasoning with rule-based guardrails, (2) System Sentinel - singleton that monitors all services (orchestration API, context store, Postgres, Ollama), tracks cross-plan resource contention, spawns/supervises Plan Sentinels, and persists observations to context store. Both agents communicate via in-process async message bus and persist durable state to context store as sentinel_observation nodes. Intervention tiers: Auto (retry, release claims), Supervised (skip task, reorder wave - needs user approval), Escalate (cancel plan, blow budget). Integration points: ProgressManager SSE events, ResourceMonitor health checks, orchestration API for task/plan mutations, context store API for observation persistence and incident knowledge base.",
+  "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration",
+  "depth": "full",
+  "candidates": [
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "ClassInfo",
+      "memberName": "BaseClass",
+      "kind": 3,
+      "line": 205,
+      "score": 5,
+      "explanation": "Property \u0027BaseClass\u0027 in ClassInfo defines: based, base",
+      "matchedKeywords": [
+        "based",
+        "base"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "AssemblyInfo",
+      "memberName": "EqualityContract",
+      "kind": 3,
+      "line": 194,
+      "score": 2.5,
+      "explanation": "Property \u0027EqualityContract\u0027 in AssemblyInfo defines: types:",
+      "matchedKeywords": [
+        "types:"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "ClassInfo",
+      "memberName": "EqualityContract",
+      "kind": 3,
+      "line": 200,
+      "score": 2.5,
+      "explanation": "Property \u0027EqualityContract\u0027 in ClassInfo defines: types:",
+      "matchedKeywords": [
+        "types:"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "ConstructorInfo_",
+      "memberName": "EqualityContract",
+      "kind": 3,
+      "line": 212,
+      "score": 2.5,
+      "explanation": "Property \u0027EqualityContract\u0027 in ConstructorInfo_ defines: types:",
+      "matchedKeywords": [
+        "types:"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "MethodInfo_",
+      "memberName": "EqualityContract",
+      "kind": 3,
+      "line": 217,
+      "score": 2.5,
+      "explanation": "Property \u0027EqualityContract\u0027 in MethodInfo_ defines: types:",
+      "matchedKeywords": [
+        "types:"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "MethodInfo_",
+      "memberName": "ReturnType",
+      "kind": 3,
+      "line": 220,
+      "score": 2.5,
+      "explanation": "Property \u0027ReturnType\u0027 in MethodInfo_ defines: types:",
+      "matchedKeywords": [
+        "types:"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "MethodInfo_",
+      "memberName": "IsAsync",
+      "kind": 3,
+      "line": 224,
+      "score": 2.5,
+      "explanation": "Property \u0027IsAsync\u0027 in MethodInfo_ defines: async",
+      "matchedKeywords": [
+        "async"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "PropertyInfo_",
+      "memberName": "EqualityContract",
+      "kind": 3,
+      "line": 228,
+      "score": 2.5,
+      "explanation": "Property \u0027EqualityContract\u0027 in PropertyInfo_ defines: types:",
+      "matchedKeywords": [
+        "types:"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "PropertyInfo_",
+      "memberName": "Type",
+      "kind": 3,
+      "line": 231,
+      "score": 2.5,
+      "explanation": "Property \u0027Type\u0027 in PropertyInfo_ defines: types:",
+      "matchedKeywords": [
+        "types:"
+      ],
+      "role": "general"
+    },
+    {
+      "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+      "typeName": "ParamInfo",
+      "memberName": "EqualityContract",
+      "kind": 3,
+      "line": 236,
+      "score": 2.5,
+      "explanation": "Property \u0027EqualityContract\u0027 in ParamInfo defines: types:",
+      "matchedKeywords": [
+        "types:"
+      ],
+      "role": "general"
+    }
+  ],
+  "verdict": {
+    "intent": "Create a Sentinel monitoring system with two agent types: (1) Plan Sentinel - per-plan monitor that subscribes to SSE events, watches task states/wave progress/failures, and can intervene (retry, pause, escalate) using LLM-powered reasoning with rule-based guardrails, (2) System Sentinel - singleton that monitors all services (orchestration API, context store, Postgres, Ollama), tracks cross-plan resource contention, spawns/supervises Plan Sentinels, and persists observations to context store. Both agents communicate via in-process async message bus and persist durable state to context store as sentinel_observation nodes. Intervention tiers: Auto (retry, release claims), Supervised (skip task, reorder wave - needs user approval), Escalate (cancel plan, blow budget). Integration points: ProgressManager SSE events, ResourceMonitor health checks, orchestration API for task/plan mutations, context store API for observation persistence and incident knowledge base.",
+    "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration",
+    "filePath": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs",
+    "trustLevel": "L1 \u2014 standard",
+    "patterns": [],
+    "constraints": [],
+    "guidelines": [],
+    "nearestAnalogs": [],
+    "role": "general",
+    "design": null,
+    "summary": "Role: general. File uses: . Trust level: L1 \u2014 standard. Allocations detected: 27. No similar files found."
+  },
+  "impact": [
+    {
+      "symbolName": "BaseClass",
+      "usageCount": 1,
+      "affectedFiles": [
+        "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    }
+  ],
+  "suggestedSteps": [
+    {
+      "description": "Create new implementation (no structural match to existing code)",
+      "targetFile": "",
+      "targetSymbol": "",
+      "operation": "create_new",
+      "constraints": [],
+      "role": "general",
+      "preGate": {
+        "tool": "where",
+        "args": {
+          "intent": "Create a Sentinel monitoring system with two agent types: (1) Plan Sentinel - per-plan monitor that subscribes to SSE events, watches task states/wave progress/failures, and can intervene (retry, pause, escalate) using LLM-powered reasoning with rule-based guardrails, (2) System Sentinel - singleton that monitors all services (orchestration API, context store, Postgres, Ollama), tracks cross-plan resource contention, spawns/supervises Plan Sentinels, and persists observations to context store. Both agents communicate via in-process async message bus and persist durable state to context store as sentinel_observation nodes. Intervention tiers: Auto (retry, release claims), Supervised (skip task, reorder wave - needs user approval), Escalate (cancel plan, blow budget). Integration points: ProgressManager SSE events, ResourceMonitor health checks, orchestration API for task/plan mutations, context store API for observation persistence and incident knowledge base."
+        },
+        "purpose": "Verify no existing code to extend before creating new"
+      },
+      "postGate": null,
+      "reuseDirectives": []
+    }
+  ],
+  "summary": "Plan for: Create a Sentinel monitoring system with two agent types: (1) Plan Sentinel - per-plan monitor that subscribes to SSE events, watches task states/wave progress/failures, and can intervene (retry, pause, escalate) using LLM-powered reasoning with rule-based guardrails, (2) System Sentinel - singleton that monitors all services (orchestration API, context store, Postgres, Ollama), tracks cross-plan resource contention, spawns/supervises Plan Sentinels, and persists observations to context store. Both agents communicate via in-process async message bus and persist durable state to context store as sentinel_observation nodes. Intervention tiers: Auto (retry, release claims), Supervised (skip task, reorder wave - needs user approval), Escalate (cancel plan, blow budget). Integration points: ProgressManager SSE events, ResourceMonitor health checks, orchestration API for task/plan mutations, context store API for observation persistence and incident knowledge base.. Start at ClassInfo.BaseClass (c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\orchestration\\tools\\dotnet-reflector\\Program.cs). Role: general (trust: L1 \u2014 standard). Impact: 1 usages across 1 role(s).",
+  "callId": null,
+  "planId": "20260315-69f8484d",
+  "status": "reviewing",
+  "createdAtUtc": "2026-03-15T19:56:56.9883572Z",
+  "revision": 3,
+  "gaps": [],
+  "reuseDirectives": []
+}

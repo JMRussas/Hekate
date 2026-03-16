@@ -76,6 +76,124 @@ class TestExtractKnowledge:
         assert len(rows) == 2
 
     @pytest.mark.asyncio
+    async def test_rationale_and_confidence_extracted(self, tmp_db):
+        """Rationale, alternatives_considered, and confidence are extracted and persisted."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        findings = [
+            {
+                "category": "decision",
+                "content": "Chose SQLite over Postgres for simplicity",
+                "rationale": "Single-user app with no concurrent write pressure",
+                "alternatives_considered": "Postgres, DuckDB",
+                "confidence": "high",
+            },
+        ]
+        client = _make_mock_client(findings)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="DB Selection",
+            task_description="Choose a database",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert len(result) == 1
+        assert result[0]["rationale"] == "Single-user app with no concurrent write pressure"
+        assert result[0]["alternatives_considered"] == "Postgres, DuckDB"
+        assert result[0]["confidence"] == "high"
+
+        row = await tmp_db.fetchone(
+            "SELECT rationale, alternatives_considered, confidence "
+            "FROM project_knowledge WHERE project_id = ?", ("proj1",)
+        )
+        assert row["rationale"] == "Single-user app with no concurrent write pressure"
+        assert row["alternatives_considered"] == "Postgres, DuckDB"
+        assert row["confidence"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_missing_rationale_defaults(self, tmp_db):
+        """Missing rationale/alternatives default to empty string, confidence to medium."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        findings = [
+            {"category": "discovery", "content": "API returns XML not JSON"},
+        ]
+        client = _make_mock_client(findings)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="API Test",
+            task_description="Test API",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert len(result) == 1
+        assert result[0]["rationale"] == ""
+        assert result[0]["alternatives_considered"] == ""
+        assert result[0]["confidence"] == "medium"
+
+        row = await tmp_db.fetchone(
+            "SELECT rationale, alternatives_considered, confidence "
+            "FROM project_knowledge WHERE project_id = ?", ("proj1",)
+        )
+        assert row["rationale"] == ""
+        assert row["alternatives_considered"] == ""
+        assert row["confidence"] == "medium"
+
+    @pytest.mark.asyncio
+    async def test_invalid_confidence_defaults_to_medium(self, tmp_db):
+        """Invalid confidence value is normalized to 'medium'."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        findings = [
+            {
+                "category": "gotcha",
+                "content": "Module X leaks memory",
+                "confidence": "very_high",
+            },
+        ]
+        client = _make_mock_client(findings)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="Debug",
+            task_description="Find leaks",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert result[0]["confidence"] == "medium"
+
+        row = await tmp_db.fetchone(
+            "SELECT confidence FROM project_knowledge WHERE project_id = ?", ("proj1",)
+        )
+        assert row["confidence"] == "medium"
+
+    @pytest.mark.asyncio
     async def test_empty_findings_response(self, tmp_db):
         """Empty findings array from Haiku produces no DB rows."""
         from backend.services.knowledge_extractor import extract_knowledge
@@ -389,3 +507,41 @@ class TestExtractKnowledge:
         )
         assert len(rows_a) == 1
         assert len(rows_b) == 1
+
+    @pytest.mark.asyncio
+    async def test_all_confidence_levels_accepted(self, tmp_db):
+        """High, medium, and low confidence values are all stored correctly."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        findings = [
+            {"category": "constraint", "content": "Finding A", "confidence": "high"},
+            {"category": "discovery", "content": "Finding B", "confidence": "medium"},
+            {"category": "gotcha", "content": "Finding C", "confidence": "low"},
+        ]
+        client = _make_mock_client(findings)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="Multi",
+            task_description="Test all levels",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert len(result) == 3
+        assert result[0]["confidence"] == "high"
+        assert result[1]["confidence"] == "medium"
+        assert result[2]["confidence"] == "low"
+
+        rows = await tmp_db.fetchall(
+            "SELECT confidence FROM project_knowledge WHERE project_id = ? "
+            "ORDER BY created_at", ("proj1",)
+        )
+        assert [r["confidence"] for r in rows] == ["high", "medium", "low"]

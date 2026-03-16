@@ -171,6 +171,9 @@ CREATE TABLE IF NOT EXISTS project_knowledge (
     category TEXT NOT NULL DEFAULT 'discovery',
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
+    rationale TEXT NOT NULL DEFAULT '',
+    alternatives_considered TEXT NOT NULL DEFAULT '',
+    confidence TEXT NOT NULL DEFAULT 'medium',
     source_task_title TEXT,
     created_at REAL NOT NULL
 );
