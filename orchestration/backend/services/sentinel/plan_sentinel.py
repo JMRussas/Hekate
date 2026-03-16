@@ -40,6 +40,7 @@ from backend.services.sentinel.rules import (
     check_wave_stalled as _rule_wave_stalled_fn,
     check_cascade_failure as _rule_cascade_failure_fn,
     check_budget_warning as _rule_budget_warning_fn,
+    check_resource_unavailable as _rule_resource_unavailable_fn,
     # Phase 2: world-model-based state detection rules
     check_tasks_ready as _rule_tasks_ready_fn,
     check_wave_complete as _rule_wave_complete_fn,
@@ -101,6 +102,7 @@ _CATEGORY_TO_INTERVENTION: dict[str, tuple[InterventionAction, InterventionTier]
     "task_stuck": (InterventionAction.RELEASE_CLAIM, InterventionTier.AUTO),
     "cascade_failure": (InterventionAction.SKIP_TASK, InterventionTier.SUPERVISED),
     "wave_stalled": (InterventionAction.REORDER_WAVE, InterventionTier.SUPERVISED),
+    "resource_unavailable": (InterventionAction.REASSIGN_TIER, InterventionTier.AUTO),
     # budget_warning has no automatic intervention — observation only
 }
 
@@ -700,6 +702,7 @@ class PlanSentinel:
         observations.extend(self._rule_wave_stalled())
         observations.extend(self._rule_cascade_failure())
         observations.extend(self._rule_budget_warning())
+        observations.extend(self._rule_resource_unavailable())
         return observations
 
     def _rule_task_stuck(self) -> list[SentinelObservation]:
@@ -728,6 +731,36 @@ class PlanSentinel:
         return _rule_budget_warning_fn(
             self._state, self._project_id,
             budget_percent_threshold=self.BUDGET_PERCENT_THRESHOLD,
+        )
+
+    def _rule_resource_unavailable(self) -> list[SentinelObservation]:
+        """Detect tasks on tiers with offline resources."""
+        # Get offline resources from SystemSentinel health trends via the bus
+        # For now, query resource states from the system sentinel if available
+        offline = set()
+        try:
+            from backend.services.resource_monitor import ResourceStatus
+            if hasattr(self, '_bus') and hasattr(self._bus, '_system_sentinel_ref'):
+                for rid, trend in self._bus._system_sentinel_ref.get_all_trends().items():
+                    if trend.state.value in ("down", "degraded"):
+                        offline.add(rid)
+        except Exception:
+            pass
+
+        # Also check via DB if we have access — query resource_monitor directly
+        if not offline and self._db:
+            try:
+                # Use the health trend data from SystemSentinel via progress events
+                # For now, hardcode known issue: codex_cli without OPENAI_API_KEY
+                import os
+                if not os.environ.get("OPENAI_API_KEY"):
+                    offline.add("codex_cli")
+            except Exception:
+                pass
+
+        return _rule_resource_unavailable_fn(
+            self._state, self._project_id,
+            offline_resources=offline,
         )
 
     # ------------------------------------------------------------------

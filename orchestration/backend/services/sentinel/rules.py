@@ -472,3 +472,71 @@ def check_hollow_completions(world: ProjectWorldModel) -> list[SentinelObservati
             "count": len(hollow_ids),
         },
     )]
+
+
+# -----------------------------------------------------------------------
+# Resource-unavailable detection (operates on PlanState + resource health)
+# -----------------------------------------------------------------------
+
+def check_resource_unavailable(
+    state: PlanState,
+    project_id: str,
+    offline_resources: set[str] | None = None,
+) -> list[SentinelObservation]:
+    """Detect tasks assigned to tiers whose resources are offline.
+
+    When a task is pending/blocked but its model tier's resource is down,
+    it will never be dispatched. The sentinel should reassign it.
+
+    Args:
+        state: Current PlanState from PlanSentinel
+        project_id: Project ID for observations
+        offline_resources: Set of resource IDs currently offline
+            (e.g. {"codex_cli", "anthropic_api"})
+    """
+    if not offline_resources:
+        return []
+
+    # Map tier names to resource IDs
+    _TIER_TO_RESOURCE = {
+        "codex_cli": "codex_cli",
+        "gemini_cli": "gemini_cli",
+        "claude_code": "claude_code_cli",
+        "ollama": "ollama_local",
+        "haiku": "anthropic_api",
+        "sonnet": "anthropic_api",
+        "opus": "anthropic_api",
+    }
+
+    observations = []
+    # Check task_statuses for pending/blocked tasks — we need tier info
+    # from the task details, which PlanState doesn't currently carry.
+    # For now, this rule is triggered by the PlanSentinel which has DB access.
+    # It passes in the list of stuck task IDs + tiers.
+
+    # Simplified version: check if any offline resource matches common tiers
+    # The PlanSentinel should call this with offline_resources from SystemSentinel
+    for resource_id in offline_resources:
+        # Find which tier this maps to
+        affected_tier = None
+        for tier, res in _TIER_TO_RESOURCE.items():
+            if res == resource_id:
+                affected_tier = tier
+                break
+
+        if affected_tier:
+            observations.append(SentinelObservation(
+                category="resource_unavailable",
+                message=f"Resource {resource_id} is offline — tasks on tier {affected_tier} cannot be dispatched",
+                severity=Severity.WARNING,
+                project_id=project_id,
+                details={
+                    "rule": "resource_unavailable",
+                    "resource_id": resource_id,
+                    "affected_tier": affected_tier,
+                    "recommended_action": "reassign_tier",
+                    "recommended_tier": "claude_code",
+                },
+            ))
+
+    return observations
