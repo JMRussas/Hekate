@@ -294,3 +294,23 @@ class SentinelObservation:
     task_id: str | None = None
     details: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class WhyStep:
+    """A single step in the 5-whys reasoning chain."""
+    question: str
+    sources_queried: list[str] = field(default_factory=list)
+    evidence_found: str = ""
+    conclusion: str = ""
+
+
+@dataclass
+class ReasoningResult:
+    """The final result of an iterative reasoning process."""
+    why_chain: list[WhyStep] = field(default_factory=list)
+    root_cause: str = "unknown"
+    confidence: float = 0.0
+    recommended_action: str = "escalate"
+    knowledge_gaps: list[str] = field(default_factory=list)
+    escalation_reason: str | None = None

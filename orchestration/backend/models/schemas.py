@@ -10,6 +10,7 @@ import os
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from backend.models.enums import (
+    ConfidenceLevel,
     ModelTier,
     PlanningRigor,
     PlanStatus,
@@ -191,6 +192,9 @@ class FindingOut(BaseModel):
     task_id: str | None = None
     category: str
     content: str
+    rationale: str | None = ""
+    alternatives_considered: str | None = ""
+    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
     source_task_title: str | None = None
     created_at: float
 

@@ -19,13 +19,14 @@ from backend.config import (
     KNOWLEDGE_EXTRACTION_MODEL,
     KNOWLEDGE_MIN_OUTPUT_LENGTH,
 )
-from backend.models.enums import FindingCategory
+from backend.models.enums import ConfidenceLevel, FindingCategory
 from backend.services.model_router import calculate_cost
 from backend.utils.json_utils import extract_json_object
 
 logger = logging.getLogger("orchestration.knowledge")
 
 _VALID_CATEGORIES = {c.value for c in FindingCategory}
+_VALID_CONFIDENCE = {c.value for c in ConfidenceLevel}
 
 # Cap task output sent to extraction model to control cost
 _MAX_OUTPUT_CHARS = 4000
@@ -33,6 +34,9 @@ _MAX_OUTPUT_CHARS = 4000
 _EXTRACTION_PROMPT = """\
 You are a knowledge extraction assistant. Given a task description and its output,
 identify any reusable findings that would help OTHER tasks in the same project.
+
+For each finding, capture not just WHAT was learned, but WHY it matters and what
+alternatives were considered or rejected.
 
 <finding_categories>
 1. Constraints: limitations discovered ("X must be Y", "API limits to N")
@@ -48,13 +52,26 @@ identify any reusable findings that would help OTHER tasks in the same project.
 - Each finding should be self-contained (understandable without reading the full output).
 - If there are NO reusable findings, return an empty array.
 - Keep each finding concise (1-3 sentences).
+- For "rationale": explain WHY this finding matters — what failed, what succeeded, what \
+the underlying reason is. If the output doesn't explain why, write "Unknown".
+- For "alternatives_considered": list other approaches that were tried or discussed. \
+If none are mentioned, use an empty string.
+- For "confidence": assess how reliable this finding is based on the evidence in the output.
+  - "high": directly observed, tested, or confirmed in the output.
+  - "medium": reasonable inference from the output, but not explicitly verified.
+  - "low": speculative or based on incomplete information.
 </rules>
 
 Respond with ONLY a JSON object (no markdown):
 {
   "findings": [
-    {"category": "constraint|decision|discovery|reference|gotcha|architecture", "content": "..."},
-    ...
+    {
+      "category": "constraint|decision|discovery|reference|gotcha|architecture",
+      "content": "The finding itself (1-3 sentences)",
+      "rationale": "Why this matters or why it worked/failed",
+      "alternatives_considered": "Other approaches tried or discussed, if any",
+      "confidence": "high|medium|low"
+    }
   ]
 }
 """
@@ -187,6 +204,12 @@ async def _do_extract(
         if category not in _VALID_CATEGORIES:
             category = "discovery"
 
+        rationale = (f.get("rationale") or "").strip()
+        alternatives = (f.get("alternatives_considered") or "").strip()
+        confidence = (f.get("confidence") or "medium").strip().lower()
+        if confidence not in _VALID_CONFIDENCE:
+            confidence = "medium"
+
         content_hash = hashlib.sha256(content.lower().encode()).hexdigest()[:32]
         finding_id = uuid.uuid4().hex[:12]
 
@@ -194,15 +217,20 @@ async def _do_extract(
             await db.execute_write(
                 "INSERT OR IGNORE INTO project_knowledge "
                 "(id, project_id, task_id, category, content, content_hash, "
+                "rationale, alternatives_considered, confidence, "
                 "source_task_title, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (finding_id, project_id, task_id, category, content,
-                 content_hash, task_title, now),
+                 content_hash, rationale, alternatives, confidence,
+                 task_title, now),
             )
             created.append({
                 "id": finding_id,
                 "category": category,
                 "content": content,
+                "rationale": rationale,
+                "alternatives_considered": alternatives,
+                "confidence": confidence,
             })
         except Exception as e:
             logger.debug("Failed to insert finding: %s", e)

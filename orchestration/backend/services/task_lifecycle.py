@@ -45,6 +45,32 @@ from backend.services.telemetry_feedback import push_execution_outcome
 
 logger = logging.getLogger("orchestration.executor")
 
+
+async def _sync_status_to_context_store(
+    *, db, task_id: str, plan_id: str, status: str, error: str | None = None,
+):
+    """Fire-and-forget: push a task status change to the context store node.
+
+    Loads the node_mapping from the plans table, finds the context store node
+    for this task, and updates its attributes.  Silently no-ops if the mapping
+    doesn't exist or the context store is unreachable (circuit breaker open).
+    """
+    try:
+        from backend.services.plan_sync import PlanSyncService
+        svc = PlanSyncService(db=db)
+        mapping = await svc.get_node_mapping(plan_id)
+        node_id = mapping.get(task_id)
+        if not node_id:
+            return
+
+        attrs: dict = {"status": status, "updated_at": time.time()}
+        if error:
+            attrs["error"] = error[:500]
+        await svc._cs.update_attributes(node_id, attrs)
+    except Exception:
+        # Never propagate — this is fire-and-forget
+        logger.debug("Context store status sync failed for task %s", task_id, exc_info=True)
+
 # Transient errors that warrant automatic retry with backoff
 _TRANSIENT_ERRORS = (
     anthropic.RateLimitError,
@@ -689,6 +715,10 @@ async def execute_task(
                 "UPDATE tasks SET status = ?, started_at = ?, updated_at = ? WHERE id = ?",
                 (TaskStatus.RUNNING, now, now, task_id),
             )
+            asyncio.ensure_future(_sync_status_to_context_store(
+                db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                status=TaskStatus.RUNNING,
+            ))
             await progress.push_event(
                 project_id, "task_start", task_row["title"], task_id=task_id
             )
@@ -802,6 +832,10 @@ async def execute_task(
                             time.time(), task_id,
                         ),
                     )
+                    asyncio.ensure_future(_sync_status_to_context_store(
+                        db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                        status=TaskStatus.NEEDS_REVIEW, error="Budget exhausted",
+                    ))
                     await progress.push_event(
                         project_id, "task_needs_review",
                         f"{task_row['title']}: budget exhausted, partial output needs review",
@@ -828,6 +862,10 @@ async def execute_task(
                         time.time(), time.time(), task_id,
                     ),
                 )
+                asyncio.ensure_future(_sync_status_to_context_store(
+                    db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                    status=TaskStatus.COMPLETED,
+                ))
 
                 # Optional output verification (skip for Ollama — free tasks).
                 # Verifier uses call_llm (CLI/Ollama), not the Anthropic SDK client.
@@ -989,6 +1027,10 @@ async def execute_task(
                             task_id=task_id,
                         )
 
+                    asyncio.ensure_future(_sync_status_to_context_store(
+                        db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                        status=TaskStatus.FAILED, error=error_msg,
+                    ))
                     await _push_telemetry(
                         task_row=task_row, tier=tier, project_id=project_id,
                         task_id=task_id, status="failed",
@@ -1016,6 +1058,10 @@ async def execute_task(
                     "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
                     (TaskStatus.FAILED, error_msg, time.time(), task_id),
                 )
+                asyncio.ensure_future(_sync_status_to_context_store(
+                    db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                    status=TaskStatus.FAILED, error=error_msg,
+                ))
                 await progress.push_event(
                     project_id, "task_failed", f"{task_row['title']}: {error_msg}",
                     task_id=task_id,

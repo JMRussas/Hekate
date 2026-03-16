@@ -172,6 +172,14 @@ class ContextStoreClient:
             resp.raise_for_status()
             self._record_success()
             return True
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            self._record_failure()
+            logger.debug("Context store unavailable for update_attributes: %s", type(exc).__name__)
+            return False
+        except httpx.HTTPStatusError as exc:
+            self._record_failure()
+            logger.debug("Context store returned %s for update_attributes", exc.response.status_code)
+            return False
         except Exception as exc:
             self._record_failure()
             logger.debug("Context store update_attributes failed for %s: %s", node_id, exc)

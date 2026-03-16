@@ -202,6 +202,9 @@ project_knowledge = Table(
     Column("category", Text, nullable=False, server_default="discovery"),
     Column("content", Text, nullable=False),
     Column("content_hash", Text, nullable=False),
+    Column("rationale", Text, nullable=False, server_default=""),
+    Column("alternatives_considered", Text, nullable=False, server_default=""),
+    Column("confidence", Text, nullable=False, server_default="medium"),
     Column("source_task_title", Text),
     Column("created_at", Float, nullable=False),
 )

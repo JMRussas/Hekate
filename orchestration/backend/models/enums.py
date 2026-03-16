@@ -97,6 +97,12 @@ class FindingCategory(str, Enum):
     ARCHITECTURE = "architecture"   # structural choices, data flow
 
 
+class ConfidenceLevel(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class ResourceStatus(str, Enum):
     ONLINE = "online"
     OFFLINE = "offline"
