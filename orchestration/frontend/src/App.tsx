@@ -22,6 +22,7 @@ import Admin from './pages/Admin'
 import Analytics from './pages/Analytics'
 import RAG from './pages/RAG'
 import Workspaces from './pages/Workspaces'
+import GameBuilder from './pages/GameBuilder'
 import NotFound from './pages/NotFound'
 
 export default function App() {
@@ -39,6 +40,7 @@ export default function App() {
             <Route element={<AuthGuard />}>
               <Route element={<Layout />}>
                 <Route path="/" element={<Dashboard />} />
+                <Route path="/game-builder" element={<GameBuilder />} />
                 <Route path="/workspaces" element={<Workspaces />} />
                 <Route path="/project/:id" element={<ProjectDetail />} />
                 <Route path="/project/:id/task/:taskId" element={<TaskDetail />} />
