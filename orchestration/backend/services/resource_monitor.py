@@ -9,6 +9,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
@@ -178,9 +179,15 @@ async def _check_resource(
         binary = cli_binaries.get(res.id)
         resolved = _resolve_cmd(binary) if binary else None
         if resolved:
-            state.status = ResourceStatus.ONLINE
-            state.method = "cli"
-            state.details = {"binary": binary, "path": resolved}
+            # Codex CLI needs OPENAI_API_KEY to function
+            if res.id == "codex_cli" and not os.environ.get("OPENAI_API_KEY"):
+                state.status = ResourceStatus.OFFLINE
+                state.method = "cli"
+                state.details = {"binary": binary, "path": resolved, "hint": "Set OPENAI_API_KEY"}
+            else:
+                state.status = ResourceStatus.ONLINE
+                state.method = "cli"
+                state.details = {"binary": binary, "path": resolved}
         else:
             state.status = ResourceStatus.OFFLINE
             state.method = "cli"
