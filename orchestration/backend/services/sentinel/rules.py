@@ -163,12 +163,32 @@ def check_cascade_failure(
             if obs_key in state.emitted_observations:
                 continue
             state.emitted_observations.add(obs_key)
+
+            # Collect error text and tiers for diagnosis
+            error_samples = {}
+            tier_counts: dict[str, int] = {}
+            for tid in max_run:
+                err = getattr(state, "task_errors", {}).get(tid, "")
+                if err:
+                    error_samples[tid] = err[:300]
+                tier = getattr(state, "task_tiers", {}).get(tid, "")
+                if tier:
+                    tier_counts[tier] = tier_counts.get(tier, 0) + 1
+
+            # Detect same-tier pattern (e.g., all codex_cli failures)
+            dominant_tier = max(tier_counts, key=tier_counts.get) if tier_counts else None
+            same_tier = dominant_tier and tier_counts.get(dominant_tier, 0) == len(max_run)
+
+            msg = (
+                f"Cascade failure in wave {wave}: "
+                f"{len(max_run)} consecutive failures"
+            )
+            if same_tier:
+                msg += f" (all on {dominant_tier})"
+
             results.append(SentinelObservation(
                 category="cascade_failure",
-                message=(
-                    f"Cascade failure in wave {wave}: "
-                    f"{len(max_run)} consecutive failures"
-                ),
+                message=msg,
                 severity=Severity.CRITICAL,
                 project_id=project_id,
                 details={
@@ -176,6 +196,10 @@ def check_cascade_failure(
                     "wave": wave,
                     "consecutive_failure_count": len(max_run),
                     "failed_task_ids": max_run,
+                    "error_samples": error_samples,
+                    "tier_counts": tier_counts,
+                    "dominant_tier": dominant_tier,
+                    "same_tier_failure": same_tier,
                 },
             ))
     return results

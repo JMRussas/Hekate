@@ -31,10 +31,18 @@ class InterventionResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# Tier fallback chain: if a tier fails, try these alternatives
+TIER_FALLBACK: dict[str, str] = {
+    "codex_cli": "gemini_cli",
+    "gemini_cli": "claude_code",
+    "ollama": "gemini_cli",
+}
+
+
 class InterventionExecutor:
     """Executes concrete intervention actions against the orchestration API.
 
-    Handles: retry_task, release_claim, skip_task, reorder_wave.
+    Handles: retry_task, release_claim, skip_task, reorder_wave, reassign_tier.
     Uses a shared httpx.AsyncClient with lazy initialisation.
     """
 
@@ -44,12 +52,14 @@ class InterventionExecutor:
         bus: SentinelBus,
         auth_token: str | None = None,
         timeout: float = 30.0,
+        db=None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._bus = bus
         self._auth_token = auth_token
         self._timeout = timeout
         self._http_client: httpx.AsyncClient | None = None
+        self._db = db
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -266,6 +276,88 @@ class InterventionExecutor:
             success=True,
             detail=f"reorder proposal published for wave {wave}",
             metadata={"wave": wave, "stalled_task_ids": stalled_ids},
+        )
+
+
+    async def reassign_tier(self, obs: SentinelObservation) -> InterventionResult:
+        """Reassign failed tasks from one model tier to a fallback tier.
+
+        Reads the dominant_tier from observation details, looks up the
+        fallback, and updates all failed tasks with that tier directly
+        in the database. Re-queues them as pending.
+        """
+        if not self._db:
+            return InterventionResult(
+                action="reassign_tier",
+                success=False,
+                detail="no database connection available",
+            )
+
+        details = obs.details or {}
+        failed_ids = details.get("failed_task_ids", [])
+        old_tier = details.get("dominant_tier")
+
+        if not old_tier or not failed_ids:
+            return InterventionResult(
+                action="reassign_tier",
+                success=False,
+                detail=f"missing dominant_tier or failed_task_ids in observation",
+            )
+
+        new_tier = TIER_FALLBACK.get(old_tier)
+        if not new_tier:
+            return InterventionResult(
+                action="reassign_tier",
+                success=False,
+                detail=f"no fallback tier defined for {old_tier}",
+            )
+
+        import time
+        now = time.time()
+        reassigned = 0
+
+        for task_id in failed_ids:
+            try:
+                await self._db.execute_write(
+                    "UPDATE tasks SET model_tier = ?, status = 'pending', "
+                    "error = NULL, retry_count = 0, updated_at = ? "
+                    "WHERE id = ? AND status = 'failed'",
+                    (new_tier, now, task_id),
+                )
+                reassigned += 1
+            except Exception as exc:
+                logger.warning(
+                    "reassign_tier failed for task %s: %s", task_id[:8], exc,
+                )
+
+        if reassigned > 0:
+            logger.info(
+                "Reassigned %d tasks from %s to %s",
+                reassigned, old_tier, new_tier,
+            )
+            await self._bus.publish(SentinelMessage(
+                topic="stall_notification",
+                source="intervention_executor",
+                payload={
+                    "type": "tier_reassigned",
+                    "old_tier": old_tier,
+                    "new_tier": new_tier,
+                    "task_ids": failed_ids,
+                    "reassigned_count": reassigned,
+                    "observation_id": obs.observation_id,
+                    "project_id": obs.project_id,
+                },
+            ))
+
+        return InterventionResult(
+            action="reassign_tier",
+            success=reassigned > 0,
+            detail=f"reassigned {reassigned}/{len(failed_ids)} tasks from {old_tier} to {new_tier}",
+            metadata={
+                "old_tier": old_tier,
+                "new_tier": new_tier,
+                "reassigned": reassigned,
+            },
         )
 
 
