@@ -1,151 +1,223 @@
 #  Orchestration Engine - Plan Sync Service
 #
-#  Synchronises orchestration plans and task status to the context store.
-#  Creates context store nodes for each task in a plan and returns a mapping
-#  of orchestration task IDs → context store node IDs.
+#  Syncs orchestration plans to the context store as plan node trees.
+#  Plans become queryable across all conversations via semantic search.
 #
-#  Depends on: services/context_store_client.py, db/connection.py
-#  Used by:    routes/projects.py (after decomposition), services/task_lifecycle.py
+#  Mapping:
+#    plan_data (JSON)  →  context store nodes
+#    ─────────────────────────────────────────
+#    root              →  plan (root node)
+#    phases[]          →  plan_phase (children of plan)
+#    tasks[]           →  task (children of phase or plan)
+#    open_questions[]  →  question (children of plan)
+#    risk_assessment[] →  risk (children of plan)
+#
+#  Depends on: services/context_store_client.py
+#  Used by:    routes/projects.py (after plan generation)
 
-import json
 import logging
-import time
 
 from backend.services.context_store_client import ContextStoreClient
 
 logger = logging.getLogger("orchestration.plan_sync")
 
-# Context store node types
-_PLAN_NODE_TYPE = "orchestration_plan"
-_TASK_NODE_TYPE = "orchestration_task"
-
-# Shared client — lazy-initialized
-_cs_client: ContextStoreClient | None = None
-
-
-def _get_client() -> ContextStoreClient:
-    global _cs_client
-    if _cs_client is None:
-        _cs_client = ContextStoreClient()
-    return _cs_client
-
 
 class PlanSyncService:
-    """Sync orchestration plans to the context store as node trees.
+    """Syncs orchestration plans to the context store as node trees."""
 
-    sync_plan() creates:
-      1. A parent plan node under the project
-      2. A child task node for each task in the plan
-    Returns a dict mapping {task_id: context_store_node_id} and
-    persists the mapping to the plans.node_mapping column.
-    """
+    def __init__(self, context_client: ContextStoreClient):
+        self._ctx = context_client
 
-    def __init__(self, *, db, cs_client: ContextStoreClient | None = None):
-        self._db = db
-        self._cs = cs_client or _get_client()
+    async def sync_plan(
+        self,
+        project_name: str,
+        repo_path: str | None,
+        plan_data: dict,
+        plan_id: str,
+        project_id: str,
+    ) -> str | None:
+        """Write a plan to the context store as a node tree.
 
-    async def sync_plan(self, project_id: str, plan_id: str) -> dict[str, str]:
-        """Create context store nodes for a plan and its tasks.
-
-        Args:
-            project_id: The project this plan belongs to.
-            plan_id: The plan to sync.
-
-        Returns:
-            Mapping of orchestration task_id → context store node_id.
-            Empty dict if context store is unavailable.
+        Returns the context store plan node ID, or None if sync failed.
+        Fire-and-forget safe — never raises, logs errors.
         """
-        db = self._db
+        try:
+            return await self._sync(project_name, repo_path, plan_data, plan_id, project_id)
+        except Exception as exc:
+            logger.warning("Plan sync to context store failed: %s", exc)
+            return None
 
-        # Load plan
-        plan_row = await db.fetchone(
-            "SELECT plan_json, version FROM plans WHERE id = ?", (plan_id,)
-        )
-        if not plan_row:
-            logger.warning("Plan %s not found — skipping sync", plan_id)
-            return {}
+    async def _sync(
+        self,
+        project_name: str,
+        repo_path: str | None,
+        plan_data: dict,
+        plan_id: str,
+        project_id: str,
+    ) -> str | None:
+        # Ensure the project exists in context store
+        cs_project_id = await self._ctx.ensure_project(project_name, repo_path)
+        if not cs_project_id:
+            logger.debug("Could not ensure project in context store, skipping plan sync")
+            return None
 
-        plan_data = json.loads(plan_row["plan_json"])
+        summary = plan_data.get("summary", "")
 
-        # Load tasks for this plan
-        task_rows = await db.fetchall(
-            "SELECT id, title, task_type, status, wave, phase "
-            "FROM tasks WHERE plan_id = ? ORDER BY priority",
-            (plan_id,),
-        )
-        if not task_rows:
-            logger.info("Plan %s has no tasks — skipping sync", plan_id)
-            return {}
-
-        # Create parent plan node under the project
-        plan_node_id = await self._cs.create_node(project_id, {
-            "id": f"plan-{plan_id}",
-            "type": _PLAN_NODE_TYPE,
-            "label": f"Plan v{plan_row['version']}: {plan_data.get('summary', '')[:100]}",
+        # Create root plan node
+        plan_node_id = await self._ctx.create_root_node(cs_project_id, {
+            "nodeType": "plan",
+            "name": project_name,
+            "value": summary,
             "attributes": {
-                "plan_id": plan_id,
-                "project_id": project_id,
-                "version": plan_row["version"],
-                "task_count": len(task_rows),
-                "synced_at": time.time(),
+                "plan_type": "orchestration",
+                "status": "draft",
+                "orch_plan_id": plan_id,
+                "orch_project_id": project_id,
             },
         })
+        if not plan_node_id:
+            logger.debug("Could not create plan root node, skipping plan sync")
+            return None
 
-        if plan_node_id is None:
-            logger.info("Context store unavailable — skipping plan sync for %s", plan_id)
-            return {}
+        # Sync phases and tasks
+        phases = plan_data.get("phases")
+        if phases and isinstance(phases, list):
+            await self._sync_phases(plan_node_id, phases)
+        else:
+            # Flat plan (L1) — tasks directly under plan
+            tasks = plan_data.get("tasks", [])
+            for task in tasks:
+                await self._sync_task(plan_node_id, task)
 
-        # Create a child node for each task
-        mapping: dict[str, str] = {}
-        for task in task_rows:
-            task_id = task["id"]
-            task_node_id_candidate = f"task-{task_id}"
+        # Sync epics (L0 roadmap)
+        epics = plan_data.get("epics")
+        if epics and isinstance(epics, list):
+            for epic in epics:
+                if not isinstance(epic, dict):
+                    continue
+                await self._ctx.create_node(plan_node_id, {
+                    "nodeType": "plan_phase",
+                    "name": epic.get("title", "Unnamed Epic"),
+                    "value": epic.get("description", ""),
+                    "attributes": {
+                        "status": "pending",
+                        "scope": epic.get("scope", ""),
+                        "estimated_complexity": epic.get("estimated_complexity", ""),
+                        "success_criteria": epic.get("success_criteria", ""),
+                    },
+                })
 
-            node_id = await self._cs.create_node(plan_node_id, {
-                "id": task_node_id_candidate,
-                "type": _TASK_NODE_TYPE,
-                "label": task["title"],
+        # Sync open questions
+        questions = plan_data.get("open_questions", [])
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            await self._ctx.create_node(plan_node_id, {
+                "nodeType": "question",
+                "name": q.get("question", "")[:200],
+                "value": q.get("question", ""),
                 "attributes": {
-                    "task_id": task_id,
-                    "plan_id": plan_id,
-                    "project_id": project_id,
-                    "task_type": task["task_type"],
-                    "status": task["status"],
-                    "wave": task["wave"],
-                    "phase": task["phase"] or "",
-                    "synced_at": time.time(),
+                    "status": "open",
+                    "proposed_answer": q.get("proposed_answer", ""),
+                    "impact": q.get("impact", ""),
                 },
             })
 
-            if node_id is not None:
-                mapping[task_id] = node_id
+        # Sync risks (L3)
+        risks = plan_data.get("risk_assessment", [])
+        for r in risks:
+            if not isinstance(r, dict):
+                continue
+            await self._ctx.create_node(plan_node_id, {
+                "nodeType": "risk",
+                "name": r.get("risk", "")[:200],
+                "value": r.get("risk", ""),
+                "attributes": {
+                    "likelihood": r.get("likelihood", ""),
+                    "impact": r.get("impact", ""),
+                    "mitigation": r.get("mitigation", ""),
+                },
+            })
 
-        # Persist the mapping to the plans table
-        if mapping:
-            await db.execute_write(
-                "UPDATE plans SET node_mapping = ? WHERE id = ?",
-                (json.dumps(mapping), plan_id),
-            )
-            logger.info(
-                "Plan %s synced to context store: %d/%d task nodes created",
-                plan_id, len(mapping), len(task_rows),
-            )
-
-        return mapping
-
-    async def get_node_mapping(self, plan_id: str) -> dict[str, str]:
-        """Load the persisted node mapping for a plan.
-
-        Returns:
-            Mapping of orchestration task_id → context store node_id.
-            Empty dict if no mapping exists.
-        """
-        row = await self._db.fetchone(
-            "SELECT node_mapping FROM plans WHERE id = ?", (plan_id,)
+        logger.info(
+            "Plan synced to context store: plan_node=%s, project=%s",
+            plan_node_id, cs_project_id,
         )
-        if not row or not row["node_mapping"]:
-            return {}
-        try:
-            return json.loads(row["node_mapping"])
-        except (json.JSONDecodeError, TypeError):
-            return {}
+        return plan_node_id
+
+    async def _sync_phases(self, plan_node_id: str, phases: list) -> None:
+        """Create phase nodes with their tasks."""
+        for phase in phases:
+            if not isinstance(phase, dict):
+                continue
+
+            phase_name = phase.get("name", "Unnamed Phase")
+            phase_desc = phase.get("description", "")
+
+            phase_node_id = await self._ctx.create_node(plan_node_id, {
+                "nodeType": "plan_phase",
+                "name": phase_name,
+                "value": phase_desc,
+                "attributes": {
+                    "status": "pending",
+                },
+            })
+            if not phase_node_id:
+                continue
+
+            for task in phase.get("tasks", []):
+                await self._sync_task(phase_node_id, task)
+
+    async def _sync_task(self, parent_id: str, task: dict) -> None:
+        """Create a task node under a parent (phase or plan)."""
+        if not isinstance(task, dict):
+            return
+
+        title = task.get("title", "Unnamed Task")
+        description = task.get("description", "")
+        task_type = task.get("task_type", "code")
+        complexity = task.get("complexity", "medium")
+
+        attrs = {
+            "status": "pending",
+            "task_type": task_type,
+            "complexity": complexity,
+        }
+
+        # Preserve verification criteria
+        criteria = task.get("verification_criteria")
+        if criteria:
+            attrs["verification_criteria"] = criteria
+
+        # Preserve affected files
+        files = task.get("affected_files", [])
+        if files:
+            attrs["affected_files"] = ", ".join(files)
+
+        # Preserve requirement traceability
+        req_ids = task.get("requirement_ids", [])
+        if req_ids:
+            attrs["requirement_ids"] = ", ".join(req_ids)
+
+        await self._ctx.create_node(parent_id, {
+            "nodeType": "task",
+            "name": title,
+            "value": description,
+            "attributes": attrs,
+        })
+
+    async def update_task_status(
+        self,
+        orch_project_id: str,
+        task_title: str,
+        new_status: str,
+    ) -> bool:
+        """Update a task node's status in the context store.
+
+        Searches for the task by title within the project's plan.
+        Returns True if updated, False otherwise.
+        """
+        # This will be wired up when we have a mapping table between
+        # orchestration task IDs and context store node IDs.
+        # For now, status sync is manual / future work.
+        return False

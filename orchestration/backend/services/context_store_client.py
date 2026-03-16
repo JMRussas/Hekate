@@ -99,6 +99,47 @@ class ContextStoreClient:
             self._client = None
 
     # ------------------------------------------------------------------
+    # Project management
+    # ------------------------------------------------------------------
+
+    async def ensure_project(self, name: str, root_path: str | None = None) -> str | None:
+        """POST /api/projects — get or create a project. Returns project ID or None."""
+        if self._is_circuit_open():
+            return None
+
+        url = f"{self._base_url}/api/projects"
+        payload = {"name": name}
+        if root_path:
+            payload["rootPath"] = root_path
+        try:
+            resp = await self._get_client().post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            self._record_success()
+            return data.get("id")
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Context store ensure_project failed: %s", exc)
+            return None
+
+    async def create_root_node(self, project_id: str, payload: dict) -> str | None:
+        """POST /api/project/{project_id}/nodes — create a root-level node. Returns node ID or None."""
+        if self._is_circuit_open():
+            return None
+
+        url = f"{self._base_url}/api/project/{project_id}/nodes"
+        try:
+            resp = await self._get_client().post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            self._record_success()
+            return data.get("id")
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Context store create_root_node failed: %s", exc)
+            return None
+
+    # ------------------------------------------------------------------
     # Enrichment: preview endpoint
     # ------------------------------------------------------------------
 
@@ -148,7 +189,9 @@ class ContextStoreClient:
             resp.raise_for_status()
             data = resp.json()
             self._record_success()
-            return data.get("id") or payload.get("id")
+            # Response may be {"node": {"id": ...}} or {"id": ...}
+            node = data.get("node", data)
+            return node.get("id") or payload.get("id")
         except (httpx.TimeoutException, httpx.ConnectError):
             self._record_failure()
             return None

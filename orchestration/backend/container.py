@@ -23,7 +23,9 @@ from backend.services.progress import ProgressManager
 from backend.services.provider_quota import ProviderQuotaManager
 from backend.services.resource_monitor import ResourceMonitor
 from backend.services.sentinel.system_sentinel import SystemSentinel
+from backend.services.context_store_client import ContextStoreClient
 from backend.services.diagnostic_ingest import DiagnosticIngester
+from backend.services.plan_sync import PlanSyncService
 from backend.tools.rag import RAGIndexCache
 from backend.tools.registry import ToolRegistry
 
@@ -85,6 +87,10 @@ class Container(containers.DeclarativeContainer):
 
     # --- Git ---
     git_service = providers.Factory(GitService, db=db)
+
+    # --- Context Store ---
+    context_store_client = providers.Singleton(ContextStoreClient)
+    plan_sync = providers.Singleton(PlanSyncService, context_client=context_store_client)
 
     # --- Planning & Decomposition ---
     planner = providers.Factory(PlannerService, db=db, budget=budget, tool_registry=tool_registry)
