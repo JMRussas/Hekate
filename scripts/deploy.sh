@@ -18,8 +18,17 @@
 
 set -e
 
-SOURCE="C:/Users/jruss/Documents/GitHub/Hekate"
-TARGET="C:/Hekate"
+# Resolve paths — handle both Git Bash (/c/) and PowerShell (C:\) contexts
+SOURCE="${HEKATE_SOURCE:-/c/Users/jruss/Documents/GitHub/Hekate}"
+TARGET="${HEKATE_TARGET:-/c/Hekate}"
+
+# Also try Windows paths if the unix paths don't exist
+if [ ! -d "$SOURCE" ]; then
+    SOURCE="C:/Users/jruss/Documents/GitHub/Hekate"
+fi
+if [ ! -d "$TARGET" ]; then
+    TARGET="C:/Hekate"
+fi
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -87,13 +96,17 @@ echo -e "${YELLOW}Copying orchestration source...${NC}"
 
 # Copy all Python source, templates, knowledge, tools
 # Preserve: data/ (DB), config.json, .worktrees/
-robocopy "$SOURCE\\orchestration\\backend" "$TARGET\\orchestration\\backend" /MIR \
+# Convert to Windows paths for robocopy
+WIN_SOURCE=$(echo "$SOURCE" | sed 's|^/c/|C:\\|;s|/|\\|g')
+WIN_TARGET=$(echo "$TARGET" | sed 's|^/c/|C:\\|;s|/|\\|g')
+
+robocopy "${WIN_SOURCE}\\orchestration\\backend" "${WIN_TARGET}\\orchestration\\backend" /MIR \
     /XD __pycache__ > /dev/null 2>&1 || true
 
-robocopy "$SOURCE\\orchestration\\tools" "$TARGET\\orchestration\\tools" /MIR \
+robocopy "${WIN_SOURCE}\\orchestration\\tools" "${WIN_TARGET}\\orchestration\\tools" /MIR \
     /XD __pycache__ > /dev/null 2>&1 || true
 
-robocopy "$SOURCE\\orchestration\\tests" "$TARGET\\orchestration\\tests" /MIR \
+robocopy "${WIN_SOURCE}\\orchestration\\tests" "${WIN_TARGET}\\orchestration\\tests" /MIR \
     /XD __pycache__ > /dev/null 2>&1 || true
 
 # Copy root files (run.py, requirements.txt, etc)
