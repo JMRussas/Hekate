@@ -277,6 +277,14 @@ _SCHEMA_STATEMENTS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_sentinel_obs_project ON sentinel_observations(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_sentinel_dec_project ON sentinel_decisions(project_id)",
+    # Odin state
+    """CREATE TABLE IF NOT EXISTS odin_state (
+        id TEXT PRIMARY KEY DEFAULT 'singleton',
+        world_model_json TEXT NOT NULL,
+        last_tick_at DOUBLE PRECISION NOT NULL,
+        decisions_count INTEGER DEFAULT 0,
+        updated_at DOUBLE PRECISION NOT NULL
+    )""",
 ]
 
 
