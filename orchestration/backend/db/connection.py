@@ -450,10 +450,11 @@ class _SqliteBackend:
 
     async def execute_write(self, sql, params):
         sql = _pg_to_sqlite(sql)
-        cursor = await self._conn.execute(sql, tuple(params))
-        if not self._in_transaction:
-            await self._conn.commit()
-        return f"OK {cursor.rowcount}"
+        async with self._tx_lock:
+            cursor = await self._conn.execute(sql, tuple(params))
+            if not self._in_transaction:
+                await self._conn.commit()
+            return f"OK {cursor.rowcount}"
 
     async def fetchone(self, sql, params):
         sql = _pg_to_sqlite(sql)
