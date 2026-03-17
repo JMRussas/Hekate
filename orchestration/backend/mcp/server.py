@@ -170,7 +170,7 @@ def create_server(config_path: Path | None = None) -> FastMCP:
             plans = await _get(f"/projects/{project_id}/plans")
             if not plans:
                 return "Error: No plans found. Use plan_project first."
-            latest_plan = plans[-1]
+            latest_plan = plans[0]
 
             # Approve plan if still draft
             if latest_plan.get("status") == "draft":

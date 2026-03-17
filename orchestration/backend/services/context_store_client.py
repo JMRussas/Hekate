@@ -296,6 +296,125 @@ class ContextStoreClient:
 
         return revision_id
 
+    # ------------------------------------------------------------------
+    # Brain services (called by ChatAgent for universal chat)
+    # ------------------------------------------------------------------
+
+    async def brain_resolve(self, message: str, conversation_id: str | None = None) -> dict | None:
+        """POST /api/brain/resolve — entity resolution. Returns ResolvedSubject or None."""
+        if self._is_circuit_open():
+            return None
+        url = f"{self._base_url}/api/brain/resolve"
+        payload: dict = {"message": message}
+        if conversation_id:
+            payload["conversationId"] = conversation_id
+        try:
+            resp = await self._get_client().post(url, json=payload, timeout=15.0)
+            resp.raise_for_status()
+            self._record_success()
+            return resp.json()
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Brain resolve failed: %s", exc)
+            return None
+
+    async def brain_assemble(self, resolved_subject: dict, conversation_id: str) -> dict | None:
+        """POST /api/brain/assemble — context assembly. Returns SubjectState or None."""
+        if self._is_circuit_open():
+            return None
+        url = f"{self._base_url}/api/brain/assemble"
+        payload = {"resolvedSubject": resolved_subject, "conversationId": conversation_id}
+        try:
+            resp = await self._get_client().post(url, json=payload, timeout=15.0)
+            resp.raise_for_status()
+            self._record_success()
+            return resp.json()
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Brain assemble failed: %s", exc)
+            return None
+
+    async def brain_extract(self, response_text: str, conversation_id: str, thread_id: str) -> dict | None:
+        """POST /api/brain/extract — extract ideas/decisions from response. Returns items or None."""
+        if self._is_circuit_open():
+            return None
+        url = f"{self._base_url}/api/brain/extract"
+        payload = {"responseText": response_text, "conversationId": conversation_id, "threadId": thread_id}
+        try:
+            resp = await self._get_client().post(url, json=payload, timeout=30.0)
+            resp.raise_for_status()
+            self._record_success()
+            return resp.json()
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Brain extract failed: %s", exc)
+            return None
+
+    async def brain_store_turn(self, conversation_id: str, speaker: str, content: str, thread_id: str | None = None) -> str | None:
+        """POST /api/brain/turn — persist a conversation turn. Returns turn ID or None."""
+        if self._is_circuit_open():
+            return None
+        url = f"{self._base_url}/api/brain/turn"
+        payload: dict = {"conversationId": conversation_id, "speaker": speaker, "content": content}
+        if thread_id:
+            payload["threadId"] = thread_id
+        try:
+            resp = await self._get_client().post(url, json=payload, timeout=5.0)
+            resp.raise_for_status()
+            self._record_success()
+            data = resp.json()
+            return data.get("id")
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Brain store_turn failed: %s", exc)
+            return None
+
+    async def brain_create_conversation(self) -> str | None:
+        """POST /api/brain/conversation — create a new conversation. Returns ID or None."""
+        if self._is_circuit_open():
+            return None
+        url = f"{self._base_url}/api/brain/conversation"
+        try:
+            resp = await self._get_client().post(url)
+            resp.raise_for_status()
+            self._record_success()
+            data = resp.json()
+            return data.get("id")
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Brain create_conversation failed: %s", exc)
+            return None
+
+    async def brain_get_conversation(self, conversation_id: str) -> dict | None:
+        """GET /api/brain/conversation/{id} — get conversation with turns."""
+        if self._is_circuit_open():
+            return None
+        url = f"{self._base_url}/api/brain/conversation/{conversation_id}"
+        try:
+            resp = await self._get_client().get(url, timeout=5.0)
+            resp.raise_for_status()
+            self._record_success()
+            return resp.json()
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Brain get_conversation failed: %s", exc)
+            return None
+
+    async def brain_get_permissions(self, conversation_id: str) -> dict | None:
+        """GET /api/brain/permissions/{id} — get permission config."""
+        if self._is_circuit_open():
+            return None
+        url = f"{self._base_url}/api/brain/permissions/{conversation_id}"
+        try:
+            resp = await self._get_client().get(url, timeout=5.0)
+            resp.raise_for_status()
+            self._record_success()
+            return resp.json()
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("Brain get_permissions failed: %s", exc)
+            return None
+
     async def create_edge(self, edge: dict) -> bool:
         """POST /api/graph/edges — create a graph edge."""
         if self._is_circuit_open():

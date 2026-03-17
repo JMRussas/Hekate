@@ -650,6 +650,10 @@ public class ChatService
         return threadId;
     }
 
+    /// <summary>Public wrapper for brain API — stores a turn under a given parent node.</summary>
+    public Task<Guid> StoreTurnPublic(Guid conversationId, Guid? threadId, string speaker, string content)
+        => StoreTurn(threadId ?? conversationId, speaker, content);
+
     private async Task<Guid> StoreTurn(Guid parentId, string speaker, string content)
     {
         var turnId = Guid.NewGuid();

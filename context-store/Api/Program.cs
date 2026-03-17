@@ -366,6 +366,69 @@ app.MapPost("/api/code/edge", async (CreateEdgeRequest req, CodeStoragePoc.Graph
     }
 });
 
+// --- Brain service endpoints (called by orchestration) ---
+
+app.MapPost("/api/brain/resolve", async (HttpContext http, InterpreterService interpreter) =>
+{
+    var req = await http.Request.ReadFromJsonAsync<BrainResolveRequest>();
+    if (req == null || string.IsNullOrWhiteSpace(req.Message))
+        return Results.BadRequest(new { error = "Message is required" });
+
+    var resolved = await interpreter.ResolveAsync(req.Message, req.ConversationId);
+    return Results.Ok(resolved);
+});
+
+app.MapPost("/api/brain/assemble", async (HttpContext http, ContextAssembler assembler) =>
+{
+    var req = await http.Request.ReadFromJsonAsync<BrainAssembleRequest>();
+    if (req == null || req.ResolvedSubject == null)
+        return Results.BadRequest(new { error = "ResolvedSubject is required" });
+
+    if (!req.ConversationId.HasValue)
+        return Results.BadRequest(new { error = "ConversationId is required" });
+
+    var state = await assembler.AssembleFromSubject(req.ResolvedSubject, req.ConversationId.Value);
+    return Results.Ok(state);
+});
+
+app.MapPost("/api/brain/extract", async (HttpContext http, ExtractionService extraction) =>
+{
+    var req = await http.Request.ReadFromJsonAsync<BrainExtractRequest>();
+    if (req == null || string.IsNullOrWhiteSpace(req.ResponseText))
+        return Results.BadRequest(new { error = "ResponseText is required" });
+
+    if (!req.ConversationId.HasValue || !req.ThreadId.HasValue)
+        return Results.BadRequest(new { error = "ConversationId and ThreadId are required" });
+
+    var result = await extraction.ExtractFromResponse(req.ResponseText, req.ConversationId.Value, req.ThreadId.Value);
+    return Results.Ok(new { items = result.Items, count = result.Count });
+});
+
+app.MapPost("/api/brain/turn", async (HttpContext http, ChatService chat) =>
+{
+    var req = await http.Request.ReadFromJsonAsync<BrainTurnRequest>();
+    if (req == null)
+        return Results.BadRequest(new { error = "Request is required" });
+
+    if (!req.ConversationId.HasValue)
+        return Results.BadRequest(new { error = "ConversationId is required" });
+
+    var turnId = await chat.StoreTurnPublic(req.ConversationId.Value, req.ThreadId, req.Speaker, req.Content);
+    return Results.Ok(new { id = turnId });
+});
+
+app.MapPost("/api/brain/conversation", async (ChatService chat) =>
+{
+    var id = await chat.CreateConversation();
+    return Results.Ok(new { id });
+});
+
+app.MapGet("/api/brain/conversation/{id:guid}", async (Guid id, ChatService chat) =>
+    Results.Ok(await chat.GetConversation(id)));
+
+app.MapGet("/api/brain/permissions/{conversationId:guid}", async (Guid conversationId, PermissionService perms) =>
+    Results.Ok(await perms.GetPermissionConfig(conversationId)));
+
 // --- System message endpoints ---
 app.MapGet("/api/events", async (HttpContext http, SystemMessageBus bus) =>
 {
@@ -447,3 +510,9 @@ record DecomposeRequest(Guid ProjectId, string FilePath, string? SourceText = nu
 record MaterializeRequest(Guid? FileId = null, Guid? RootNodeId = null);
 record CreateEdgeRequest(Guid FromNodeId, Guid ToNodeId, string EdgeType, string? Provenance = null);
 record CreateProjectRequest(string Name, string? RootPath = null);
+
+// Brain service DTOs (called by orchestration)
+record BrainResolveRequest(string Message, Guid? ConversationId = null);
+record BrainAssembleRequest(CodeStoragePoc.ContextRouter.ResolvedSubject? ResolvedSubject, Guid? ConversationId = null);
+record BrainExtractRequest(string ResponseText, Guid? ConversationId = null, Guid? ThreadId = null, string? Model = null);
+record BrainTurnRequest(Guid? ConversationId, Guid? ThreadId, string Speaker, string Content);

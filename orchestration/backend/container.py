@@ -26,6 +26,7 @@ from backend.services.sentinel.system_sentinel import SystemSentinel
 from backend.services.context_store_client import ContextStoreClient
 from backend.services.diagnostic_ingest import DiagnosticIngester
 from backend.services.plan_sync import PlanSyncService
+from backend.services.chat_agent import ChatAgent
 from backend.tools.rag import RAGIndexCache
 from backend.tools.registry import ToolRegistry
 
@@ -57,6 +58,7 @@ class Container(containers.DeclarativeContainer):
             "backend.routes.external",
             "backend.routes.internal",
             "backend.routes.sentinel",
+            "backend.routes.chat",
             "backend.middleware.auth",
             "backend.services.model_discovery",
         ]
@@ -91,6 +93,9 @@ class Container(containers.DeclarativeContainer):
     # --- Context Store ---
     context_store_client = providers.Singleton(ContextStoreClient)
     plan_sync = providers.Singleton(PlanSyncService, context_client=context_store_client, db=db)
+
+    # --- Chat ---
+    chat_agent = providers.Singleton(ChatAgent, context_store=context_store_client)
 
     # --- Planning & Decomposition ---
     planner = providers.Factory(PlannerService, db=db, budget=budget, tool_registry=tool_registry)
