@@ -469,7 +469,7 @@ public class ChatService
         await EmitTypewriter(rawOutput, http, ct);
     }
 
-    /// <summary>Claude CLI with multi-round tool calling. Uses --output-format stream-json
+    /// <summary>Claude CLI with multi-round tool calling. Uses --output-format json
     /// to detect tool_use blocks, executes skills, and feeds results back.</summary>
     private async Task StreamClaudeCli(ModelRoute route, AssembledPrompt prompt, StringBuilder fullResponse,
         Microsoft.AspNetCore.Http.HttpResponse http, CancellationToken ct)
@@ -479,8 +479,8 @@ public class ChatService
 
         for (int round = 0; round < maxRounds; round++)
         {
-            // Run claude with stream-json to get structured output
-            var args = new List<string> { "--print", "-", "--output-format", "stream-json", "--model", route.ModelId };
+            // Run claude with json output to get structured response with tool_use blocks
+            var args = new List<string> { "--print", "-", "--output-format", "json", "--model", route.ModelId };
             var rawOutput = await RunCliOnce("claude", args, combinedPrompt, ct);
 
             if (rawOutput.StartsWith("Failed to start"))
@@ -489,87 +489,47 @@ public class ChatService
                 return;
             }
 
-            // Parse stream-json: each line is a JSON event
+            // Parse JSON output: single JSON array of content blocks
+            // Format: [{"type":"text","text":"..."}, {"type":"tool_use","id":"...","name":"...","input":{...}}]
             var textParts = new StringBuilder();
             var toolUseBlocks = new List<(string Id, string Name, string ArgsJson)>();
 
-            foreach (var line in rawOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            try
             {
-                try
+                using var doc = JsonDocument.Parse(rawOutput);
+                var root = doc.RootElement;
+
+                // --output-format json returns an array of content blocks
+                var contentArr = root.ValueKind == JsonValueKind.Array ? root : default;
+                if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("content", out var ca))
+                    contentArr = ca;
+
+                if (contentArr.ValueKind == JsonValueKind.Array)
                 {
-                    using var doc = JsonDocument.Parse(line);
-                    var root = doc.RootElement;
-
-                    // stream-json emits different event types
-                    if (root.TryGetProperty("type", out var typeEl))
+                    foreach (var block in contentArr.EnumerateArray())
                     {
-                        var eventType = typeEl.GetString();
-
-                        if (eventType == "content_block_delta" &&
-                            root.TryGetProperty("delta", out var delta))
+                        var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
+                        if (blockType == "text")
                         {
-                            if (delta.TryGetProperty("type", out var deltaType) &&
-                                deltaType.GetString() == "text_delta" &&
-                                delta.TryGetProperty("text", out var textVal))
-                            {
-                                var text = textVal.GetString() ?? "";
-                                textParts.Append(text);
-                                await SendSseEvent(http, "token", JsonSerializer.Serialize(new { text }), ct);
-                            }
+                            var text = block.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+                            textParts.Append(text);
+                            await EmitTypewriter(text, http, ct);
                         }
-                        else if (eventType == "content_block_start" &&
-                                 root.TryGetProperty("content_block", out var block))
+                        else if (blockType == "tool_use")
                         {
-                            if (block.TryGetProperty("type", out var blockType) &&
-                                blockType.GetString() == "tool_use")
-                            {
-                                var toolId = block.TryGetProperty("id", out var id) ? id.GetString() ?? "" : $"tool_{round}_{toolUseBlocks.Count}";
-                                var toolName = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
-                                toolUseBlocks.Add((toolId, toolName, ""));
-                            }
-                        }
-                        else if (eventType == "content_block_delta" &&
-                                 root.TryGetProperty("delta", out var toolDelta) &&
-                                 toolDelta.TryGetProperty("type", out var tdType) &&
-                                 tdType.GetString() == "input_json_delta" &&
-                                 toolUseBlocks.Count > 0)
-                        {
-                            var partial = toolDelta.TryGetProperty("partial_json", out var pj) ? pj.GetString() ?? "" : "";
-                            var last = toolUseBlocks[^1];
-                            toolUseBlocks[^1] = (last.Id, last.Name, last.ArgsJson + partial);
-                        }
-                    }
-                    // Also handle the simple result format (non-streaming fallback)
-                    else if (root.TryGetProperty("content", out var contentArr) && contentArr.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var block in contentArr.EnumerateArray())
-                        {
-                            var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
-                            if (blockType == "text")
-                            {
-                                var text = block.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
-                                textParts.Append(text);
-                                await EmitTypewriter(text, http, ct);
-                            }
-                            else if (blockType == "tool_use")
-                            {
-                                var toolId = block.TryGetProperty("id", out var id) ? id.GetString() ?? "" : $"tool_{round}";
-                                var toolName = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
-                                var argsJson = block.TryGetProperty("input", out var inp) ? inp.ToString() : "{}";
-                                toolUseBlocks.Add((toolId, toolName, argsJson));
-                            }
+                            var toolId = block.TryGetProperty("id", out var id) ? id.GetString() ?? "" : $"tool_{round}";
+                            var toolName = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
+                            var argsJson = block.TryGetProperty("input", out var inp) ? inp.ToString() : "{}";
+                            toolUseBlocks.Add((toolId, toolName, argsJson));
                         }
                     }
                 }
-                catch (JsonException)
-                {
-                    // Non-JSON line (text output fallback) — emit as-is
-                    if (!string.IsNullOrWhiteSpace(line))
-                    {
-                        textParts.Append(line);
-                        await SendSseEvent(http, "token", JsonSerializer.Serialize(new { text = line + "\n" }), ct);
-                    }
-                }
+            }
+            catch (JsonException)
+            {
+                // Not JSON — plain text response (fallback)
+                textParts.Append(rawOutput);
+                await EmitTypewriter(rawOutput, http, ct);
             }
 
             fullResponse.Append(textParts);
