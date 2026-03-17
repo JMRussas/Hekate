@@ -35,6 +35,9 @@ health_router = APIRouter(tags=["health"])
 _log = logging.getLogger("orchestration.services")
 
 # NSSM services that can be managed via the /nssm endpoint
+# Full path — LocalSystem PATH may not include the WinGet links directory
+_NSSM = r"C:\Users\jruss\AppData\Local\Microsoft\WinGet\Links\nssm.exe"
+
 _ALLOWED_NSSM_SERVICES = {
     "HekateOrchestration", "HekateContextStore", "HekateServer",
     "HekatePythonWorker", "HekateTypeScriptWorker", "HekateCppWorker",
@@ -67,15 +70,15 @@ async def nssm_control(service: str, action: str):
     _log.info("NSSM %s %s", action, service)
 
     if action == "restart":
-        subprocess.run(["nssm", "stop", service], capture_output=True, timeout=15)
+        subprocess.run([_NSSM, "stop", service], capture_output=True, timeout=15)
         import asyncio
         await asyncio.sleep(2)
-        result = subprocess.run(["nssm", "start", service], capture_output=True, text=True, timeout=15)
+        result = subprocess.run([_NSSM, "start", service], capture_output=True, text=True, timeout=15)
     else:
-        result = subprocess.run(["nssm", action, service], capture_output=True, text=True, timeout=15)
+        result = subprocess.run([_NSSM, action, service], capture_output=True, text=True, timeout=15)
 
     # Check new status
-    status_result = subprocess.run(["nssm", "status", service], capture_output=True, text=True, timeout=5)
+    status_result = subprocess.run([_NSSM, "status", service], capture_output=True, text=True, timeout=5)
     nssm_status = status_result.stdout.strip() if status_result.returncode == 0 else "UNKNOWN"
 
     return {

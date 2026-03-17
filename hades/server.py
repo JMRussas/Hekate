@@ -330,8 +330,11 @@ async def exec_command(req: ExecRequest):
     if not Path(cwd).exists():
         raise HTTPException(400, f"Working directory not found: {cwd}")
 
+    # Use Git Bash explicitly — LocalSystem's "bash" resolves to WSL which
+    # doesn't support running as LocalSystem.
+    git_bash = r"C:\Program Files\Git\bin\bash.exe"
     shell_map = {
-        "bash": ["bash", "-c", req.command],
+        "bash": [git_bash, "-c", req.command],
         "cmd": ["cmd", "/c", req.command],
         "powershell": ["powershell", "-NoProfile", "-Command", req.command],
     }
