@@ -67,7 +67,7 @@ class BudgetManager:
             (
                 "INSERT INTO usage_log (project_id, task_id, provider, model, "
                 "prompt_tokens, completion_tokens, cost_usd, purpose, timestamp) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                 (project_id, task_id, provider, model, prompt_tokens,
                  completion_tokens, cost_usd, purpose, now),
             ),
@@ -75,7 +75,7 @@ class BudgetManager:
             (
                 "INSERT INTO budget_periods (period_key, period_type, total_cost_usd, "
                 "total_prompt_tokens, total_completion_tokens, api_call_count) "
-                "VALUES (?, 'daily', ?, ?, ?, 1) "
+                "VALUES ($1, 'daily', $2, $3, $4, 1) "
                 "ON CONFLICT(period_key) DO UPDATE SET "
                 "total_cost_usd = total_cost_usd + excluded.total_cost_usd, "
                 "total_prompt_tokens = total_prompt_tokens + excluded.total_prompt_tokens, "
@@ -87,7 +87,7 @@ class BudgetManager:
             (
                 "INSERT INTO budget_periods (period_key, period_type, total_cost_usd, "
                 "total_prompt_tokens, total_completion_tokens, api_call_count) "
-                "VALUES (?, 'monthly', ?, ?, ?, 1) "
+                "VALUES ($1, 'monthly', $2, $3, $4, 1) "
                 "ON CONFLICT(period_key) DO UPDATE SET "
                 "total_cost_usd = total_cost_usd + excluded.total_cost_usd, "
                 "total_prompt_tokens = total_prompt_tokens + excluded.total_prompt_tokens, "
@@ -100,11 +100,11 @@ class BudgetManager:
     async def get_budget_status(self) -> BudgetStatus:
         """Get current spending vs. limits."""
         day_row = await self._db.fetchone(
-            "SELECT total_cost_usd FROM budget_periods WHERE period_key = ?",
+            "SELECT total_cost_usd FROM budget_periods WHERE period_key = $1",
             (_today_key(),),
         )
         month_row = await self._db.fetchone(
-            "SELECT total_cost_usd FROM budget_periods WHERE period_key = ?",
+            "SELECT total_cost_usd FROM budget_periods WHERE period_key = $1",
             (_month_key(),),
         )
 
@@ -194,7 +194,7 @@ class BudgetManager:
             return True
 
         row = await self._db.fetchone(
-            "SELECT COALESCE(SUM(cost_usd), 0) as total FROM usage_log WHERE project_id = ?",
+            "SELECT COALESCE(SUM(cost_usd), 0) as total FROM usage_log WHERE project_id = $1",
             (project_id,),
         )
         project_spent = row["total"] if row else 0.0
@@ -214,7 +214,7 @@ class BudgetManager:
 
         async with self._lock:
             row = await self._db.fetchone(
-                "SELECT COALESCE(SUM(cost_usd), 0) as total FROM usage_log WHERE project_id = ?",
+                "SELECT COALESCE(SUM(cost_usd), 0) as total FROM usage_log WHERE project_id = $1",
                 (project_id,),
             )
             project_spent = row["total"] if row else 0.0
@@ -244,7 +244,7 @@ class BudgetManager:
         where = "WHERE 1=1"
         params: list = []
         if project_id:
-            where += " AND project_id = ?"
+            where += " AND project_id = $1"
             params.append(project_id)
 
         # Totals

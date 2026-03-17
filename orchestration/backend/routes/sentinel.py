@@ -154,16 +154,21 @@ async def list_observations(
     # Build query with filters
     sql = "SELECT id, project_id, task_id, category, severity, message, details_json, created_at FROM sentinel_observations WHERE 1=1"
     params: list = []
+    param_idx = 0
     if project_id is not None:
-        sql += " AND project_id = ?"
+        param_idx += 1
+        sql += f" AND project_id = ${param_idx}"
         params.append(project_id)
     if category is not None:
-        sql += " AND category = ?"
+        param_idx += 1
+        sql += f" AND category = ${param_idx}"
         params.append(category)
     if severity is not None:
-        sql += " AND severity = ?"
+        param_idx += 1
+        sql += f" AND severity = ${param_idx}"
         params.append(severity)
-    sql += " ORDER BY created_at DESC LIMIT ?"
+    param_idx += 1
+    sql += f" ORDER BY created_at DESC LIMIT ${param_idx}"
     params.append(limit)
 
     try:
@@ -219,9 +224,9 @@ async def list_interventions(
     params: list = []
 
     if project_id is not None:
-        sql += " AND project_id = ?"
+        sql += " AND project_id = $1"
         params.append(project_id)
-    sql += " ORDER BY created_at DESC LIMIT ?"
+    sql += f" ORDER BY created_at DESC LIMIT ${len(params) + 1}"
     params.append(limit)
 
     try:
@@ -283,7 +288,7 @@ async def approve_intervention(
     # Look up the intervention proposal in DB
     row = await db.fetchone(
         "SELECT id, project_id, task_id, category, severity, message, details_json, created_at "
-        "FROM sentinel_observations WHERE id = ? AND category = 'intervention_proposal'",
+        "FROM sentinel_observations WHERE id = $1 AND category = 'intervention_proposal'",
         (intervention_id,),
     )
     if row is None:
@@ -328,7 +333,7 @@ async def approve_intervention(
     details["approved_by"] = current_user.get("username", "unknown")
     details["approved_at"] = datetime.now(timezone.utc).isoformat()
     await db.execute_write(
-        "UPDATE sentinel_observations SET details_json = ? WHERE id = ?",
+        "UPDATE sentinel_observations SET details_json = $1 WHERE id = $2",
         (json.dumps(details), intervention_id),
     )
 
@@ -360,7 +365,7 @@ async def reject_intervention(
     """Reject a pending supervised intervention — marks it as handled without executing."""
     row = await db.fetchone(
         "SELECT id, project_id, task_id, category, details_json "
-        "FROM sentinel_observations WHERE id = ? AND category = 'intervention_proposal'",
+        "FROM sentinel_observations WHERE id = $1 AND category = 'intervention_proposal'",
         (intervention_id,),
     )
     if row is None:
@@ -392,7 +397,7 @@ async def reject_intervention(
     details["rejected_by"] = current_user.get("username", "unknown")
     details["rejected_at"] = datetime.now(timezone.utc).isoformat()
     await db.execute_write(
-        "UPDATE sentinel_observations SET details_json = ? WHERE id = ?",
+        "UPDATE sentinel_observations SET details_json = $1 WHERE id = $2",
         (json.dumps(details), intervention_id),
     )
 
@@ -447,7 +452,7 @@ async def list_decisions(
                 """SELECT id, project_id, timestamp, command, reasoning,
                           confidence, outcome, details_json
                    FROM sentinel_decisions
-                   ORDER BY timestamp DESC LIMIT ?""",
+                   ORDER BY timestamp DESC LIMIT $1""",
                 (limit,),
             )
             records = [DecisionLogger._row_to_record(r) for r in rows]

@@ -111,7 +111,7 @@ class ProviderQuotaManager:
                 """
                 SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total
                 FROM usage_log
-                WHERE provider = ? AND timestamp >= ? AND model LIKE ?
+                WHERE provider = $1 AND timestamp >= $2 AND model LIKE $3
                 """,
                 (provider, since_ts, model_pattern),
             )
@@ -120,7 +120,7 @@ class ProviderQuotaManager:
                 """
                 SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total
                 FROM usage_log
-                WHERE provider = ? AND timestamp >= ?
+                WHERE provider = $1 AND timestamp >= $2
                 """,
                 (provider, since_ts),
             )
@@ -132,7 +132,7 @@ class ProviderQuotaManager:
                 """
                 SELECT COUNT(*) AS total
                 FROM usage_log
-                WHERE provider = ? AND timestamp >= ? AND model LIKE ?
+                WHERE provider = $1 AND timestamp >= $2 AND model LIKE $3
                 """,
                 (provider, since_ts, model_pattern),
             )
@@ -141,7 +141,7 @@ class ProviderQuotaManager:
                 """
                 SELECT COUNT(*) AS total
                 FROM usage_log
-                WHERE provider = ? AND timestamp >= ?
+                WHERE provider = $1 AND timestamp >= $2
                 """,
                 (provider, since_ts),
             )

@@ -114,7 +114,7 @@ async def _row_to_project(
             data["task_summary"] = preloaded_summary
         else:
             tasks = await db.fetchall(
-                "SELECT status, COUNT(*) as cnt FROM tasks WHERE project_id = ? GROUP BY status",
+                "SELECT status, COUNT(*) as cnt FROM tasks WHERE project_id = $1 GROUP BY status",
                 (row["id"],),
             )
             summary = {"total": 0, "completed": 0, "running": 0, "failed": 0}
@@ -129,7 +129,7 @@ async def _row_to_project(
 
 async def _get_owned_project(db: Database, project_id: str, user: dict):
     """Fetch a project and verify ownership. Raises 404/403."""
-    row = await db.fetchone("SELECT * FROM projects WHERE id = ?", (project_id,))
+    row = await db.fetchone("SELECT * FROM projects WHERE id = $1", (project_id,))
     if not row:
         raise HTTPException(404, f"Project {project_id} not found")
     # Admins can access all; NULL owner_id is admin-only (no owner = no access for regular users)
@@ -158,7 +158,7 @@ async def create_project(
     await db.execute_write(
         "INSERT INTO projects (id, name, requirements, status, config_json, owner_id, "
         "repo_path, git_base_branch, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         (project_id, body.name, body.requirements, ProjectStatus.DRAFT,
          json.dumps(config), current_user["id"],
          body.repo_path, body.git_base_branch, now, now),
@@ -168,7 +168,7 @@ async def create_project(
     if body.repo_path:
         _bootstrap_hekate_config(body.repo_path)
 
-    row = await db.fetchone("SELECT * FROM projects WHERE id = ?", (project_id,))
+    row = await db.fetchone("SELECT * FROM projects WHERE id = $1", (project_id,))
     return ProjectOut(**await _row_to_project(row, db))
 
 
@@ -185,14 +185,16 @@ async def list_projects(
         query = "SELECT * FROM projects WHERE 1=1"
         params: list = []
     else:
-        query = "SELECT * FROM projects WHERE owner_id = ?"
+        query = "SELECT * FROM projects WHERE owner_id = $1"
         params = [current_user["id"]]
 
     if status:
-        query += " AND status = ?"
         params.append(status.value)
-    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+        query += f" AND status = ${len(params)}"
+    params.append(limit)
+    query += f" ORDER BY created_at DESC LIMIT ${len(params)}"
+    params.append(offset)
+    query += f" OFFSET ${len(params)}"
 
     rows = await db.fetchall(query, params)
     if not rows:
@@ -200,7 +202,7 @@ async def list_projects(
 
     # Batch-load task summaries in a single query (avoids N+1)
     project_ids = [r["id"] for r in rows]
-    placeholders = ",".join("?" * len(project_ids))
+    placeholders = ",".join([f"${i+1}" for i in range(len(project_ids))])
     summary_rows = await db.fetchall(
         f"SELECT project_id, status, COUNT(*) as cnt FROM tasks "
         f"WHERE project_id IN ({placeholders}) GROUP BY project_id, status",
@@ -248,11 +250,11 @@ async def update_project(
     updates = []
     params = []
     if body.name is not None:
-        updates.append("name = ?")
         params.append(body.name)
+        updates.append(f"name = ${len(params)}")
     if body.requirements is not None:
-        updates.append("requirements = ?")
         params.append(body.requirements)
+        updates.append(f"requirements = ${len(params)}")
     if body.config is not None or body.planning_rigor is not None:
         # Start from body.config if provided, else existing config
         if body.config is not None:
@@ -262,28 +264,28 @@ async def update_project(
         # Overlay planning_rigor if explicitly set
         if body.planning_rigor is not None:
             merged_config["planning_rigor"] = body.planning_rigor.value
-        updates.append("config_json = ?")
         params.append(json.dumps(merged_config))
+        updates.append(f"config_json = ${len(params)}")
     if body.repo_path is not None:
-        updates.append("repo_path = ?")
         params.append(body.repo_path)
+        updates.append(f"repo_path = ${len(params)}")
     if body.git_base_branch is not None:
-        updates.append("git_base_branch = ?")
         params.append(body.git_base_branch)
+        updates.append(f"git_base_branch = ${len(params)}")
 
     if not updates:
         raise HTTPException(400, "No fields to update")
 
-    updates.append("updated_at = ?")
     params.append(time.time())
+    updates.append(f"updated_at = ${len(params)}")
     params.append(project_id)
 
     await db.execute_write(
-        f"UPDATE projects SET {', '.join(updates)} WHERE id = ?",
+        f"UPDATE projects SET {', '.join(updates)} WHERE id = ${len(params)}",
         params,
     )
 
-    row = await db.fetchone("SELECT * FROM projects WHERE id = ?", (project_id,))
+    row = await db.fetchone("SELECT * FROM projects WHERE id = $1", (project_id,))
     return ProjectOut(**await _row_to_project(row, db, include_task_summary=True))
 
 
@@ -296,7 +298,7 @@ async def delete_project(
 ):
     await _get_owned_project(db, project_id, current_user)
     # Cascade deletes handle plans, tasks, deps, events
-    await db.execute_write("DELETE FROM projects WHERE id = ?", (project_id,))
+    await db.execute_write("DELETE FROM projects WHERE id = $1", (project_id,))
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +436,7 @@ async def list_plans(
     await _get_owned_project(db, project_id, current_user)
 
     rows = await db.fetchall(
-        "SELECT * FROM plans WHERE project_id = ? ORDER BY version DESC LIMIT ? OFFSET ?",
+        "SELECT * FROM plans WHERE project_id = $1 ORDER BY version DESC LIMIT $2 OFFSET $3",
         (project_id, limit, offset),
     )
     return [
@@ -466,7 +468,7 @@ async def approve_plan(
     """Approve a plan and decompose it into executable tasks."""
     project_row = await _get_owned_project(db, project_id, current_user)
 
-    row = await db.fetchone("SELECT * FROM plans WHERE id = ? AND project_id = ?", (plan_id, project_id))
+    row = await db.fetchone("SELECT * FROM plans WHERE id = $1 AND project_id = $2", (plan_id, project_id))
     if not row:
         raise HTTPException(404, f"Plan {plan_id} not found")
     if row["status"] != PlanStatus.DRAFT:
@@ -517,9 +519,9 @@ async def approve_plan(
                 }
                 # Log as sentinel observation for dashboard visibility
                 await db.execute_write(
-                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "INSERT INTO sentinel_observations "
                     "(id, project_id, task_id, category, severity, message, details_json, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
                     (
                         str(uuid.uuid4()), project_id, None,
                         "interrogation_concern", "info",
@@ -579,12 +581,12 @@ async def start_execution(
     now = time.time()
     if branched:
         await db.execute_write(
-            "UPDATE projects SET status = ?, git_project_branch = ?, updated_at = ? WHERE id = ?",
+            "UPDATE projects SET status = $1, git_project_branch = $2, updated_at = $3 WHERE id = $4",
             (ProjectStatus.EXECUTING, branch_name, now, project_id),
         )
     else:
         await db.execute_write(
-            "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
             (ProjectStatus.EXECUTING, now, project_id),
         )
 
@@ -605,7 +607,7 @@ async def pause_execution(
         raise HTTPException(400, "Project is not executing")
 
     await db.execute_write(
-        "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+        "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
         (ProjectStatus.PAUSED, time.time(), project_id),
     )
     return {"status": "paused", "project_id": project_id}
@@ -623,13 +625,13 @@ async def cancel_project(
 
     now = time.time()
     await db.execute_write(
-        "UPDATE tasks SET status = ?, updated_at = ? "
-        "WHERE project_id = ? AND status IN (?, ?, ?, ?)",
+        "UPDATE tasks SET status = $1, updated_at = $2 "
+        "WHERE project_id = $3 AND status IN ($4, $5, $6, $7)",
         (TaskStatus.CANCELLED, now, project_id,
          TaskStatus.PENDING, TaskStatus.BLOCKED, TaskStatus.QUEUED, TaskStatus.RUNNING),
     )
     await db.execute_write(
-        "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+        "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
         (ProjectStatus.CANCELLED, now, project_id),
     )
     return {"status": "cancelled", "project_id": project_id}
@@ -652,19 +654,19 @@ async def clone_project(
         # 1. Clone project row
         await db.execute_write(
             "INSERT INTO projects (id, name, requirements, status, config_json, owner_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             (new_project_id, f"{row['name']} (clone)", row["requirements"],
              ProjectStatus.DRAFT, row["config_json"], current_user["id"], now, now),
         )
 
         # 2. Find latest approved plan (or latest draft)
         plan_row = await db.fetchone(
-            "SELECT * FROM plans WHERE project_id = ? AND status = 'approved' ORDER BY version DESC LIMIT 1",
+            "SELECT * FROM plans WHERE project_id = $1 AND status = 'approved' ORDER BY version DESC LIMIT 1",
             (project_id,),
         )
         if not plan_row:
             plan_row = await db.fetchone(
-                "SELECT * FROM plans WHERE project_id = ? ORDER BY version DESC LIMIT 1",
+                "SELECT * FROM plans WHERE project_id = $1 ORDER BY version DESC LIMIT 1",
                 (project_id,),
             )
 
@@ -674,13 +676,13 @@ async def clone_project(
             await db.execute_write(
                 "INSERT INTO plans (id, project_id, version, model_used, prompt_tokens, "
                 "completion_tokens, cost_usd, plan_json, status, created_at) "
-                "VALUES (?, ?, 1, ?, 0, 0, 0.0, ?, 'draft', ?)",
+                "VALUES ($1, $2, 1, $3, 0, 0, 0.0, $4, 'draft', $5)",
                 (new_plan_id, new_project_id, plan_row["model_used"], plan_row["plan_json"], now),
             )
 
         # 3. Clone tasks (reset status, clear output/cost/retry)
         old_tasks = await db.fetchall(
-            "SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC",
+            "SELECT * FROM tasks WHERE project_id = $1 ORDER BY created_at ASC",
             (project_id,),
         )
 
@@ -693,7 +695,7 @@ async def clone_project(
                 "INSERT INTO tasks (id, project_id, plan_id, title, description, task_type, "
                 "priority, status, model_tier, context_json, tools_json, system_prompt, "
                 "max_tokens, wave, phase, requirement_ids_json, rationale, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
                 (new_task_id, new_project_id, new_plan_id or old_task["plan_id"],
                  old_task["title"], old_task["description"], old_task["task_type"],
                  old_task["priority"], TaskStatus.PENDING, old_task["model_tier"],
@@ -706,7 +708,7 @@ async def clone_project(
         if old_to_new:
             old_deps = await db.fetchall(
                 "SELECT task_id, depends_on FROM task_deps WHERE task_id IN ({})".format(
-                    ",".join("?" * len(old_to_new))
+                    ",".join([f"${i+1}" for i in range(len(old_to_new))])
                 ),
                 list(old_to_new.keys()),
             )
@@ -715,11 +717,11 @@ async def clone_project(
                 new_to = old_to_new.get(dep["depends_on"])
                 if new_from and new_to:
                     await db.execute_write(
-                        "INSERT INTO task_deps (task_id, depends_on) VALUES (?, ?)",
+                        "INSERT INTO task_deps (task_id, depends_on) VALUES ($1, $2)",
                         (new_from, new_to),
                     )
 
-    new_row = await db.fetchone("SELECT * FROM projects WHERE id = ?", (new_project_id,))
+    new_row = await db.fetchone("SELECT * FROM projects WHERE id = $1", (new_project_id,))
     return ProjectOut(**await _row_to_project(new_row, db, include_task_summary=True))
 
 
@@ -741,7 +743,7 @@ async def export_project(
 
     # Plans
     plan_rows = await db.fetchall(
-        "SELECT * FROM plans WHERE project_id = ? ORDER BY version DESC", (project_id,)
+        "SELECT * FROM plans WHERE project_id = $1 ORDER BY version DESC", (project_id,)
     )
     plans = [
         {
@@ -755,13 +757,13 @@ async def export_project(
 
     # Tasks
     task_rows = await db.fetchall(
-        "SELECT * FROM tasks WHERE project_id = ? ORDER BY wave ASC, priority ASC", (project_id,)
+        "SELECT * FROM tasks WHERE project_id = $1 ORDER BY wave ASC, priority ASC", (project_id,)
     )
     tasks = await _rows_to_tasks(task_rows, db)
 
     # Events
     event_rows = await db.fetchall(
-        "SELECT * FROM task_events WHERE project_id = ? ORDER BY timestamp ASC", (project_id,)
+        "SELECT * FROM task_events WHERE project_id = $1 ORDER BY timestamp ASC", (project_id,)
     )
     events = [
         {
@@ -775,7 +777,7 @@ async def export_project(
 
     # Checkpoints
     cp_rows = await db.fetchall(
-        "SELECT * FROM checkpoints WHERE project_id = ? ORDER BY created_at ASC", (project_id,)
+        "SELECT * FROM checkpoints WHERE project_id = $1 ORDER BY created_at ASC", (project_id,)
     )
     checkpoints = [
         {
@@ -790,7 +792,7 @@ async def export_project(
 
     # Usage
     usage_rows = await db.fetchall(
-        "SELECT * FROM usage_log WHERE project_id = ? ORDER BY timestamp ASC", (project_id,)
+        "SELECT * FROM usage_log WHERE project_id = $1 ORDER BY timestamp ASC", (project_id,)
     )
     usage = [
         {
@@ -804,7 +806,7 @@ async def export_project(
 
     # Knowledge
     knowledge_rows = await db.fetchall(
-        "SELECT * FROM project_knowledge WHERE project_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM project_knowledge WHERE project_id = $1 ORDER BY created_at ASC",
         (project_id,),
     )
     knowledge = [
@@ -853,7 +855,7 @@ async def get_coverage(
 
     # Gather requirement IDs from all tasks in this project
     task_rows = await db.fetchall(
-        "SELECT requirement_ids_json FROM tasks WHERE project_id = ?",
+        "SELECT requirement_ids_json FROM tasks WHERE project_id = $1",
         (project_id,),
     )
     covered: set[str] = set()
@@ -897,14 +899,14 @@ async def list_knowledge(
 
     if category:
         rows = await db.fetchall(
-            "SELECT * FROM project_knowledge WHERE project_id = ? AND category = ? "
-            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM project_knowledge WHERE project_id = $1 AND category = $2 "
+            "ORDER BY created_at DESC LIMIT $3 OFFSET $4",
             (project_id, category, limit, offset),
         )
     else:
         rows = await db.fetchall(
-            "SELECT * FROM project_knowledge WHERE project_id = ? "
-            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM project_knowledge WHERE project_id = $1 "
+            "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
             (project_id, limit, offset),
         )
 
@@ -937,12 +939,12 @@ async def delete_finding(
     await _get_owned_project(db, project_id, current_user)
 
     row = await db.fetchone(
-        "SELECT id FROM project_knowledge WHERE id = ? AND project_id = ?",
+        "SELECT id FROM project_knowledge WHERE id = $1 AND project_id = $2",
         (finding_id, project_id),
     )
     if not row:
         raise HTTPException(404, f"Finding {finding_id} not found")
 
     await db.execute_write(
-        "DELETE FROM project_knowledge WHERE id = ?", (finding_id,),
+        "DELETE FROM project_knowledge WHERE id = $1", (finding_id,),
     )

@@ -587,7 +587,7 @@ class PlannerService:
         db = self._db
 
         # Get project
-        row = await db.fetchone("SELECT * FROM projects WHERE id = ?", (project_id,))
+        row = await db.fetchone("SELECT * FROM projects WHERE id = $1", (project_id,))
         if not row:
             raise NotFoundError(f"Project {project_id} not found")
 
@@ -631,7 +631,7 @@ class PlannerService:
 
         # Update project status
         await db.execute_write(
-            "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
             (ProjectStatus.PLANNING, time.time(), project_id),
         )
 
@@ -679,21 +679,21 @@ class PlannerService:
         except Exception:
             # Reset project status so it's not stuck in PLANNING
             await db.execute_write(
-                "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+                "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
                 (ProjectStatus.DRAFT, time.time(), project_id),
             )
             raise
 
         # Determine plan version
         version_row = await db.fetchone(
-            "SELECT COALESCE(MAX(version), 0) as v FROM plans WHERE project_id = ?",
+            "SELECT COALESCE(MAX(version), 0) as v FROM plans WHERE project_id = $1",
             (project_id,),
         )
         version = (version_row["v"] if version_row else 0) + 1
 
         # Supersede any previous draft plans
         await db.execute_write(
-            "UPDATE plans SET status = ? WHERE project_id = ? AND status = ?",
+            "UPDATE plans SET status = $1 WHERE project_id = $2 AND status = $3",
             (PlanStatus.SUPERSEDED, project_id, PlanStatus.DRAFT),
         )
 
@@ -704,14 +704,14 @@ class PlannerService:
         await db.execute_write(
             "INSERT INTO plans (id, project_id, version, model_used, prompt_tokens, "
             "completion_tokens, cost_usd, plan_json, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             (plan_id, project_id, version, model_used, 0, 0, 0.0,
              json.dumps(plan_data), PlanStatus.DRAFT, now),
         )
 
         # Update project status back to draft (awaiting approval)
         await db.execute_write(
-            "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
             (ProjectStatus.DRAFT, time.time(), project_id),
         )
 

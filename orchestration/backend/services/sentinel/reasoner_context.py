@@ -70,7 +70,7 @@ class ReasonerContext:
                 row = await self._db.fetchone(
                     "SELECT id, title, status, model_tier, model_used, "
                     "retry_count, error, output, wave, created_at, updated_at "
-                    "FROM tasks WHERE id = ? AND project_id = ?",
+                    "FROM tasks WHERE id = $1 AND project_id = $2",
                     (task_id, project_id),
                 )
                 if row:
@@ -80,7 +80,7 @@ class ReasonerContext:
             rows = await self._db.fetchall(
                 "SELECT id, title, status, error, retry_count, model_used, wave, updated_at "
                 "FROM tasks "
-                "WHERE project_id = ? AND status = 'failed' "
+                "WHERE project_id = $1 AND status = 'failed' "
                 "ORDER BY updated_at DESC LIMIT 20",
                 (project_id,),
             )
@@ -116,8 +116,8 @@ class ReasonerContext:
                     "SELECT id, command, reasoning, confidence, outcome, "
                     "details_json, timestamp "
                     "FROM sentinel_decisions "
-                    "WHERE project_id = ? "
-                    "AND (reasoning LIKE ? OR details_json LIKE ?) "
+                    "WHERE project_id = $1 "
+                    "AND (reasoning LIKE $2 OR details_json LIKE $3) "
                     "ORDER BY timestamp DESC LIMIT 20",
                     (project_id, f"%{category}%", f"%{category}%"),
                 )
@@ -126,7 +126,7 @@ class ReasonerContext:
                     "SELECT id, command, reasoning, confidence, outcome, "
                     "details_json, timestamp "
                     "FROM sentinel_decisions "
-                    "WHERE project_id = ? "
+                    "WHERE project_id = $1 "
                     "ORDER BY timestamp DESC LIMIT 20",
                     (project_id,),
                 )

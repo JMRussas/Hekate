@@ -36,7 +36,7 @@ class ProgressManager:
         # Persist to SQLite
         await self._db.execute_write(
             "INSERT INTO task_events (project_id, task_id, event_type, message, data_json, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "VALUES ($1, $2, $3, $4, $5, $6)",
             (project_id, task_id, event_type, message, json.dumps(data), now),
         )
 
@@ -66,15 +66,15 @@ class ProgressManager:
         if task_id:
             rows = await self._db.fetchall(
                 "SELECT event_type, message, task_id, data_json, timestamp "
-                "FROM task_events WHERE project_id = ? AND task_id = ? "
-                "ORDER BY id DESC LIMIT ?",
+                "FROM task_events WHERE project_id = $1 AND task_id = $2 "
+                "ORDER BY id DESC LIMIT $3",
                 (project_id, task_id, limit),
             )
         else:
             rows = await self._db.fetchall(
                 "SELECT event_type, message, task_id, data_json, timestamp "
-                "FROM task_events WHERE project_id = ? "
-                "ORDER BY id DESC LIMIT ?",
+                "FROM task_events WHERE project_id = $1 "
+                "ORDER BY id DESC LIMIT $2",
                 (project_id, limit),
             )
 

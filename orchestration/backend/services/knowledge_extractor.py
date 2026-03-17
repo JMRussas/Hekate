@@ -215,11 +215,12 @@ async def _do_extract(
 
         try:
             await db.execute_write(
-                "INSERT OR IGNORE INTO project_knowledge "
+                "INSERT INTO project_knowledge "
                 "(id, project_id, task_id, category, content, content_hash, "
                 "rationale, alternatives_considered, confidence, "
                 "source_task_title, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+                "ON CONFLICT DO NOTHING",
                 (finding_id, project_id, task_id, category, content,
                  content_hash, rationale, alternatives, confidence,
                  task_title, now),

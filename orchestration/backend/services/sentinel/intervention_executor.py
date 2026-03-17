@@ -314,7 +314,7 @@ class InterventionExecutor:
         # Fetch current system_prompt
         try:
             row = await self._db.fetchone(
-                "SELECT system_prompt FROM tasks WHERE id = ?",
+                "SELECT system_prompt FROM tasks WHERE id = $1",
                 (task_id,),
             )
         except Exception as exc:
@@ -341,9 +341,9 @@ class InterventionExecutor:
 
         try:
             await self._db.execute_write(
-                "UPDATE tasks SET system_prompt = ?, status = 'pending', "
-                "error = NULL, updated_at = ? "
-                "WHERE id = ?",
+                "UPDATE tasks SET system_prompt = $1, status = 'pending', "
+                "error = NULL, updated_at = $2 "
+                "WHERE id = $3",
                 (updated_prompt, now, task_id),
             )
         except Exception as exc:
@@ -416,9 +416,9 @@ class InterventionExecutor:
         for task_id in failed_ids:
             try:
                 await self._db.execute_write(
-                    "UPDATE tasks SET model_tier = ?, status = 'pending', "
-                    "error = NULL, retry_count = 0, updated_at = ? "
-                    "WHERE id = ? AND status = 'failed'",
+                    "UPDATE tasks SET model_tier = $1, status = 'pending', "
+                    "error = NULL, retry_count = 0, updated_at = $2 "
+                    "WHERE id = $3 AND status = 'failed'",
                     (new_tier, now, task_id),
                 )
                 reassigned += 1

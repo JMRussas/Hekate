@@ -117,8 +117,8 @@ class Executor:
         # be re-dispatched after restart. Exclude externally-claimed tasks — their
         # executor is independent of this process lifecycle.
         reset_cursor = await self._db.execute_write(
-            "UPDATE tasks SET status = ?, error = ?, updated_at = ? "
-            "WHERE status IN (?, ?) AND claimed_by IS NULL",
+            "UPDATE tasks SET status = $1, error = $2, updated_at = $3 "
+            "WHERE status IN ($4, $5) AND claimed_by IS NULL",
             (TaskStatus.PENDING, "Interrupted by shutdown", time.time(),
              TaskStatus.RUNNING, TaskStatus.QUEUED),
         )
@@ -154,7 +154,7 @@ class Executor:
         """
         stale = await self._db.fetchall(
             "SELECT id, title, status, project_id, retry_count FROM tasks "
-            "WHERE status IN (?, ?) AND claimed_by IS NULL",
+            "WHERE status IN ($1, $2) AND claimed_by IS NULL",
             (TaskStatus.RUNNING, TaskStatus.QUEUED),
         )
         if not stale:
@@ -166,7 +166,7 @@ class Executor:
             dep_count = await self._db.fetchone(
                 "SELECT COUNT(*) as cnt FROM task_deps d "
                 "JOIN tasks dep ON dep.id = d.depends_on "
-                "WHERE d.task_id = ? AND dep.status != ?",
+                "WHERE d.task_id = $1 AND dep.status != $2",
                 (row["id"], TaskStatus.COMPLETED),
             )
             has_unmet_deps = dep_count and dep_count["cnt"] > 0
@@ -175,16 +175,16 @@ class Executor:
             # Only count as a retry attempt if the task was actually running
             if row["status"] == TaskStatus.RUNNING:
                 await self._db.execute_write(
-                    "UPDATE tasks SET status = ?, retry_count = retry_count + 1, "
-                    "error = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, retry_count = retry_count + 1, "
+                    "error = $2, updated_at = $3 WHERE id = $4",
                     (new_status,
                      f"Recovered from stale state (retry {row['retry_count'] + 1})",
                      now, row["id"]),
                 )
             else:
                 await self._db.execute_write(
-                    "UPDATE tasks SET status = ?, "
-                    "error = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, "
+                    "error = $2, updated_at = $3 WHERE id = $4",
                     (new_status,
                      "Recovered from queued state after restart",
                      now, row["id"]),
@@ -207,7 +207,7 @@ class Executor:
 
         stale = await self._db.fetchall(
             "SELECT id, title, project_id, retry_count, max_retries FROM tasks "
-            "WHERE status = ? AND started_at IS NOT NULL AND started_at < ? "
+            "WHERE status = $1 AND started_at IS NOT NULL AND started_at < $2 "
             "AND claimed_by IS NULL",
             (TaskStatus.RUNNING, cutoff),
         )
@@ -225,7 +225,7 @@ class Executor:
             # Check if retry budget is exhausted
             if row["retry_count"] >= row["max_retries"]:
                 await self._db.execute_write(
-                    "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
                     (TaskStatus.NEEDS_REVIEW,
                      f"Zombie detected: running for >{STALENESS_TIMEOUT}s with no live coroutine "
                      f"(retries exhausted: {row['retry_count']}/{row['max_retries']})",
@@ -243,15 +243,15 @@ class Executor:
             dep_count = await self._db.fetchone(
                 "SELECT COUNT(*) as cnt FROM task_deps d "
                 "JOIN tasks dep ON dep.id = d.depends_on "
-                "WHERE d.task_id = ? AND dep.status != ?",
+                "WHERE d.task_id = $1 AND dep.status != $2",
                 (task_id, TaskStatus.COMPLETED),
             )
             has_unmet_deps = dep_count and dep_count["cnt"] > 0
             new_status = TaskStatus.BLOCKED if has_unmet_deps else TaskStatus.PENDING
 
             await self._db.execute_write(
-                "UPDATE tasks SET status = ?, retry_count = retry_count + 1, "
-                "error = ?, output_text = NULL, started_at = NULL, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = $1, retry_count = retry_count + 1, "
+                "error = $2, output_text = NULL, started_at = NULL, updated_at = $3 WHERE id = $4",
                 (new_status,
                  f"Zombie detected: running for >{STALENESS_TIMEOUT}s with no live coroutine",
                  now, task_id),
@@ -315,7 +315,7 @@ class Executor:
 
         # Find projects that are executing
         projects = await self._db.fetchall(
-            "SELECT id FROM projects WHERE status = ?",
+            "SELECT id FROM projects WHERE status = $1",
             (ProjectStatus.EXECUTING,),
         )
         logger.debug("TICK: found %d executing projects", len(projects))
@@ -329,7 +329,7 @@ class Executor:
 
             # Read project config to determine execution mode
             project_row = await self._db.fetchone(
-                "SELECT config_json FROM projects WHERE id = ?", (pid,)
+                "SELECT config_json FROM projects WHERE id = $1", (pid,)
             )
             project_config = json.loads(project_row["config_json"] or "{}") if project_row else {}
             execution_mode = project_config.get("execution_mode", "auto")
@@ -358,15 +358,15 @@ class Executor:
                 else:
                     non_free = await self._db.fetchone(
                         "SELECT COUNT(*) as cnt FROM tasks "
-                        "WHERE project_id = ? AND model_tier NOT IN (?, ?, ?, ?) "
-                        "AND status NOT IN (?, ?, ?, ?)",
+                        "WHERE project_id = $1 AND model_tier NOT IN ($2, $3, $4, $5) "
+                        "AND status NOT IN ($6, $7, $8, $9)",
                         (pid, *_CLI_TIERS, *_TERMINAL),
                     )
                     non_free_count = non_free["cnt"] if non_free else 0
                 if non_free_count > 0:
                     await self._progress.push_event(pid, "budget_warning", "Budget limit reached. Execution paused.")
                     await self._db.execute_write(
-                        "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+                        "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
                         (ProjectStatus.PAUSED, time.time(), pid),
                     )
                     # PlanSentinel self-terminates on project_complete/failed/blocked
@@ -379,7 +379,7 @@ class Executor:
             # Determine the current wave (lowest wave with incomplete tasks)
             wave_row = await self._db.fetchone(
                 "SELECT MIN(wave) as w FROM tasks "
-                "WHERE project_id = ? AND status NOT IN (?, ?, ?, ?)",
+                "WHERE project_id = $1 AND status NOT IN ($2, $3, $4, $5)",
                 (pid, *_TERMINAL),
             )
             current_wave = wave_row["w"] if wave_row and wave_row["w"] is not None else 0
@@ -392,9 +392,9 @@ class Executor:
                 "SELECT t.* FROM tasks t "
                 "LEFT JOIN task_deps d ON d.task_id = t.id "
                 "LEFT JOIN tasks dep ON dep.id = d.depends_on "
-                "  AND (dep.status NOT IN (?, ?) "
-                "       OR (dep.status = ? AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))) "
-                "WHERE t.project_id = ? AND t.status = ? AND t.wave = ? "
+                "  AND (dep.status NOT IN ($1, $2) "
+                "       OR (dep.status = $3 AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))) "
+                "WHERE t.project_id = $4 AND t.status = $5 AND t.wave = $6 "
                 "GROUP BY t.id HAVING COUNT(dep.id) = 0 "
                 "ORDER BY t.priority ASC",
                 (TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
@@ -467,7 +467,7 @@ class Executor:
                     continue
                 self._dispatched.add(task_row["id"])
                 cursor = await self._db.execute_write(
-                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+                    "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4",
                     (TaskStatus.QUEUED, time.time(), task_row["id"], TaskStatus.PENDING),
                 )
                 if cursor.rowcount == 0:
@@ -501,7 +501,7 @@ class Executor:
             if REVIEW_CYCLE_ENABLED and REVIEW_PR_ON_WAVE:
                 wave_done = await self._db.fetchone(
                     "SELECT COUNT(*) as cnt FROM tasks "
-                    "WHERE project_id = ? AND wave = ? AND status NOT IN (?, ?, ?, ?)",
+                    "WHERE project_id = $1 AND wave = $2 AND status NOT IN ($3, $4, $5, $6)",
                     (pid, current_wave, *_TERMINAL),
                 )
                 if wave_done and wave_done["cnt"] == 0:
@@ -510,18 +510,18 @@ class Executor:
             if WAVE_CHECKPOINTS:
                 wave_remaining = await self._db.fetchone(
                     "SELECT COUNT(*) as cnt FROM tasks "
-                    "WHERE project_id = ? AND wave = ? AND status NOT IN (?, ?, ?, ?)",
+                    "WHERE project_id = $1 AND wave = $2 AND status NOT IN ($3, $4, $5, $6)",
                     (pid, current_wave, *_TERMINAL),
                 )
                 if wave_remaining and wave_remaining["cnt"] == 0:
                     next_wave = await self._db.fetchone(
                         "SELECT MIN(wave) as w FROM tasks "
-                        "WHERE project_id = ? AND status NOT IN (?, ?, ?, ?)",
+                        "WHERE project_id = $1 AND status NOT IN ($2, $3, $4, $5)",
                         (pid, *_TERMINAL),
                     )
                     if next_wave and next_wave["w"] is not None:
                         await self._db.execute_write(
-                            "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+                            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
                             (ProjectStatus.PAUSED, time.time(), pid),
                         )
                         await self._progress.push_event(
@@ -535,7 +535,7 @@ class Executor:
 
             # Check if all tasks are done
             remaining = await self._db.fetchone(
-                "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = ? AND status NOT IN (?, ?, ?, ?)",
+                "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = $1 AND status NOT IN ($2, $3, $4, $5)",
                 (pid, *_TERMINAL),
             )
             if remaining and remaining["cnt"] == 0:
@@ -544,7 +544,7 @@ class Executor:
                 # project completion.  Treat them as incomplete.
                 hollow = await self._db.fetchone(
                     "SELECT COUNT(*) as cnt FROM tasks "
-                    "WHERE project_id = ? AND status = ? "
+                    "WHERE project_id = $1 AND status = $2 "
                     "AND (output_text IS NULL OR TRIM(output_text) = '')",
                     (pid, TaskStatus.NEEDS_REVIEW),
                 )
@@ -560,7 +560,7 @@ class Executor:
                     )
                     # Pause the project so it doesn't spin in the tick loop
                     await self._db.execute_write(
-                        "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+                        "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
                         (ProjectStatus.PAUSED, time.time(), pid),
                     )
                     # PlanSentinel self-terminates on project_complete/failed/blocked
@@ -568,13 +568,13 @@ class Executor:
                     continue
 
                 failed_cnt = await self._db.fetchone(
-                    "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = ? AND status = ?",
+                    "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = $1 AND status = $2",
                     (pid, TaskStatus.FAILED),
                 )
                 has_failures = failed_cnt and failed_cnt["cnt"] > 0
                 new_status = ProjectStatus.COMPLETED if not has_failures else ProjectStatus.FAILED
                 await self._db.execute_write(
-                    "UPDATE projects SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE projects SET status = $1, completed_at = $2, updated_at = $3 WHERE id = $4",
                     (new_status, time.time(), time.time(), pid),
                 )
                 event_type = "project_complete" if not has_failures else "project_failed"
@@ -594,17 +594,17 @@ class Executor:
             if execution_mode in (ExecutionMode.EXTERNAL, ExecutionMode.HYBRID):
                 continue
             active = await self._db.fetchone(
-                "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = ? AND status IN (?, ?, ?)",
+                "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = $1 AND status IN ($2, $3, $4)",
                 (pid, TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.RUNNING),
             )
             if active and active["cnt"] == 0:
                 blocked = await self._db.fetchone(
-                    "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = ? AND status = ?",
+                    "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = $1 AND status = $2",
                     (pid, TaskStatus.BLOCKED),
                 )
                 if blocked and blocked["cnt"] > 0:
                     await self._db.execute_write(
-                        "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+                        "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
                         (ProjectStatus.FAILED, time.time(), pid),
                     )
                     await self._progress.push_event(
@@ -632,7 +632,7 @@ class Executor:
 
             # Build PR body
             tasks = await self._db.fetchall(
-                "SELECT title, status FROM tasks WHERE project_id = ? ORDER BY wave, priority",
+                "SELECT title, status FROM tasks WHERE project_id = $1 ORDER BY wave, priority",
                 (project_id,),
             )
             task_lines = "\n".join(
@@ -711,7 +711,7 @@ class Executor:
             return True
 
         row = await self._db.fetchone(
-            "SELECT name, repo_path, git_base_branch FROM projects WHERE id = ?",
+            "SELECT name, repo_path, git_base_branch FROM projects WHERE id = $1",
             (project_id,),
         )
         if not row or not row["repo_path"]:
@@ -763,7 +763,7 @@ class Executor:
 
             # Update project row with branch name
             await self._db.execute_write(
-                "UPDATE projects SET git_project_branch = ? WHERE id = ? AND git_project_branch IS NULL",
+                "UPDATE projects SET git_project_branch = $1 WHERE id = $2 AND git_project_branch IS NULL",
                 (branch_name, project_id),
             )
             return True
@@ -791,7 +791,7 @@ class Executor:
         try:
             # Find the main repo_path
             row = await self._db.fetchone(
-                "SELECT repo_path FROM projects WHERE id = ?", (project_id,),
+                "SELECT repo_path FROM projects WHERE id = $1", (project_id,),
             )
             if row and row["repo_path"] and worktree_path != row["repo_path"]:
                 await self._git.remove_worktree(row["repo_path"], worktree_path)
@@ -814,13 +814,13 @@ class Executor:
         """
         now = time.time()
         await self._db.execute_write(
-            "UPDATE tasks SET status = ?, updated_at = ? "
-            "WHERE project_id = ? AND status = ? "
+            "UPDATE tasks SET status = $1, updated_at = $2 "
+            "WHERE project_id = $3 AND status = $4 "
             "AND id NOT IN ("
             "  SELECT d.task_id FROM task_deps d "
             "  JOIN tasks dep ON dep.id = d.depends_on "
-            "  WHERE dep.status NOT IN (?, ?) "
-            "     OR (dep.status = ? AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))"
+            "  WHERE dep.status NOT IN ($5, $6) "
+            "     OR (dep.status = $7 AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))"
             ")",
             (TaskStatus.PENDING, now, project_id, TaskStatus.BLOCKED,
              TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
@@ -831,7 +831,7 @@ class Executor:
         """Create a PR for a completed wave's commits (best-effort)."""
         try:
             project_row = await self._db.fetchone(
-                "SELECT repo_path FROM projects WHERE id = ?", (project_id,),
+                "SELECT repo_path FROM projects WHERE id = $1", (project_id,),
             )
             if not project_row or not project_row["repo_path"]:
                 return
@@ -855,7 +855,7 @@ class Executor:
                 # Get completed task titles for PR body
                 tasks = await self._db.fetchall(
                     "SELECT title, model_used FROM tasks "
-                    "WHERE project_id = ? AND wave = ? AND status = ?",
+                    "WHERE project_id = $1 AND wave = $2 AND status = $3",
                     (project_id, wave, TaskStatus.COMPLETED),
                 )
                 task_lines = "\n".join(

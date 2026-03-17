@@ -31,14 +31,14 @@ async def list_users(
     """List all users with project counts."""
     rows = await db.fetchall(
         "SELECT id, email, display_name, role, is_active, created_at, last_login_at "
-        "FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        "FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
         (limit, offset),
     )
 
     # Batch project counts
     user_ids = [r["id"] for r in rows]
     if user_ids:
-        placeholders = ",".join("?" * len(user_ids))
+        placeholders = ",".join([f"${i+1}" for i in range(len(user_ids))])
         counts = await db.fetchall(
             f"SELECT owner_id, COUNT(*) as cnt FROM projects "
             f"WHERE owner_id IN ({placeholders}) GROUP BY owner_id",
@@ -72,7 +72,7 @@ async def update_user(
     db: Database = Depends(Provide[Container.db]),
 ) -> AdminUserOut:
     """Update a user's role or active status."""
-    row = await db.fetchone("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = await db.fetchone("SELECT * FROM users WHERE id = $1", (user_id,))
     if not row:
         raise HTTPException(404, "User not found")
 
@@ -96,27 +96,27 @@ async def update_user(
     updates = []
     params = []
     if body.role is not None:
-        updates.append("role = ?")
         params.append(body.role)
+        updates.append(f"role = ${len(params)}")
     if body.is_active is not None:
-        updates.append("is_active = ?")
         params.append(1 if body.is_active else 0)
+        updates.append(f"is_active = ${len(params)}")
 
     if not updates:
         raise HTTPException(400, "No fields to update")
 
     params.append(user_id)
     await db.execute_write(
-        f"UPDATE users SET {', '.join(updates)} WHERE id = ?",
+        f"UPDATE users SET {', '.join(updates)} WHERE id = ${len(params)}",
         params,
     )
 
     updated = await db.fetchone(
         "SELECT id, email, display_name, role, is_active, created_at, last_login_at "
-        "FROM users WHERE id = ?", (user_id,)
+        "FROM users WHERE id = $1", (user_id,)
     )
     count = await db.fetchone(
-        "SELECT COUNT(*) as cnt FROM projects WHERE owner_id = ?", (user_id,)
+        "SELECT COUNT(*) as cnt FROM projects WHERE owner_id = $1", (user_id,)
     )
     return AdminUserOut(
         id=updated["id"],

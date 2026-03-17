@@ -133,7 +133,7 @@ class OIDCService:
             # Check if this provider identity already exists
             existing = await conn.execute(
                 "SELECT user_id FROM user_identities "
-                "WHERE provider = ? AND provider_user_id = ?",
+                "WHERE provider = $1 AND provider_user_id = $2",
                 (provider_name, provider_uid),
             )
             row = await existing.fetchone()
@@ -142,7 +142,7 @@ class OIDCService:
                 # Existing linked identity — verify account is active
                 user_id = row["user_id"]
                 active_check = await conn.execute(
-                    "SELECT is_active FROM users WHERE id = ?", (user_id,)
+                    "SELECT is_active FROM users WHERE id = $1", (user_id,)
                 )
                 active_row = await active_check.fetchone()
                 if active_row and not active_row["is_active"]:
@@ -152,7 +152,7 @@ class OIDCService:
                 user_row = None
                 if auto_link and email:
                     cursor = await conn.execute(
-                        "SELECT id FROM users WHERE email = ?", (email,)
+                        "SELECT id FROM users WHERE email = $1", (email,)
                     )
                     user_row = await cursor.fetchone()
 
@@ -160,7 +160,7 @@ class OIDCService:
                     # Auto-link to existing user — verify account is active
                     user_id = user_row["id"]
                     active_check = await conn.execute(
-                        "SELECT is_active FROM users WHERE id = ?", (user_id,)
+                        "SELECT is_active FROM users WHERE id = $1", (user_id,)
                     )
                     active_row = await active_check.fetchone()
                     if active_row and not active_row["is_active"]:
@@ -178,20 +178,20 @@ class OIDCService:
 
                     await conn.execute(
                         "INSERT INTO users (id, email, password_hash, display_name, role, is_active, created_at) "
-                        "VALUES (?, ?, NULL, ?, ?, 1, ?)",
+                        "VALUES ($1, $2, NULL, $3, $4, 1, $5)",
                         (user_id, email, display, role, now),
                     )
 
                 # Create identity link
                 await conn.execute(
                     "INSERT INTO user_identities (id, user_id, provider, provider_user_id, provider_email, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
                     (str(uuid.uuid4()), user_id, provider_name, provider_uid, email, time.time()),
                 )
 
             # Update last login
             await conn.execute(
-                "UPDATE users SET last_login_at = ? WHERE id = ?",
+                "UPDATE users SET last_login_at = $1 WHERE id = $2",
                 (time.time(), user_id),
             )
 
@@ -234,7 +234,7 @@ class OIDCService:
             # Check if this provider account is already linked to someone else
             existing = await conn.execute(
                 "SELECT user_id FROM user_identities "
-                "WHERE provider = ? AND provider_user_id = ?",
+                "WHERE provider = $1 AND provider_user_id = $2",
                 (provider_name, provider_uid),
             )
             row = await existing.fetchone()
@@ -245,7 +245,7 @@ class OIDCService:
 
             await conn.execute(
                 "INSERT INTO user_identities (id, user_id, provider, provider_user_id, provider_email, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "VALUES ($1, $2, $3, $4, $5, $6)",
                 (str(uuid.uuid4()), user_id, provider_name, provider_uid, claims.get("email"), time.time()),
             )
 
@@ -260,14 +260,14 @@ class OIDCService:
         async with self._db.transaction() as conn:
             # Check that the user retains at least one auth method
             user_cursor = await conn.execute(
-                "SELECT password_hash FROM users WHERE id = ?", (user_id,)
+                "SELECT password_hash FROM users WHERE id = $1", (user_id,)
             )
             user_row = await user_cursor.fetchone()
             if not user_row:
                 raise NotFoundError("User not found")
 
             count_cursor = await conn.execute(
-                "SELECT COUNT(*) as cnt FROM user_identities WHERE user_id = ?",
+                "SELECT COUNT(*) as cnt FROM user_identities WHERE user_id = $1",
                 (user_id,),
             )
             count_row = await count_cursor.fetchone()
@@ -281,7 +281,7 @@ class OIDCService:
                 )
 
             cursor = await conn.execute(
-                "DELETE FROM user_identities WHERE user_id = ? AND provider = ?",
+                "DELETE FROM user_identities WHERE user_id = $1 AND provider = $2",
                 (user_id, provider_name),
             )
             if cursor.rowcount == 0:
@@ -290,7 +290,7 @@ class OIDCService:
     async def get_user_identities(self, user_id: str) -> list[dict]:
         """Return all linked OIDC identities for a user."""
         rows = await self._db.fetchall(
-            "SELECT provider, provider_email, created_at FROM user_identities WHERE user_id = ?",
+            "SELECT provider, provider_email, created_at FROM user_identities WHERE user_id = $1",
             (user_id,),
         )
         return [dict(r) for r in rows]

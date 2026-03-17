@@ -106,7 +106,7 @@ class DecomposerService:
         db = self._db
 
         # Load the plan
-        plan_row = await db.fetchone("SELECT * FROM plans WHERE id = ?", (plan_id,))
+        plan_row = await db.fetchone("SELECT * FROM plans WHERE id = $1", (plan_id,))
         if not plan_row:
             raise NotFoundError(f"Plan {plan_id} not found")
         if plan_row["project_id"] != project_id:
@@ -123,7 +123,7 @@ class DecomposerService:
         waves = _compute_waves(tasks_data)
 
         # Get project requirements for context injection
-        project_row = await db.fetchone("SELECT * FROM projects WHERE id = ?", (project_id,))
+        project_row = await db.fetchone("SELECT * FROM projects WHERE id = $1", (project_id,))
         if not project_row:
             raise NotFoundError(f"Project {project_id} not found")
 
@@ -222,7 +222,7 @@ class DecomposerService:
                 "INSERT INTO tasks (id, project_id, plan_id, title, description, task_type, "
                 "priority, status, model_tier, context_json, tools_json, "
                 "max_tokens, wave, phase, requirement_ids_json, rationale, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
                 (task_id, project_id, plan_id, title, description, task_type,
                  priority, TaskStatus.PENDING, tier.value, json.dumps(context),
                  json.dumps(tools), DEFAULT_MAX_TOKENS, waves[i], phase,
@@ -254,7 +254,7 @@ class DecomposerService:
                     )
                     continue
                 write_statements.append((
-                    "INSERT INTO task_deps (task_id, depends_on) VALUES (?, ?)",
+                    "INSERT INTO task_deps (task_id, depends_on) VALUES ($1, $2)",
                     (task_ids[i], task_ids[dep_idx]),
                 ))
 
@@ -267,13 +267,13 @@ class DecomposerService:
 
         # Mark plan as approved
         write_statements.append((
-            "UPDATE plans SET status = ? WHERE id = ?",
+            "UPDATE plans SET status = $1 WHERE id = $2",
             (PlanStatus.APPROVED, plan_id),
         ))
 
         # Update project status to ready
         write_statements.append((
-            "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
             (ProjectStatus.READY, time.time(), project_id),
         ))
 
@@ -351,7 +351,7 @@ def _create_csharp_assembly_tasks(
             "INSERT INTO tasks (id, project_id, plan_id, title, description, task_type, "
             "priority, status, model_tier, context_json, tools_json, "
             "max_tokens, wave, phase, requirement_ids_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
             (assembly_id, project_id, plan_id,
              f"Assemble {class_name}", description, "csharp_assembly",
              9999, TaskStatus.PENDING, "sonnet",  # high priority number = runs last
@@ -363,7 +363,7 @@ def _create_csharp_assembly_tasks(
         # Add dependency edges: assembly depends on all its method tasks
         for method_idx in method_indices:
             write_statements.append((
-                "INSERT INTO task_deps (task_id, depends_on) VALUES (?, ?)",
+                "INSERT INTO task_deps (task_id, depends_on) VALUES ($1, $2)",
                 (assembly_id, task_ids[method_idx]),
             ))
 
@@ -460,12 +460,12 @@ async def _update_blocked_status(project_id: str, *, db):
     """Mark pending tasks as blocked if they have incomplete dependencies (single query)."""
     now = time.time()
     await db.execute_write(
-        "UPDATE tasks SET status = ?, updated_at = ? "
-        "WHERE project_id = ? AND status = ? "
+        "UPDATE tasks SET status = $1, updated_at = $2 "
+        "WHERE project_id = $3 AND status = $4 "
         "AND id IN ("
         "  SELECT d.task_id FROM task_deps d "
         "  JOIN tasks dep ON dep.id = d.depends_on "
-        "  WHERE dep.status != ?"
+        "  WHERE dep.status != $5"
         ")",
         (TaskStatus.BLOCKED, now, project_id, TaskStatus.PENDING, TaskStatus.COMPLETED),
     )

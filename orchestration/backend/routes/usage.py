@@ -63,7 +63,7 @@ async def get_daily_usage(
         "SELECT period_key, total_cost_usd, total_prompt_tokens, "
         "total_completion_tokens, api_call_count "
         "FROM budget_periods WHERE period_type = 'daily' "
-        "ORDER BY period_key DESC LIMIT ?",
+        "ORDER BY period_key DESC LIMIT $1",
         (days,),
     )
     return [
@@ -94,7 +94,7 @@ async def get_usage_by_project(
             "COUNT(*) as calls "
             "FROM usage_log u LEFT JOIN projects p ON p.id = u.project_id "
             "WHERE u.project_id IS NOT NULL "
-            "GROUP BY u.project_id ORDER BY cost DESC LIMIT ? OFFSET ?",
+            "GROUP BY u.project_id ORDER BY cost DESC LIMIT $1 OFFSET $2",
             (limit, offset),
         )
     else:
@@ -103,8 +103,8 @@ async def get_usage_by_project(
             "SUM(u.prompt_tokens) as pt, SUM(u.completion_tokens) as ct, "
             "COUNT(*) as calls "
             "FROM usage_log u LEFT JOIN projects p ON p.id = u.project_id "
-            "WHERE u.project_id IS NOT NULL AND p.owner_id = ? "
-            "GROUP BY u.project_id ORDER BY cost DESC LIMIT ? OFFSET ?",
+            "WHERE u.project_id IS NOT NULL AND p.owner_id = $1 "
+            "GROUP BY u.project_id ORDER BY cost DESC LIMIT $2 OFFSET $3",
             (current_user["id"], limit, offset),
         )
     return [

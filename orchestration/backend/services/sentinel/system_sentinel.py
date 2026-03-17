@@ -435,12 +435,13 @@ class SystemSentinel:
             return
 
         # Fetch running + queued tasks for active projects
-        placeholders = ", ".join("?" for _ in active_project_ids)
+        ids = list(active_project_ids)
+        placeholders = ", ".join(f"${i+1}" for i in range(len(ids)))
         rows = await self._db.fetchall(
             f"SELECT project_id, model_tier FROM tasks "
             f"WHERE project_id IN ({placeholders}) "
             f"AND status IN ('running', 'queued')",
-            tuple(active_project_ids),
+            tuple(ids),
         )
 
         await self._check_semaphore_contention(rows)

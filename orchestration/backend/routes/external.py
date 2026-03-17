@@ -42,7 +42,7 @@ router = APIRouter(prefix="/external", tags=["external"])
 async def _get_owned_project(project_id: str, user: dict, db: Database) -> dict:
     """Fetch project, verify ownership."""
     row = await db.fetchone(
-        "SELECT * FROM projects WHERE id = ?", (project_id,)
+        "SELECT * FROM projects WHERE id = $1", (project_id,)
     )
     if not row:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -79,7 +79,7 @@ async def list_claimable_tasks(
                  TaskStatus.CANCELLED, TaskStatus.NEEDS_REVIEW)
     wave_row = await db.fetchone(
         "SELECT MIN(wave) as w FROM tasks "
-        "WHERE project_id = ? AND status NOT IN (?, ?, ?, ?)",
+        "WHERE project_id = $1 AND status NOT IN ($2, $3, $4, $5)",
         (project_id, *_TERMINAL),
     )
     current_wave = wave_row["w"] if wave_row and wave_row["w"] is not None else 0
@@ -90,8 +90,8 @@ async def list_claimable_tasks(
         "t.phase, t.task_type "
         "FROM tasks t "
         "LEFT JOIN task_deps d ON d.task_id = t.id "
-        "LEFT JOIN tasks dep ON dep.id = d.depends_on AND dep.status != ? "
-        "WHERE t.project_id = ? AND t.status = ? AND t.wave = ? "
+        "LEFT JOIN tasks dep ON dep.id = d.depends_on AND dep.status != $1 "
+        "WHERE t.project_id = $2 AND t.status = $3 AND t.wave = $4 "
         "GROUP BY t.id HAVING COUNT(dep.id) = 0 "
         "ORDER BY t.priority ASC, t.created_at ASC",
         (TaskStatus.COMPLETED, project_id, TaskStatus.PENDING, current_wave),
@@ -107,7 +107,7 @@ async def list_claimable_tasks(
 
         # Fetch dependency IDs for display
         deps = await db.fetchall(
-            "SELECT depends_on FROM task_deps WHERE task_id = ?", (t["id"],)
+            "SELECT depends_on FROM task_deps WHERE task_id = $1", (t["id"],)
         )
 
         result.append({
@@ -138,7 +138,7 @@ async def claim_task(
     Returns 409 if the task is not claimable (already claimed or not pending).
     """
     # Verify the task exists and user owns the project
-    task = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    task = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -169,9 +169,9 @@ async def claim_task(
     # Atomic claim via CAS
     now = time.time()
     cursor = await db.execute_write(
-        "UPDATE tasks SET status = ?, claimed_by = ?, claimed_at = ?, "
-        "started_at = ?, updated_at = ? "
-        "WHERE id = ? AND status = ?",
+        "UPDATE tasks SET status = $1, claimed_by = $2, claimed_at = $3, "
+        "started_at = $4, updated_at = $5 "
+        "WHERE id = $6 AND status = $7",
         (TaskStatus.RUNNING, user["id"], now, now, now,
          task_id, TaskStatus.PENDING),
     )
@@ -182,7 +182,7 @@ async def claim_task(
         )
 
     # Re-fetch with updated status
-    task = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    task = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
 
     # Parse JSON fields
     context = json.loads(task["context_json"]) if task["context_json"] else []
@@ -191,7 +191,7 @@ async def claim_task(
 
     # Fetch dependency IDs
     deps = await db.fetchall(
-        "SELECT depends_on FROM task_deps WHERE task_id = ?", (task_id,)
+        "SELECT depends_on FROM task_deps WHERE task_id = $1", (task_id,)
     )
 
     logger.info("Task %s claimed by user %s", task_id, user["id"])
@@ -230,7 +230,7 @@ async def submit_task_result(
 
     Handles verification, context forwarding, and completion.
     """
-    task = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    task = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -264,7 +264,7 @@ async def submit_task_result(
     # Find next claimable task for convenience
     next_task_id = None
     config = json.loads((await db.fetchone(
-        "SELECT config_json FROM projects WHERE id = ?", (task["project_id"],)
+        "SELECT config_json FROM projects WHERE id = $1", (task["project_id"],)
     ))["config_json"] or "{}")
     execution_mode = config.get("execution_mode", "auto")
     if execution_mode != ExecutionMode.AUTO:
@@ -272,15 +272,15 @@ async def submit_task_result(
                      TaskStatus.CANCELLED, TaskStatus.NEEDS_REVIEW)
         wave_row = await db.fetchone(
             "SELECT MIN(wave) as w FROM tasks "
-            "WHERE project_id = ? AND status NOT IN (?, ?, ?, ?)",
+            "WHERE project_id = $1 AND status NOT IN ($2, $3, $4, $5)",
             (task["project_id"], *_TERMINAL),
         )
         if wave_row and wave_row["w"] is not None:
             next_row = await db.fetchone(
                 "SELECT t.id FROM tasks t "
                 "LEFT JOIN task_deps d ON d.task_id = t.id "
-                "LEFT JOIN tasks dep ON dep.id = d.depends_on AND dep.status != ? "
-                "WHERE t.project_id = ? AND t.status = ? AND t.wave = ? "
+                "LEFT JOIN tasks dep ON dep.id = d.depends_on AND dep.status != $1 "
+                "WHERE t.project_id = $2 AND t.status = $3 AND t.wave = $4 "
                 "GROUP BY t.id HAVING COUNT(dep.id) = 0 "
                 "ORDER BY t.priority ASC LIMIT 1",
                 (TaskStatus.COMPLETED, task["project_id"],
@@ -309,7 +309,7 @@ async def release_task(
 
     Does not increment retry_count — release is intentional, not a failure.
     """
-    task = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    task = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -328,9 +328,9 @@ async def release_task(
         )
 
     await db.execute_write(
-        "UPDATE tasks SET status = ?, claimed_by = NULL, claimed_at = NULL, "
-        "started_at = NULL, output_text = NULL, updated_at = ? "
-        "WHERE id = ?",
+        "UPDATE tasks SET status = $1, claimed_by = NULL, claimed_at = NULL, "
+        "started_at = NULL, output_text = NULL, updated_at = $2 "
+        "WHERE id = $3",
         (TaskStatus.PENDING, time.time(), task_id),
     )
 

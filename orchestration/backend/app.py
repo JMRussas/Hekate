@@ -7,6 +7,7 @@
 #  Used by:    run.py
 
 import logging
+import os
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
 
@@ -41,6 +42,7 @@ from backend.routes.auth_oidc import router as auth_oidc_router
 from backend.routes.checkpoints import router as checkpoints_router
 from backend.routes.events import router as events_router
 from backend.routes.external import router as external_router
+from backend.routes.chat import router as chat_router
 from backend.routes.internal import router as internal_router
 from backend.routes.projects import router as projects_router
 from backend.routes.rag import router as rag_router
@@ -80,7 +82,9 @@ async def lifespan(app: FastAPI):
 
     async with AsyncExitStack() as stack:
         logger.info("Initializing database...")
-        await db.init(DB_PATH, run_migrations=True)
+        # ORCHESTRATION_DSN env var → Postgres; otherwise → SQLite at DB_PATH
+        dsn = os.environ.get("ORCHESTRATION_DSN")
+        await db.init(dsn or DB_PATH, run_migrations=True)
         stack.push_async_callback(db.close)
         logger.info("Database initialized")
 
@@ -272,6 +276,9 @@ app.include_router(analytics_router, prefix="/api", dependencies=_auth_dep)
 app.include_router(rag_router, prefix="/api", dependencies=_auth_dep)
 app.include_router(external_router, prefix="/api", dependencies=_auth_dep)
 
+# Chat routes — no auth for now (universal chat)
+app.include_router(chat_router, prefix="/api")
+
 # Internal routes — no auth (trusted by network isolation)
 app.include_router(internal_router, prefix="/api")
 
@@ -281,7 +288,15 @@ app.include_router(events_router, prefix="/api")
 # Sentinel routes — SSE endpoint uses query-param token auth, REST endpoints use per-route auth
 app.include_router(sentinel_router, prefix="/api")
 
-# Serve frontend build if available
+# Serve frontend build if available (SPA catch-all for client-side routing)
 frontend_dist = PROJECT_ROOT / "frontend" / "dist"
 if frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+    from starlette.responses import FileResponse
+
+    # Serve static assets (JS, CSS, images) directly
+    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="static-assets")
+
+    # SPA catch-all: any non-API route serves index.html for client-side routing
+    @app.get("/{path:path}")
+    async def spa_fallback(path: str):
+        return FileResponse(str(frontend_dist / "index.html"))

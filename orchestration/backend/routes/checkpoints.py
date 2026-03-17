@@ -29,10 +29,10 @@ router = APIRouter(prefix="/checkpoints", tags=["checkpoints"])
 
 async def _verify_checkpoint_ownership(db: Database, checkpoint_id: str, user: dict):
     """Fetch a checkpoint and verify the user owns its project."""
-    row = await db.fetchone("SELECT * FROM checkpoints WHERE id = ?", (checkpoint_id,))
+    row = await db.fetchone("SELECT * FROM checkpoints WHERE id = $1", (checkpoint_id,))
     if not row:
         raise HTTPException(404, f"Checkpoint {checkpoint_id} not found")
-    project = await db.fetchone("SELECT owner_id FROM projects WHERE id = ?", (row["project_id"],))
+    project = await db.fetchone("SELECT owner_id FROM projects WHERE id = $1", (row["project_id"],))
     if not project or (user.get("role") != "admin" and project["owner_id"] != user["id"]):
         raise HTTPException(403, "You do not own this checkpoint's project")
     return row
@@ -73,14 +73,14 @@ async def list_checkpoints(
 
     if resolved:
         rows = await db.fetchall(
-            "SELECT * FROM checkpoints WHERE project_id = ? "
-            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM checkpoints WHERE project_id = $1 "
+            "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
             (project_id, limit, offset),
         )
     else:
         rows = await db.fetchall(
-            "SELECT * FROM checkpoints WHERE project_id = ? AND resolved_at IS NULL "
-            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM checkpoints WHERE project_id = $1 AND resolved_at IS NULL "
+            "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
             (project_id, limit, offset),
         )
 
@@ -125,7 +125,7 @@ async def resolve_checkpoint(
 
     if body.action == "retry":
         if task_id:
-            task_row = await db.fetchone("SELECT context_json FROM tasks WHERE id = ?", (task_id,))
+            task_row = await db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
             ctx = json.loads(task_row["context_json"]) if task_row and task_row["context_json"] else []
             if body.guidance:
                 ctx.append({
@@ -133,8 +133,8 @@ async def resolve_checkpoint(
                     "content": body.guidance,
                 })
             await db.execute_write(
-                "UPDATE tasks SET status = ?, context_json = ?, error = NULL, "
-                "retry_count = 0, output_text = NULL, completed_at = NULL, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = $1, context_json = $2, error = NULL, "
+                "retry_count = 0, output_text = NULL, completed_at = NULL, updated_at = $3 WHERE id = $4",
                 (TaskStatus.PENDING, json.dumps(ctx), now, task_id),
             )
 
@@ -154,13 +154,13 @@ async def resolve_checkpoint(
     elif body.action == "skip":
         if task_id:
             await db.execute_write(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
                 (TaskStatus.CANCELLED, now, task_id),
             )
     elif body.action == "fail":
         if task_id:
             await db.execute_write(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
                 (TaskStatus.FAILED, now, task_id),
             )
 
@@ -170,9 +170,9 @@ async def resolve_checkpoint(
         response_text += f" | Guidance: {body.guidance}"
 
     await db.execute_write(
-        "UPDATE checkpoints SET response = ?, resolved_at = ? WHERE id = ?",
+        "UPDATE checkpoints SET response = $1, resolved_at = $2 WHERE id = $3",
         (response_text, now, checkpoint_id),
     )
 
-    updated = await db.fetchone("SELECT * FROM checkpoints WHERE id = ?", (checkpoint_id,))
+    updated = await db.fetchone("SELECT * FROM checkpoints WHERE id = $1", (checkpoint_id,))
     return CheckpointOut(**_row_to_checkpoint(updated))

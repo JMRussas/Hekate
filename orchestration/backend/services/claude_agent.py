@@ -121,7 +121,7 @@ async def run_claude_task(
             knowledge_rows = await db.fetchall(
                 "SELECT category, content, source_task_title, rationale, "
                 "alternatives_considered, confidence FROM project_knowledge "
-                "WHERE project_id = ? ORDER BY created_at DESC",
+                "WHERE project_id = $1 ORDER BY created_at DESC",
                 (project_id,),
             )
             if knowledge_rows:

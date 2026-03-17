@@ -450,7 +450,7 @@ async def _run_review_cycle(
             REVIEW_MAX_ITERATIONS, task_id,
         )
         await db.execute_write(
-            "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+            "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
             (
                 TaskStatus.NEEDS_REVIEW,
                 f"Code review found issues after {review_iterations} iterations: {summary}",
@@ -481,7 +481,7 @@ async def _run_review_cycle(
     updated_ctx = non_feedbacks + feedbacks
 
     await db.execute_write(
-        "UPDATE tasks SET status = ?, context_json = ?, error = NULL, updated_at = ? WHERE id = ?",
+        "UPDATE tasks SET status = $1, context_json = $2, error = NULL, updated_at = $3 WHERE id = $4",
         (TaskStatus.PENDING, json.dumps(updated_ctx), time.time(), task_id),
     )
 
@@ -557,7 +557,7 @@ async def _ingest_retry_success(task_row, output_text: str, db, ingester):
         # Get the last error event for this task
         last_error = await db.fetchone(
             "SELECT message FROM task_events "
-            "WHERE task_id = ? AND event_type IN ('task_retry', 'task_failed') "
+            "WHERE task_id = $1 AND event_type IN ('task_retry', 'task_failed') "
             "ORDER BY timestamp DESC LIMIT 1",
             (task_row["id"],),
         )
@@ -593,7 +593,7 @@ async def create_checkpoint(
     # Gather attempt history from task_events
     events = await db.fetchall(
         "SELECT message, timestamp FROM task_events "
-        "WHERE task_id = ? AND event_type IN ('task_retry', 'task_failed') "
+        "WHERE task_id = $1 AND event_type IN ('task_retry', 'task_failed') "
         "ORDER BY timestamp",
         (task_id,),
     )
@@ -605,7 +605,7 @@ async def create_checkpoint(
     await db.execute_write(
         "INSERT INTO checkpoints "
         "(id, project_id, task_id, checkpoint_type, summary, attempts_json, question, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         (
             checkpoint_id, project_id, task_id, "retry_exhausted",
             f"Task '{task_row['title']}' failed after {task_row['max_retries']} attempts",
@@ -617,7 +617,7 @@ async def create_checkpoint(
     )
 
     await db.execute_write(
-        "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+        "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
         (TaskStatus.NEEDS_REVIEW, error_msg, time.time(), task_id),
     )
 
@@ -664,8 +664,8 @@ async def verify_task_output(
         # This prevents cascading hollow completions when the verifier is misconfigured.
         logger.warning("Verification failed for task %s: %s", task_id, e)
         await db.execute_write(
-            "UPDATE tasks SET status = ?, verification_status = ?, verification_notes = ?, "
-            "updated_at = ? WHERE id = ?",
+            "UPDATE tasks SET status = $1, verification_status = $2, verification_notes = $3, "
+            "updated_at = $4 WHERE id = $5",
             (TaskStatus.NEEDS_REVIEW, VerificationResult.SKIPPED,
              f"Verification error: {e}", time.time(), task_id),
         )
@@ -680,8 +680,8 @@ async def verify_task_output(
     v_notes = verification["notes"]
 
     await db.execute_write(
-        "UPDATE tasks SET verification_status = ?, verification_notes = ?, "
-        "updated_at = ? WHERE id = ?",
+        "UPDATE tasks SET verification_status = $1, verification_notes = $2, "
+        "updated_at = $3 WHERE id = $4",
         (v_result, v_notes, time.time(), task_id),
     )
 
@@ -709,8 +709,8 @@ async def verify_task_output(
                 })
                 ctx = non_feedbacks + feedbacks
                 await db.execute_write(
-                    "UPDATE tasks SET status = ?, context_json = ?, output_text = NULL, "
-                    "retry_count = retry_count + 1, completed_at = NULL, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, context_json = $2, output_text = NULL, "
+                    "retry_count = retry_count + 1, completed_at = NULL, updated_at = $3 WHERE id = $4",
                     (TaskStatus.PENDING, json.dumps(ctx), time.time(), task_id),
                 )
                 await progress.push_event(
@@ -725,7 +725,7 @@ async def verify_task_output(
                     task_id,
                 )
                 await db.execute_write(
-                    "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
                     (TaskStatus.FAILED,
                      f"Empty output after {retry_count} retries (gaps: {v_notes})",
                      time.time(), task_id),
@@ -755,7 +755,7 @@ async def verify_task_output(
                     task_id,
                 )
                 await db.execute_write(
-                    "UPDATE tasks SET status = ?, verification_notes = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, verification_notes = $2, updated_at = $3 WHERE id = $4",
                     (TaskStatus.NEEDS_REVIEW,
                      f"Identical output after retry — likely false positive: {v_notes}",
                      time.time(), task_id),
@@ -787,8 +787,8 @@ async def verify_task_output(
             })
             ctx = non_feedbacks + feedbacks
             await db.execute_write(
-                "UPDATE tasks SET status = ?, context_json = ?, "
-                "retry_count = retry_count + 1, completed_at = NULL, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = $1, context_json = $2, "
+                "retry_count = retry_count + 1, completed_at = NULL, updated_at = $3 WHERE id = $4",
                 (TaskStatus.PENDING, json.dumps(ctx), time.time(), task_id),
             )
             await progress.push_event(
@@ -800,7 +800,7 @@ async def verify_task_output(
 
     if v_result == VerificationResult.HUMAN_NEEDED:
         await db.execute_write(
-            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
             (TaskStatus.NEEDS_REVIEW, time.time(), task_id),
         )
         await progress.push_event(
@@ -839,7 +839,7 @@ async def _gather_interrogation_context(*, db, project_id: str, task_id: str) ->
     try:
         # Project summary + requirements
         proj = await db.fetchone(
-            "SELECT title, requirements, status FROM projects WHERE id = ?",
+            "SELECT title, requirements, status FROM projects WHERE id = $1",
             (project_id,),
         )
         if proj:
@@ -853,12 +853,12 @@ async def _gather_interrogation_context(*, db, project_id: str, task_id: str) ->
     try:
         # Sibling tasks in the same wave — what else is running/completed/failed
         task_wave = await db.fetchone(
-            "SELECT wave FROM tasks WHERE id = ?", (task_id,),
+            "SELECT wave FROM tasks WHERE id = $1", (task_id,),
         )
         if task_wave and task_wave["wave"] is not None:
             siblings = await db.fetchall(
                 "SELECT title, status, task_type, error FROM tasks "
-                "WHERE project_id = ? AND wave = ? AND id != ? "
+                "WHERE project_id = $1 AND wave = $2 AND id != $3 "
                 "ORDER BY status",
                 (project_id, task_wave["wave"], task_id),
             )
@@ -880,7 +880,7 @@ async def _gather_interrogation_context(*, db, project_id: str, task_id: str) ->
         deps = await db.fetchall(
             "SELECT t.title, t.status FROM task_deps td "
             "JOIN tasks t ON t.id = td.task_id "
-            "WHERE td.depends_on = ?",
+            "WHERE td.depends_on = $1",
             (task_id,),
         )
         if deps:
@@ -895,7 +895,7 @@ async def _gather_interrogation_context(*, db, project_id: str, task_id: str) ->
     try:
         # Affected files from task context
         task_ctx = await db.fetchone(
-            "SELECT context_json FROM tasks WHERE id = ?", (task_id,),
+            "SELECT context_json FROM tasks WHERE id = $1", (task_id,),
         )
         if task_ctx and task_ctx["context_json"]:
             entries = json.loads(task_ctx["context_json"])
@@ -910,7 +910,7 @@ async def _gather_interrogation_context(*, db, project_id: str, task_id: str) ->
         # Recent sentinel decisions for this project — real precedent
         decisions = await db.fetchall(
             "SELECT message, details_json FROM sentinel_observations "
-            "WHERE project_id = ? AND category IN "
+            "WHERE project_id = $1 AND category IN "
             "('intervention_result', 'intervention_proposal', 'interrogation_concern', 'wave_reassessment') "
             "ORDER BY created_at DESC LIMIT 5",
             (project_id,),
@@ -927,7 +927,7 @@ async def _gather_interrogation_context(*, db, project_id: str, task_id: str) ->
         # Project knowledge findings — what the system has learned
         findings = await db.fetchall(
             "SELECT content, rationale FROM project_knowledge "
-            "WHERE project_id = ? ORDER BY created_at DESC LIMIT 5",
+            "WHERE project_id = $1 ORDER BY created_at DESC LIMIT 5",
             (project_id,),
         )
         if findings:
@@ -1000,7 +1000,7 @@ async def _interrogate_verification_verdict(
             # Append concern to verification_notes for audit trail
             updated_notes = f"{v_notes} | {concern}" if v_notes else concern
             await db.execute_write(
-                "UPDATE tasks SET verification_notes = ?, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET verification_notes = $1, updated_at = $2 WHERE id = $3",
                 (updated_notes, time.time(), task_id),
             )
             # Log as sentinel observation so it's visible in the dashboard
@@ -1098,9 +1098,9 @@ async def _log_interrogation_observation(
             if not a.confident
         )
         await db.execute_write(
-            "INSERT OR IGNORE INTO sentinel_observations "
+            "INSERT INTO sentinel_observations "
             "(id, project_id, task_id, category, severity, message, details_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
             (
                 str(uuid.uuid4()),
                 project_id,
@@ -1124,7 +1124,7 @@ async def _log_interrogation_observation(
 async def forward_context(*, completed_task, output_text, db):
     """Inject completed task's output summary into dependent tasks' context."""
     deps = await db.fetchall(
-        "SELECT task_id FROM task_deps WHERE depends_on = ?",
+        "SELECT task_id FROM task_deps WHERE depends_on = $1",
         (completed_task["id"],),
     )
     if not deps:
@@ -1144,13 +1144,13 @@ async def forward_context(*, completed_task, output_text, db):
         # concurrent upstream completions from clobbering each other.
         async with db.transaction():
             dep_task = await db.fetchone(
-                "SELECT context_json FROM tasks WHERE id = ?", (dep["task_id"],),
+                "SELECT context_json FROM tasks WHERE id = $1", (dep["task_id"],),
             )
             if dep_task:
                 ctx = json.loads(dep_task["context_json"]) if dep_task["context_json"] else []
                 ctx.append(context_entry)
                 await db.execute_write(
-                    "UPDATE tasks SET context_json = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET context_json = $1, updated_at = $2 WHERE id = $3",
                     (json.dumps(ctx), time.time(), dep["task_id"]),
                 )
 
@@ -1198,7 +1198,7 @@ async def execute_task(
             # Mark as running
             now = time.time()
             await db.execute_write(
-                "UPDATE tasks SET status = ?, started_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = $1, started_at = $2, updated_at = $3 WHERE id = $4",
                 (TaskStatus.RUNNING, now, now, task_id),
             )
             asyncio.ensure_future(_sync_status_to_context_store(
@@ -1224,7 +1224,7 @@ async def execute_task(
                 try:
                     knowledge_rows = await db.fetchall(
                         "SELECT category, content AS finding, rationale, alternatives_considered, confidence "
-                        "FROM project_knowledge WHERE project_id = ? ORDER BY created_at DESC LIMIT 5",
+                        "FROM project_knowledge WHERE project_id = $1 ORDER BY created_at DESC LIMIT 5",
                         (project_id,)
                     )
                     if knowledge_rows:
@@ -1274,7 +1274,7 @@ async def execute_task(
                         "(project_id, task_id, provider, model, prompt_tokens, "
                         "completion_tokens, cost_usd, purpose, timestamp, "
                         "context_tokens_injected, source_node_count, enrichment_latency_ms) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                         (
                             task_row["project_id"], task_id,
                             "context_store", "preview",
@@ -1330,9 +1330,9 @@ async def execute_task(
                 retry_after.pop(task_id, None)
                 if result.get("budget_exhausted"):
                     await db.execute_write(
-                        "UPDATE tasks SET status = ?, output_text = ?, error = ?, "
-                        "prompt_tokens = ?, completion_tokens = ?, cost_usd = ?, "
-                        "model_used = ?, updated_at = ? WHERE id = ?",
+                        "UPDATE tasks SET status = $1, output_text = $2, error = $3, "
+                        "prompt_tokens = $4, completion_tokens = $5, cost_usd = $6, "
+                        "model_used = $7, updated_at = $8 WHERE id = $9",
                         (
                             TaskStatus.NEEDS_REVIEW, result["output"],
                             "Budget exhausted mid-execution (partial output)",
@@ -1361,9 +1361,9 @@ async def execute_task(
 
                 # Mark completed
                 await db.execute_write(
-                    "UPDATE tasks SET status = ?, output_text = ?, "
-                    "prompt_tokens = ?, completion_tokens = ?, cost_usd = ?, "
-                    "model_used = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, output_text = $2, "
+                    "prompt_tokens = $3, completion_tokens = $4, cost_usd = $5, "
+                    "model_used = $6, completed_at = $7, updated_at = $8 WHERE id = $9",
                     (
                         TaskStatus.COMPLETED, result["output"],
                         result["prompt_tokens"], result["completion_tokens"],
@@ -1513,7 +1513,7 @@ async def execute_task(
                 _review_enabled = REVIEW_CYCLE_ENABLED
                 if not _review_enabled:
                     _proj_row = await db.fetchone(
-                        "SELECT config_json FROM projects WHERE id = ?", (project_id,)
+                        "SELECT config_json FROM projects WHERE id = $1", (project_id,)
                     )
                     _project_cfg = json.loads(
                         _proj_row["config_json"] if _proj_row and _proj_row["config_json"] else "{}"
@@ -1595,7 +1595,7 @@ async def execute_task(
                 verification_outcome_str = None
                 if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA:
                     task_fresh = await db.fetchone(
-                        "SELECT verification_status FROM tasks WHERE id = ?", (task_id,)
+                        "SELECT verification_status FROM tasks WHERE id = $1", (task_id,)
                     )
                     if task_fresh and _row_get(task_fresh, "verification_status"):
                         verification_outcome_str = task_fresh["verification_status"]
@@ -1627,7 +1627,7 @@ async def execute_task(
                     # Inject diagnostic suggestion into task context if found
                     if diagnostic_ctx:
                         task_ctx = await db.fetchone(
-                            "SELECT context_json FROM tasks WHERE id = ?", (task_id,),
+                            "SELECT context_json FROM tasks WHERE id = $1", (task_id,),
                         )
                         ctx = json.loads(task_ctx["context_json"]) if task_ctx and task_ctx["context_json"] else []
                         ctx.append({
@@ -1635,15 +1635,15 @@ async def execute_task(
                             "content": diagnostic_ctx,
                         })
                         await db.execute_write(
-                            "UPDATE tasks SET status = ?, retry_count = retry_count + 1, "
-                            "error = ?, context_json = ?, updated_at = ? WHERE id = ?",
+                            "UPDATE tasks SET status = $1, retry_count = retry_count + 1, "
+                            "error = $2, context_json = $3, updated_at = $4 WHERE id = $5",
                             (TaskStatus.PENDING, f"Transient error (retry {retry_count + 1}): {e}",
                              json.dumps(ctx), time.time(), task_id),
                         )
                     else:
                         await db.execute_write(
-                            "UPDATE tasks SET status = ?, retry_count = retry_count + 1, "
-                            "error = ?, updated_at = ? WHERE id = ?",
+                            "UPDATE tasks SET status = $1, retry_count = retry_count + 1, "
+                            "error = $2, updated_at = $3 WHERE id = $4",
                             (TaskStatus.PENDING, f"Transient error (retry {retry_count + 1}): {e}",
                              time.time(), task_id),
                         )
@@ -1664,7 +1664,7 @@ async def execute_task(
                         )
                     else:
                         await db.execute_write(
-                            "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                            "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
                             (TaskStatus.FAILED, error_msg, time.time(), task_id),
                         )
                         await progress.push_event(
@@ -1686,7 +1686,7 @@ async def execute_task(
             except asyncio.CancelledError:
                 retry_after.pop(task_id, None)
                 await db.execute_write(
-                    "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
                     (TaskStatus.PENDING, "Cancelled by shutdown", time.time(), task_id),
                 )
                 await progress.push_event(
@@ -1700,7 +1700,7 @@ async def execute_task(
                 retry_after.pop(task_id, None)
                 error_msg = str(e)
                 await db.execute_write(
-                    "UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
                     (TaskStatus.FAILED, error_msg, time.time(), task_id),
                 )
                 asyncio.ensure_future(_sync_status_to_context_store(
@@ -1767,9 +1767,9 @@ async def complete_task_external(
     # Mark task completed
     now = time.time()
     await db.execute_write(
-        "UPDATE tasks SET status = ?, output_text = ?, model_used = ?, "
-        "prompt_tokens = ?, completion_tokens = ?, cost_usd = ?, "
-        "completed_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE tasks SET status = $1, output_text = $2, model_used = $3, "
+        "prompt_tokens = $4, completion_tokens = $5, cost_usd = $6, "
+        "completed_at = $7, updated_at = $8 WHERE id = $9",
         (
             TaskStatus.COMPLETED, output_text, model_used,
             prompt_tokens, completion_tokens, cost_usd,
@@ -1870,7 +1870,7 @@ async def collect_wave_reassessment_context(
 
     # 1. Get task outcomes for the wave
     task_rows = await db.fetchall(
-        "SELECT id, title, status, output_text, error FROM tasks WHERE project_id = ? AND wave = ?",
+        "SELECT id, title, status, output_text, error FROM tasks WHERE project_id = $1 AND wave = $2",
         (project_id, wave_number),
     )
     task_outcomes = []
@@ -1889,7 +1889,7 @@ async def collect_wave_reassessment_context(
     # 2. Get knowledge findings for the project (including rationale)
     knowledge_rows = await db.fetchall(
         "SELECT content, rationale, confidence FROM project_knowledge "
-        "WHERE project_id = ? ORDER BY created_at DESC",
+        "WHERE project_id = $1 ORDER BY created_at DESC",
         (project_id,),
     )
     knowledge_findings = []
@@ -1903,7 +1903,7 @@ async def collect_wave_reassessment_context(
 
     # 3. Get sentinel observations for the project
     observation_rows = await db.fetchall(
-        "SELECT message, details_json FROM sentinel_observations WHERE project_id = ? ORDER BY created_at DESC",
+        "SELECT message, details_json FROM sentinel_observations WHERE project_id = $1 ORDER BY created_at DESC",
         (project_id,),
     )
     sentinel_observations = []
@@ -1915,7 +1915,7 @@ async def collect_wave_reassessment_context(
 
     # 4. Get the original plan
     plan_row = await db.fetchone(
-        "SELECT plan_json FROM plans WHERE project_id = ? ORDER BY version DESC LIMIT 1",
+        "SELECT plan_json FROM plans WHERE project_id = $1 ORDER BY version DESC LIMIT 1",
         (project_id,),
     )
     if not plan_row:
@@ -1977,8 +1977,8 @@ async def execute_replan(
     # 1. Cancel all pending/blocked tasks in waves after the completed wave
     now = time.time()
     cancelled = await db.execute_write(
-        "UPDATE tasks SET status = ?, updated_at = ? "
-        "WHERE project_id = ? AND wave > ? AND status IN (?, ?)",
+        "UPDATE tasks SET status = $1, updated_at = $2 "
+        "WHERE project_id = $3 AND wave > $4 AND status IN ($5, $6)",
         (
             TaskStatus.CANCELLED, now,
             project_id, completed_wave,
@@ -1993,7 +1993,7 @@ async def execute_replan(
 
     # 2. Get the current plan ID (for revision tracking)
     old_plan_row = await db.fetchone(
-        "SELECT id FROM plans WHERE project_id = ? ORDER BY version DESC LIMIT 1",
+        "SELECT id FROM plans WHERE project_id = $1 ORDER BY version DESC LIMIT 1",
         (project_id,),
     )
     old_plan_id = old_plan_row["id"] if old_plan_row else None
@@ -2002,7 +2002,7 @@ async def execute_replan(
     #    We temporarily update the project requirements to include the wave context,
     #    then restore after plan generation.
     project_row = await db.fetchone(
-        "SELECT requirements FROM projects WHERE id = ?", (project_id,),
+        "SELECT requirements FROM projects WHERE id = $1", (project_id,),
     )
     original_requirements = project_row["requirements"] if project_row else ""
 
@@ -2020,7 +2020,7 @@ async def execute_replan(
     augmented_requirements = original_requirements + replan_addendum
 
     await db.execute_write(
-        "UPDATE projects SET requirements = ?, updated_at = ? WHERE id = ?",
+        "UPDATE projects SET requirements = $1, updated_at = $2 WHERE id = $3",
         (augmented_requirements, now, project_id),
     )
 
@@ -2045,7 +2045,7 @@ async def execute_replan(
     finally:
         # 6. Restore original requirements (the addendum was temporary context)
         await db.execute_write(
-            "UPDATE projects SET requirements = ?, updated_at = ? WHERE id = ?",
+            "UPDATE projects SET requirements = $1, updated_at = $2 WHERE id = $3",
             (original_requirements, time.time(), project_id),
         )
 

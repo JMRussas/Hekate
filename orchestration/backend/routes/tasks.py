@@ -28,10 +28,10 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 async def _verify_task_ownership(db: Database, task_id: str, user: dict):
     """Fetch a task and verify the user owns its parent project. Returns the task row."""
-    row = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    row = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     if not row:
         raise HTTPException(404, f"Task {task_id} not found")
-    project = await db.fetchone("SELECT owner_id FROM projects WHERE id = ?", (row["project_id"],))
+    project = await db.fetchone("SELECT owner_id FROM projects WHERE id = $1", (row["project_id"],))
     if not project or (user.get("role") != "admin" and project["owner_id"] != user["id"]):
         raise HTTPException(403, "You do not own this task's project")
     return row
@@ -45,7 +45,7 @@ async def _row_to_dict(row, db: Database, deps_list: list[str] | None = None) ->
     """
     if deps_list is None:
         deps = await db.fetchall(
-            "SELECT depends_on FROM task_deps WHERE task_id = ?", (row["id"],)
+            "SELECT depends_on FROM task_deps WHERE task_id = $1", (row["id"],)
         )
         deps_list = [d["depends_on"] for d in deps]
 
@@ -90,7 +90,7 @@ async def _rows_to_tasks(rows, db: Database) -> list[dict]:
         return []
 
     task_ids = [r["id"] for r in rows]
-    placeholders = ",".join("?" * len(task_ids))
+    placeholders = ",".join([f"${i+1}" for i in range(len(task_ids))])
     dep_rows = await db.fetchall(
         f"SELECT task_id, depends_on FROM task_deps WHERE task_id IN ({placeholders})",
         task_ids,
@@ -136,8 +136,8 @@ async def bulk_task_action(
                 results["failed"].append({"id": task_id, "reason": "Max retries reached"})
                 continue
             await db.execute_write(
-                "UPDATE tasks SET status = ?, error = NULL, output_text = NULL, "
-                "retry_count = retry_count + 1, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = $1, error = NULL, output_text = NULL, "
+                "retry_count = retry_count + 1, updated_at = $2 WHERE id = $3",
                 (TaskStatus.PENDING, time.time(), task_id),
             )
             results["succeeded"].append(task_id)
@@ -147,7 +147,7 @@ async def bulk_task_action(
                 results["failed"].append({"id": task_id, "reason": f"Cannot cancel {row['status']} task"})
                 continue
             await db.execute_write(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
                 (TaskStatus.CANCELLED, time.time(), task_id),
             )
             results["succeeded"].append(task_id)
@@ -177,32 +177,36 @@ async def list_tasks(
     from backend.routes.projects import _get_owned_project
     await _get_owned_project(db, project_id, current_user)
 
-    query = "SELECT * FROM tasks WHERE project_id = ?"
+    query = "SELECT * FROM tasks WHERE project_id = $1"
     params: list = [project_id]
 
     if status:
-        query += " AND status = ?"
         params.append(status.value)
+        query += f" AND status = ${len(params)}"
     if wave is not None:
-        query += " AND wave = ?"
         params.append(wave)
+        query += f" AND wave = ${len(params)}"
     if phase:
-        query += " AND phase = ?"
         params.append(phase)
+        query += f" AND phase = ${len(params)}"
     if model_tier:
-        query += " AND model_tier = ?"
         params.append(model_tier)
+        query += f" AND model_tier = ${len(params)}"
     if search:
-        query += " AND (INSTR(LOWER(title), LOWER(?)) > 0 OR INSTR(LOWER(description), LOWER(?)) > 0)"
-        params.extend([search, search])
+        params.append(search)
+        query += f" AND (INSTR(LOWER(title), LOWER(${len(params)})) > 0"
+        params.append(search)
+        query += f" OR INSTR(LOWER(description), LOWER(${len(params)})) > 0)"
 
     # Sort column restricted to enum value (prevents injection)
     sort_column = sort.value
     direction = "ASC" if sort_dir == "asc" else "DESC"
     secondary = ", created_at ASC" if sort_column != "created_at" else ""
     query += f" ORDER BY {sort_column} {direction}{secondary}"
-    query += " LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+    params.append(limit)
+    query += f" LIMIT ${len(params)}"
+    params.append(offset)
+    query += f" OFFSET ${len(params)}"
 
     rows = await db.fetchall(query, params)
     tasks = [TaskOut(**d) for d in await _rows_to_tasks(rows, db)]
@@ -244,34 +248,34 @@ async def update_task(
     updates = []
     params = []
     if body.title is not None:
-        updates.append("title = ?")
         params.append(body.title)
+        updates.append(f"title = ${len(params)}")
     if body.description is not None:
-        updates.append("description = ?")
         params.append(body.description)
+        updates.append(f"description = ${len(params)}")
     if body.model_tier is not None:
-        updates.append("model_tier = ?")
         params.append(body.model_tier.value)
+        updates.append(f"model_tier = ${len(params)}")
     if body.priority is not None:
-        updates.append("priority = ?")
         params.append(body.priority)
+        updates.append(f"priority = ${len(params)}")
     if body.max_tokens is not None:
-        updates.append("max_tokens = ?")
         params.append(body.max_tokens)
+        updates.append(f"max_tokens = ${len(params)}")
 
     if not updates:
         raise HTTPException(400, "No fields to update")
 
-    updates.append("updated_at = ?")
     params.append(time.time())
+    updates.append(f"updated_at = ${len(params)}")
     params.append(task_id)
 
     await db.execute_write(
-        f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
+        f"UPDATE tasks SET {', '.join(updates)} WHERE id = ${len(params)}",
         params,
     )
 
-    row = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    row = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     return TaskOut(**await _row_to_dict(row, db))
 
 
@@ -313,12 +317,12 @@ async def retry_task(
         raise HTTPException(400, f"Maximum retry limit reached ({MAX_TASK_RETRIES})")
 
     await db.execute_write(
-        "UPDATE tasks SET status = ?, error = NULL, output_text = NULL, "
-        "started_at = NULL, retry_count = retry_count + 1, updated_at = ? WHERE id = ?",
+        "UPDATE tasks SET status = $1, error = NULL, output_text = NULL, "
+        "started_at = NULL, retry_count = retry_count + 1, updated_at = $2 WHERE id = $3",
         (TaskStatus.PENDING, time.time(), task_id),
     )
 
-    row = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    row = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     return TaskOut(**await _row_to_dict(row, db))
 
 
@@ -335,11 +339,11 @@ async def cancel_task(
         raise HTTPException(400, f"Cannot cancel task in '{row['status']}' state")
 
     await db.execute_write(
-        "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+        "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
         (TaskStatus.CANCELLED, time.time(), task_id),
     )
 
-    row = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    row = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     return TaskOut(**await _row_to_dict(row, db))
 
 
@@ -363,7 +367,7 @@ async def review_task(
 
     if body.action == "approve":
         await db.execute_write(
-            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
             (TaskStatus.COMPLETED, time.time(), task_id),
         )
     elif body.action == "retry":
@@ -376,14 +380,14 @@ async def review_task(
                 "content": body.feedback,
             })
         await db.execute_write(
-            "UPDATE tasks SET status = ?, context_json = ?, "
+            "UPDATE tasks SET status = $1, context_json = $2, "
             "verification_status = NULL, verification_notes = NULL, "
             "output_text = NULL, completed_at = NULL, "
-            "retry_count = retry_count + 1, updated_at = ? WHERE id = ?",
+            "retry_count = retry_count + 1, updated_at = $3 WHERE id = $4",
             (TaskStatus.PENDING, json.dumps(ctx), time.time(), task_id),
         )
 
-    updated = await db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    updated = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     return TaskOut(**await _row_to_dict(updated, db))
 
 
@@ -407,7 +411,7 @@ async def expand_epic(
 
     # Get parent project for repo_path and config
     parent = await db.fetchone(
-        "SELECT * FROM projects WHERE id = ?", (task_row["project_id"],)
+        "SELECT * FROM projects WHERE id = $1", (task_row["project_id"],)
     )
     if not parent:
         raise HTTPException(404, "Parent project not found")
@@ -429,7 +433,7 @@ async def expand_epic(
     await db.execute_write(
         "INSERT INTO projects (id, name, requirements, status, config_json, "
         "owner_id, repo_path, git_base_branch, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         (
             new_id,
             task_row["title"],

@@ -118,7 +118,7 @@ async def resolve_cwd(db, project_id: str) -> str | None:
     # Fallback to repo_path
     try:
         row = await db.fetchone(
-            "SELECT repo_path FROM projects WHERE id = ?",
+            "SELECT repo_path FROM projects WHERE id = $1",
             (project_id,),
         )
         if row and row["repo_path"]:

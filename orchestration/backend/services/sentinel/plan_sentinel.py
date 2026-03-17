@@ -856,9 +856,9 @@ class PlanSentinel:
 
             if self._db:
                 await self._db.execute_write(
-                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "INSERT INTO sentinel_observations "
                     "(id, project_id, task_id, category, severity, message, details_json, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
                     (
                         str(uuid.uuid4()),
                         project_id,
@@ -899,7 +899,7 @@ class PlanSentinel:
                     if self._db:
                         try:
                             proj = await self._db.fetchone(
-                                "SELECT title, requirements FROM projects WHERE id = ?",
+                                "SELECT title, requirements FROM projects WHERE id = $1",
                                 (project_id,),
                             )
                             if proj:
@@ -909,7 +909,7 @@ class PlanSentinel:
                                 )
                             wave_tasks = await self._db.fetchall(
                                 "SELECT title, status, error, output_text FROM tasks "
-                                "WHERE project_id = ? AND wave = ?",
+                                "WHERE project_id = $1 AND wave = $2",
                                 (project_id, wave_number),
                             )
                             if wave_tasks:
@@ -1265,9 +1265,9 @@ class PlanSentinel:
             try:
                 import json as _json
                 await self._db.execute_write(
-                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "INSERT INTO sentinel_observations "
                     "(id, project_id, task_id, category, severity, message, details_json, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
                     (
                         obs.observation_id,
                         obs.project_id,
@@ -1437,7 +1437,7 @@ class PlanSentinel:
                 if self._db and obs.task_id:
                     try:
                         task_row = await self._db.fetchone(
-                            "SELECT title, description, task_type FROM tasks WHERE id = ?",
+                            "SELECT title, description, task_type FROM tasks WHERE id = $1",
                             (obs.task_id,),
                         )
                         if task_row:
@@ -1450,7 +1450,7 @@ class PlanSentinel:
                 if self._db:
                     try:
                         proj = await self._db.fetchone(
-                            "SELECT title, requirements FROM projects WHERE id = ?",
+                            "SELECT title, requirements FROM projects WHERE id = $1",
                             (obs.project_id,),
                         )
                         if proj:
@@ -1547,10 +1547,10 @@ class PlanSentinel:
 
         try:
             await self._db.execute_write(
-                "INSERT OR IGNORE INTO sentinel_decisions "
+                "INSERT INTO sentinel_decisions "
                 "(id, project_id, timestamp, command, reasoning, confidence, "
                 "outcome, details_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
                 (
                     uuid.uuid4().hex,
                     self._project_id,
@@ -1594,7 +1594,7 @@ class PlanSentinel:
             try:
                 rows = await self._db.fetchall(
                     "SELECT message, category, details_json FROM sentinel_observations "
-                    "WHERE project_id = ? AND category IN "
+                    "WHERE project_id = $1 AND category IN "
                     "('intervention_result', 'intervention_proposal', "
                     "'interrogation_concern', 'wave_reassessment') "
                     "ORDER BY created_at DESC LIMIT 8",
@@ -1705,9 +1705,9 @@ class PlanSentinel:
                     "task_id": obs.task_id,
                 }
                 await self._db.execute_write(
-                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "INSERT INTO sentinel_observations "
                     "(id, project_id, task_id, category, severity, message, details_json, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
                     (
                         str(_uuid.uuid4()),
                         self._project_id,
@@ -1970,9 +1970,9 @@ class PlanSentinel:
                 if reasoning_result is not None:
                     details["llm_diagnosis"] = payload.get("llm_diagnosis")
                 await self._db.execute_write(
-                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "INSERT INTO sentinel_observations "
                     "(id, project_id, task_id, category, severity, message, details_json, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
                     (
                         str(_uuid.uuid4()),
                         self._project_id,

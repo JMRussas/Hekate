@@ -42,7 +42,7 @@ class DecisionLogger:
             await self._db.execute_write(
                 """INSERT INTO sentinel_decisions
                    (id, project_id, timestamp, command, reasoning, confidence, outcome, details_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
                 (
                     decision_id,
                     project_id,
@@ -74,8 +74,8 @@ class DecisionLogger:
                     """SELECT id, project_id, timestamp, command, reasoning,
                               confidence, outcome, details_json
                        FROM sentinel_decisions
-                       WHERE project_id = ? AND command = ?
-                       ORDER BY timestamp DESC LIMIT ?""",
+                       WHERE project_id = $1 AND command = $2
+                       ORDER BY timestamp DESC LIMIT $3""",
                     (project_id, command, limit),
                 )
             else:
@@ -83,8 +83,8 @@ class DecisionLogger:
                     """SELECT id, project_id, timestamp, command, reasoning,
                               confidence, outcome, details_json
                        FROM sentinel_decisions
-                       WHERE project_id = ?
-                       ORDER BY timestamp DESC LIMIT ?""",
+                       WHERE project_id = $1
+                       ORDER BY timestamp DESC LIMIT $2""",
                     (project_id, limit),
                 )
             return [self._row_to_record(r) for r in rows]
@@ -106,8 +106,8 @@ class DecisionLogger:
                 """SELECT id, project_id, timestamp, command, reasoning,
                           confidence, outcome, details_json
                    FROM sentinel_decisions
-                   WHERE command = ?
-                   ORDER BY timestamp DESC LIMIT ?""",
+                   WHERE command = $1
+                   ORDER BY timestamp DESC LIMIT $2""",
                 (command, limit),
             )
             return [self._row_to_record(r) for r in rows]

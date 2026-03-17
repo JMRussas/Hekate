@@ -126,14 +126,14 @@ class AuthService:
         await self._db.execute_write(
             "INSERT INTO refresh_token_families "
             "(id, user_id, family_id, token_hash, is_revoked, created_at, expires_at) "
-            "VALUES (?, ?, ?, ?, 0, ?, ?)",
+            "VALUES ($1, $2, $3, $4, 0, $5, $6)",
             (uuid.uuid4().hex, user_id, family_id, token_hash, time.time(), expires_at),
         )
 
     async def _revoke_family(self, family_id: str) -> None:
         """Revoke all tokens in a family (reuse detected)."""
         await self._db.execute_write(
-            "UPDATE refresh_token_families SET is_revoked = 1 WHERE family_id = ?",
+            "UPDATE refresh_token_families SET is_revoked = 1 WHERE family_id = $1",
             (family_id,),
         )
 
@@ -160,7 +160,7 @@ class AuthService:
         async with self._db.transaction() as conn:
             # Check duplicate — generic error to prevent email enumeration
             existing = await conn.execute(
-                "SELECT id FROM users WHERE email = ?", (email,)
+                "SELECT id FROM users WHERE email = $1", (email,)
             )
             if await existing.fetchone():
                 raise ValueError("Registration failed")
@@ -172,7 +172,7 @@ class AuthService:
 
             await conn.execute(
                 "INSERT INTO users (id, email, password_hash, display_name, role, is_active, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?)",
+                "VALUES ($1, $2, $3, $4, $5, 1, $6)",
                 (user_id, email, password_hash, display, role, now),
             )
 
@@ -248,7 +248,7 @@ class AuthService:
             raise ValueError("Invalid email or password")
 
         user = await self._db.fetchone(
-            "SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email,)
+            "SELECT * FROM users WHERE email = $1 COLLATE NOCASE", (email,)
         )
 
         if not user:
@@ -273,7 +273,7 @@ class AuthService:
 
         # Update last login
         await self._db.execute_write(
-            "UPDATE users SET last_login_at = ? WHERE id = ?",
+            "UPDATE users SET last_login_at = $1 WHERE id = $2",
             (time.time(), user["id"]),
         )
 
@@ -320,7 +320,7 @@ class AuthService:
 
         user_id = payload["sub"]
         user = await self._db.fetchone(
-            "SELECT * FROM users WHERE id = ? AND is_active = 1", (user_id,)
+            "SELECT * FROM users WHERE id = $1 AND is_active = 1", (user_id,)
         )
         if not user:
             raise ValueError("User not found or disabled")
@@ -341,7 +341,7 @@ class AuthService:
 
             async with self._db.transaction():
                 record = await self._db.fetchone(
-                    "SELECT * FROM refresh_token_families WHERE token_hash = ?",
+                    "SELECT * FROM refresh_token_families WHERE token_hash = $1",
                     (token_hash,),
                 )
 
@@ -364,7 +364,7 @@ class AuthService:
                 else:
                     # Valid token — consume it (mark as revoked so it can't be reused)
                     await self._db.execute_write(
-                        "UPDATE refresh_token_families SET is_revoked = 1 WHERE id = ?",
+                        "UPDATE refresh_token_families SET is_revoked = 1 WHERE id = $1",
                         (record["id"],),
                     )
 
@@ -398,7 +398,7 @@ class AuthService:
         row = await self._db.fetchone(
             "SELECT id, email, display_name, role, is_active, created_at, last_login_at, "
             "password_hash IS NOT NULL as has_password "
-            "FROM users WHERE id = ?",
+            "FROM users WHERE id = $1",
             (user_id,),
         )
         if not row:
@@ -406,7 +406,7 @@ class AuthService:
         user = dict(row)
         # Fetch linked OIDC providers
         identities = await self._db.fetchall(
-            "SELECT provider FROM user_identities WHERE user_id = ?",
+            "SELECT provider FROM user_identities WHERE user_id = $1",
             (user_id,),
         )
         user["linked_providers"] = [r["provider"] for r in identities]
@@ -420,7 +420,7 @@ class AuthService:
         """Revoke all refresh token families for a user. Returns count of revoked records."""
         cursor = await self._db.execute_write(
             "UPDATE refresh_token_families SET is_revoked = 1 "
-            "WHERE user_id = ? AND is_revoked = 0",
+            "WHERE user_id = $1 AND is_revoked = 0",
             (user_id,),
         )
         return cursor.rowcount
@@ -428,7 +428,7 @@ class AuthService:
     async def cleanup_expired_tokens(self) -> int:
         """Delete expired refresh token records. Returns count of deleted records."""
         cursor = await self._db.execute_write(
-            "DELETE FROM refresh_token_families WHERE expires_at < ?",
+            "DELETE FROM refresh_token_families WHERE expires_at < $1",
             (time.time(),),
         )
         return cursor.rowcount
@@ -455,7 +455,7 @@ class AuthService:
 
         await self._db.execute_write(
             "INSERT INTO api_keys (id, key_hash, key_prefix, user_id, name, is_active, created_at) "
-            "VALUES (?, ?, ?, ?, ?, 1, ?)",
+            "VALUES ($1, $2, $3, $4, $5, 1, $6)",
             (key_id, key_hash, key_prefix, user_id, name, now),
         )
         logger.info("API key created: %s (%s) for user %s", key_prefix, name, user_id)
@@ -476,7 +476,7 @@ class AuthService:
         row = await self._db.fetchone(
             "SELECT ak.*, u.id as uid, u.email, u.display_name, u.role, u.is_active as user_active "
             "FROM api_keys ak JOIN users u ON ak.user_id = u.id "
-            "WHERE ak.key_hash = ? AND ak.is_active = 1",
+            "WHERE ak.key_hash = $1 AND ak.is_active = 1",
             (key_hash,),
         )
         if not row:
@@ -486,7 +486,7 @@ class AuthService:
 
         # Update last used timestamp
         await self._db.execute_write(
-            "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+            "UPDATE api_keys SET last_used_at = $1 WHERE id = $2",
             (time.time(), row["id"]),
         )
         return {
@@ -500,7 +500,7 @@ class AuthService:
         """List all API keys for a user (without hashes)."""
         rows = await self._db.fetchall(
             "SELECT id, key_prefix, name, is_active, created_at, last_used_at "
-            "FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
+            "FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC",
             (user_id,),
         )
         return [dict(r) for r in rows]
@@ -508,7 +508,7 @@ class AuthService:
     async def revoke_api_key(self, key_id: str, user_id: str) -> bool:
         """Revoke an API key. Returns True if the key was found and revoked."""
         cursor = await self._db.execute_write(
-            "UPDATE api_keys SET is_active = 0 WHERE id = ? AND user_id = ?",
+            "UPDATE api_keys SET is_active = 0 WHERE id = $1 AND user_id = $2",
             (key_id, user_id),
         )
         if cursor.rowcount > 0:
@@ -529,6 +529,6 @@ class AuthService:
             raise PermissionError("Cannot change another user's password")
         password_hash = self.hash_password(new_password)
         await self._db.execute_write(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
+            "UPDATE users SET password_hash = $1 WHERE id = $2",
             (password_hash, user_id),
         )

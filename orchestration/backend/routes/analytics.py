@@ -40,7 +40,10 @@ _TERMINAL_STATUSES = (
     TaskStatus.CANCELLED.value,
     TaskStatus.NEEDS_REVIEW.value,
 )
-_TERMINAL_PLACEHOLDERS = ",".join("?" * len(_TERMINAL_STATUSES))
+_TERMINAL_PLACEHOLDERS_START = 1  # default start index; overridden per query
+def _terminal_placeholders(start: int = 1) -> str:
+    """Generate $1,$2,... placeholders for terminal statuses starting at `start`."""
+    return ",".join(f"${start + i}" for i in range(len(_TERMINAL_STATUSES)))
 
 
 # ---------------------------------------------------------------------------
@@ -63,14 +66,16 @@ async def cost_breakdown(
 
     # By project — from usage_log joined with tasks (terminal only) and projects
     # Same terminal-status filter as by_model_tier so totals agree.
+    _tp = _terminal_placeholders(1)
+    _cutoff_idx = len(_TERMINAL_STATUSES) + 1
     project_rows = await db.fetchall(
         "SELECT u.project_id, p.name as project_name, "
         "SUM(u.cost_usd) as cost, COUNT(DISTINCT u.task_id) as task_count "
         "FROM usage_log u "
         "JOIN tasks t ON t.id = u.task_id "
         "LEFT JOIN projects p ON p.id = u.project_id "
-        f"WHERE t.status IN ({_TERMINAL_PLACEHOLDERS}) "
-        "AND u.project_id IS NOT NULL AND u.timestamp >= ? "
+        f"WHERE t.status IN ({_tp}) "
+        f"AND u.project_id IS NOT NULL AND u.timestamp >= ${_cutoff_idx} "
         "GROUP BY u.project_id ORDER BY cost DESC",
         (*_TERMINAL_STATUSES, cutoff),
     )
@@ -90,7 +95,7 @@ async def cost_breakdown(
         "COUNT(DISTINCT u.task_id) as task_count "
         "FROM usage_log u "
         "JOIN tasks t ON t.id = u.task_id "
-        f"WHERE t.status IN ({_TERMINAL_PLACEHOLDERS}) AND u.timestamp >= ? "
+        f"WHERE t.status IN ({_tp}) AND u.timestamp >= ${_cutoff_idx} "
         "GROUP BY t.model_tier",
         (*_TERMINAL_STATUSES, cutoff),
     )
@@ -105,12 +110,17 @@ async def cost_breakdown(
     ]
 
     # Daily trend — from usage_log with same JOIN/filter as by_project/by_model_tier
+    date_expr = (
+        "TO_CHAR(TO_TIMESTAMP(u.timestamp), 'YYYY-MM-DD')"
+        if db.is_postgres
+        else "DATE(u.timestamp, 'unixepoch')"
+    )
     trend_rows = await db.fetchall(
-        "SELECT DATE(u.timestamp, 'unixepoch') as date, "
+        f"SELECT {date_expr} as date, "
         "SUM(u.cost_usd) as cost, COUNT(*) as api_calls "
         "FROM usage_log u "
         "JOIN tasks t ON t.id = u.task_id "
-        f"WHERE t.status IN ({_TERMINAL_PLACEHOLDERS}) AND u.timestamp >= ? "
+        f"WHERE t.status IN ({_tp}) AND u.timestamp >= ${_cutoff_idx} "
         "GROUP BY date ORDER BY date ASC",
         (*_TERMINAL_STATUSES, cutoff),
     )
@@ -146,9 +156,10 @@ async def task_outcomes(
     """Task success rates and verification signal by model tier."""
 
     # Task outcomes by tier + status
+    _tp_out = _terminal_placeholders(1)
     outcome_rows = await db.fetchall(
         "SELECT model_tier, status, COUNT(*) as cnt "
-        f"FROM tasks WHERE status IN ({_TERMINAL_PLACEHOLDERS}) "
+        f"FROM tasks WHERE status IN ({_tp_out}) "
         "GROUP BY model_tier, status",
         _TERMINAL_STATUSES,
     )
@@ -177,7 +188,7 @@ async def task_outcomes(
     verif_rows = await db.fetchall(
         "SELECT model_tier, verification_status, COUNT(*) as cnt "
         "FROM tasks WHERE verification_status IS NOT NULL "
-        f"AND status IN ({_TERMINAL_PLACEHOLDERS}) "
+        f"AND status IN ({_tp_out}) "
         "GROUP BY model_tier, verification_status",
         _TERMINAL_STATUSES,
     )
@@ -222,11 +233,12 @@ async def efficiency(
     """Retry rates, checkpoint counts, wave throughput, cost efficiency."""
 
     # Retries by tier — terminal statuses only
+    _tp_eff = _terminal_placeholders(1)
     retry_rows = await db.fetchall(
         "SELECT model_tier, COUNT(*) as total, "
         "SUM(CASE WHEN retry_count > 0 THEN 1 ELSE 0 END) as with_retries, "
         "SUM(retry_count) as total_retries "
-        f"FROM tasks WHERE status IN ({_TERMINAL_PLACEHOLDERS}) "
+        f"FROM tasks WHERE status IN ({_tp_eff}) "
         "GROUP BY model_tier",
         _TERMINAL_STATUSES,
     )
@@ -256,7 +268,7 @@ async def efficiency(
         "COUNT(*) as task_count, "
         "AVG(t.completed_at - t.started_at) as avg_duration "
         "FROM tasks t LEFT JOIN projects p ON p.id = t.project_id "
-        f"WHERE t.status IN ({_TERMINAL_PLACEHOLDERS}) "
+        f"WHERE t.status IN ({_tp_eff}) "
         "AND t.completed_at IS NOT NULL AND t.started_at IS NOT NULL "
         "GROUP BY t.project_id, t.wave ORDER BY t.project_id, t.wave",
         _TERMINAL_STATUSES,
@@ -273,14 +285,15 @@ async def efficiency(
     ]
 
     # Cost efficiency by tier — terminal statuses only, costs from usage_log
+    _tp_cost = _terminal_placeholders(3)  # $1=completed status, $2=passed status, $3-$6=terminal
     eff_rows = await db.fetchall(
         "SELECT t.model_tier, "
         "COALESCE(SUM(u.cost_usd), 0) as cost, "
-        "COUNT(DISTINCT CASE WHEN t.status = ? THEN t.id END) as completed, "
-        "COUNT(DISTINCT CASE WHEN t.verification_status = ? THEN t.id END) as passed "
+        "COUNT(DISTINCT CASE WHEN t.status = $1 THEN t.id END) as completed, "
+        "COUNT(DISTINCT CASE WHEN t.verification_status = $2 THEN t.id END) as passed "
         "FROM tasks t "
         "LEFT JOIN usage_log u ON u.task_id = t.id "
-        f"WHERE t.status IN ({_TERMINAL_PLACEHOLDERS}) "
+        f"WHERE t.status IN ({_tp_cost}) "
         "GROUP BY t.model_tier",
         (TaskStatus.COMPLETED.value, VerificationResult.PASSED.value, *_TERMINAL_STATUSES),
     )
