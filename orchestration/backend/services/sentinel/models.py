@@ -116,6 +116,7 @@ class SentinelCommand(Enum):
     RETRY_TASK = "retry_task"
     REASSIGN_TIER = "reassign_tier"
     SKIP_TASK = "skip_task"
+    RESTART_SERVER = "restart_server"
 
 
 @dataclass

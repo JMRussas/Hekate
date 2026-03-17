@@ -27,3 +27,14 @@ class Tool(ABC):
             "description": self.description,
             "input_schema": self.parameters,
         }
+
+    def to_ollama_tool(self) -> dict:
+        """Convert to Ollama /api/chat tool definition (OpenAI-compatible format)."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }

@@ -152,7 +152,7 @@ class PlanSyncService:
         # Persist the mapping to the plans table
         if node_mapping:
             await self._db.execute_write(
-                "UPDATE plans SET node_mapping = $1 WHERE id = $2",
+                "UPDATE plans SET node_mapping_json = $1 WHERE id = $2",
                 (json.dumps(node_mapping), plan_id),
             )
 
@@ -282,13 +282,13 @@ class PlanSyncService:
     ) -> str | None:
         # Look up the plan's root node ID from the node mapping
         row = await self._db.fetchone(
-            "SELECT node_mapping FROM plans WHERE id = $1", (plan_id,),
+            "SELECT node_mapping_json FROM plans WHERE id = $1", (plan_id,),
         )
-        if not row or not row["node_mapping"]:
+        if not row or not row["node_mapping_json"]:
             logger.debug("No node mapping for plan %s, cannot sync revision", plan_id)
             return None
 
-        mapping = json.loads(row["node_mapping"])
+        mapping = json.loads(row["node_mapping_json"])
 
         # The plan root node ID is stored under the special "__plan_root__" key
         # If not present, look it up from the plan table
@@ -345,8 +345,8 @@ class PlanSyncService:
     async def get_node_mapping(self, plan_id: str) -> dict[str, str]:
         """Load the persisted task title → node ID mapping for a plan."""
         row = await self._db.fetchone(
-            "SELECT node_mapping FROM plans WHERE id = $1", (plan_id,),
+            "SELECT node_mapping_json FROM plans WHERE id = $1", (plan_id,),
         )
-        if not row or not row["node_mapping"]:
+        if not row or not row["node_mapping_json"]:
             return {}
-        return json.loads(row["node_mapping"])
+        return json.loads(row["node_mapping_json"])

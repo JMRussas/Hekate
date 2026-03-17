@@ -42,6 +42,10 @@ Requirements are numbered [R1], [R2], etc. for traceability.
 - Keep task descriptions self-contained — include enough context for a fresh AI instance.
 - Use "depends_on" to reference task indices (0-based) for ordering dependencies.
 - Prefer simple tasks when possible — they use cheaper models.
+- For Alembic migrations (in backend/migrations/versions/):
+  - Filename MUST be 'NNN_description.py' where NNN is the next 3-digit number.
+  - The `revision_id` variable in the file MUST be the 'NNN' string.
+  - The `down_revision` variable MUST match the `revision_id` of the previous migration.
 - Use task_type "research" for information gathering that can run on a free local model.
 - Use task_type "analysis" for summarization/comparison that can run locally.
 - Use task_type "asset" for image/visual generation (uses ComfyUI).

@@ -101,6 +101,7 @@ class InterventionAction(str, Enum):
     REORDER_WAVE = "reorder_wave"
     REASSIGN_TIER = "reassign_tier"
     MODIFY_PROMPT = "modify_prompt"
+    RESTART_SERVER = "restart_server"
 
 
 # Map observation categories to the intervention they trigger
@@ -1461,6 +1462,18 @@ class PlanSentinel:
                     except Exception:
                         pass
 
+                # Prepare error context for interrogator
+                interrogation_error_text = ""
+                if obs.details:
+                    task_errors = obs.details.get("task_errors")
+                    if isinstance(task_errors, dict):
+                        if obs.category == "cascade_failure":
+                            # For cascades, serialize all errors
+                            interrogation_error_text = json.dumps(task_errors, indent=2)
+                        elif obs.task_id:
+                            # For single-task issues, get the specific error
+                            interrogation_error_text = task_errors.get(obs.task_id, "")
+
                 inp = InterrogationInput(
                     decision_context=DecisionContext.SENTINEL_INTERVENTION,
                     proposed_action=f"{action.value} on task {obs.task_id or 'unknown'}",
@@ -1471,9 +1484,7 @@ class PlanSentinel:
                     is_coding_task=is_coding,
                     task_description=task_desc,
                     project_summary=project_summary,
-                    error_text=(obs.details or {}).get("task_errors", {}).get(
-                        obs.task_id or "", ""
-                    )[:1000] if obs.details else "",
+                    error_text=interrogation_error_text[:1000],
                     world_state=self._format_state_for_interrogation(),
                     decision_history=await self._format_decision_history_for_interrogation(),
                 )
@@ -1778,6 +1789,9 @@ class PlanSentinel:
             return await self._executor.reassign_tier(obs)
         elif action == InterventionAction.MODIFY_PROMPT:
             return await self._executor.modify_prompt(obs)
+        elif action == InterventionAction.RESTART_SERVER:
+            reason = (obs.details or {}).get("reason", obs.description or "stale code detected")
+            return await self._executor.restart_server(reason)
         return InterventionResult(
             action=action.value, success=False, detail="unknown action",
         )

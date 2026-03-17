@@ -44,6 +44,8 @@ VALID_TOPICS: frozenset[str] = frozenset({
     # Odin (LLM-driven overseer)
     "odin_observation",
     "odin_decision",
+    # Server lifecycle
+    "restart_server",
 })
 
 # Type alias for async subscriber callbacks
