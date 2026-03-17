@@ -103,6 +103,12 @@ class ConfidenceLevel(str, Enum):
     LOW = "low"
 
 
+class ReassessmentOutcome(str, Enum):
+    CONTINUE_AS_PLANNED = "continue_as_planned"
+    REPLAN_REMAINING = "replan_remaining"
+    ESCALATE_TO_HUMAN = "escalate_to_human"
+
+
 class ResourceStatus(str, Enum):
     ONLINE = "online"
     OFFLINE = "offline"

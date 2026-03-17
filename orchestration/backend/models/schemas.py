@@ -15,6 +15,7 @@ from backend.models.enums import (
     PlanningRigor,
     PlanStatus,
     ProjectStatus,
+    ReassessmentOutcome,
     ResourceStatus,
     TaskStatus,
     TaskType,
@@ -98,6 +99,7 @@ class PlanOut(BaseModel):
     cost_usd: float
     plan: dict  # The structured plan JSON
     status: PlanStatus
+    node_mapping_json: str | None = None
     created_at: float
 
 
@@ -130,6 +132,7 @@ class TaskOut(BaseModel):
     context: list[dict] = Field(default_factory=list)
     error: str | None = None
     depends_on: list[str] = Field(default_factory=list)
+    rationale: str | None = None
     started_at: float | None = None
     completed_at: float | None = None
     created_at: float = 0.0
@@ -523,6 +526,7 @@ class TaskClaimResponse(BaseModel):
     context: list = Field(default_factory=list)
     tools: list = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
+    rationale: str | None = None
     max_tokens: int = 4096
     requirement_ids: list[str] = Field(default_factory=list)
 
@@ -563,3 +567,42 @@ class RAGChunkPreview(BaseModel):
     type_name: str | None = None
     file_path: str | None = None
     text_preview: str
+
+
+# ---------------------------------------------------------------------------
+# Wave Reassessment (Athena Loop)
+# ---------------------------------------------------------------------------
+
+class TaskOutcomeSummary(BaseModel):
+    """Summary of a single task's outcome for reassessment context."""
+    task_id: str
+    title: str
+    status: str
+    output_summary: str = ""
+    error: str | None = None
+
+
+class WaveReassessmentContext(BaseModel):
+    """Full context fed to the LLM for wave reassessment."""
+    project_id: str
+    wave_number: int
+    task_outcomes: list[TaskOutcomeSummary]
+    knowledge_findings: list[str] = Field(default_factory=list)
+    sentinel_observations: list[str] = Field(default_factory=list)
+    original_plan: dict
+
+
+class ReassessmentResult(BaseModel):
+    """LLM output from the wave reassessment evaluation."""
+    outcome: ReassessmentOutcome
+    rationale: str = Field(..., min_length=1, max_length=10_000)
+    suggested_changes: list[str] = Field(default_factory=list)
+
+
+class HumanInterventionProposal(BaseModel):
+    """Proposal sent when the reassessment outcome is escalate_to_human."""
+    project_id: str
+    wave_number: int
+    rationale: str
+    reassessment_context: WaveReassessmentContext
+    suggested_actions: list[str] = Field(default_factory=list)
