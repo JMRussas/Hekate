@@ -117,6 +117,48 @@ async def lifespan(app: FastAPI):
         await executor.start()
         stack.push_async_callback(executor.stop)
 
+        # Register graceful shutdown: pause projects, wait for running tasks
+        async def _graceful_shutdown():
+            logger.info("Graceful shutdown: pausing executing projects...")
+            import time as _time
+            now = _time.time()
+            await db.execute_write(
+                "UPDATE projects SET status = 'paused', updated_at = $1 WHERE status = 'executing'",
+                (now,),
+            )
+            # Wait up to 30s for running tasks to finish
+            for i in range(15):
+                row = await db.fetchone(
+                    "SELECT COUNT(*) as cnt FROM tasks WHERE status IN ('running', 'claimed')", ()
+                )
+                active = row["cnt"] if row else 0
+                if active == 0:
+                    break
+                logger.info("Graceful shutdown: waiting for %d running tasks... (%d/15)", active, i + 1)
+                await asyncio.sleep(2)
+            # Release any still-claimed tasks
+            await db.execute_write(
+                "UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL, updated_at = $1 "
+                "WHERE status = 'claimed'",
+                (now,),
+            )
+            logger.info("Graceful shutdown: all projects paused, ready to stop")
+
+        stack.push_async_callback(_graceful_shutdown)
+
+        # Register auto-resume on startup for next boot
+        paused = await db.fetchone(
+            "SELECT COUNT(*) as cnt FROM projects WHERE status = 'paused'", ()
+        )
+        if paused and paused["cnt"] > 0:
+            import time as _time
+            now = _time.time()
+            result = await db.execute_write(
+                "UPDATE projects SET status = 'executing', updated_at = $1 WHERE status = 'paused'",
+                (now,),
+            )
+            logger.info("Auto-resumed %s paused projects from previous shutdown", result)
+
         yield
 
     logger.info("Orchestration Engine shutting down")

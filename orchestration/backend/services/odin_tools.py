@@ -860,7 +860,6 @@ async def _create_project(db: Database, bus: SentinelBus, args: dict) -> str:
 
 
 async def _plan_project(db: Database, bus: SentinelBus, args: dict) -> str:
-    import httpx
     project_id = args.get("project_id")
     if not project_id:
         return "Error: project_id is required."
@@ -871,26 +870,23 @@ async def _plan_project(db: Database, bus: SentinelBus, args: dict) -> str:
     if project["status"] != "draft":
         return f"Error: project is '{project['status']}', must be 'draft' to plan."
 
-    # Call the orchestration API to trigger planning (needs planner service context)
+    # Use planner service directly — CLI providers are subscription-billed ($0)
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(
-                f"http://localhost:5200/api/projects/{project_id}/plan",
-                headers={"Authorization": "Bearer odin-internal"},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                plan_id = data.get("plan_id", "unknown")
-                task_count = data.get("task_count", 0)
-                return f"Plan generated for '{project['name']}' (plan_id={plan_id}, {task_count} tasks). Call start_project to begin execution."
-            else:
-                return f"Planning failed: {resp.status_code} {resp.text[:200]}"
+        from backend.services.planner import generate_plan
+        from backend.container import container
+        result = await generate_plan(
+            project_id,
+            db=db,
+            budget=container.budget(),
+        )
+        plan_id = result.get("plan_id", "unknown")
+        task_count = result.get("task_count", 0)
+        return f"Plan generated for '{project['name']}' (plan_id={plan_id}, {task_count} tasks). Call start_project to begin execution."
     except Exception as e:
-        return f"Planning request failed: {e}"
+        return f"Planning failed: {type(e).__name__}: {e}"
 
 
 async def _start_project(db: Database, bus: SentinelBus, args: dict) -> str:
-    import httpx
     project_id = args.get("project_id")
     if not project_id:
         return "Error: project_id is required."
@@ -901,18 +897,25 @@ async def _start_project(db: Database, bus: SentinelBus, args: dict) -> str:
     if project["status"] not in ("planned", "draft"):
         return f"Error: project is '{project['status']}', must be 'planned' to start."
 
+    # Use decomposer directly — avoids auth, runs in-process
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"http://localhost:5200/api/projects/{project_id}/start",
-                headers={"Authorization": "Bearer odin-internal"},
-            )
-            if resp.status_code == 200:
-                return f"Project '{project['name']}' execution started."
-            else:
-                return f"Start failed: {resp.status_code} {resp.text[:200]}"
+        from backend.container import container
+        decomposer = container.decomposer()
+        plan = await db.fetchone(
+            "SELECT id FROM plans WHERE project_id = $1 ORDER BY version DESC LIMIT 1",
+            (project_id,),
+        )
+        if not plan:
+            return f"Error: no plan found for '{project['name']}'. Call plan_project first."
+
+        await decomposer.decompose(project_id, plan["id"])
+        await db.execute_write(
+            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
+            ("executing", time.time(), project_id),
+        )
+        return f"Project '{project['name']}' decomposed into tasks and set to executing."
     except Exception as e:
-        return f"Start request failed: {e}"
+        return f"Start failed: {type(e).__name__}: {e}"
 
 
 # ---------------------------------------------------------------------------

@@ -248,7 +248,7 @@ class AuthService:
             raise ValueError("Invalid email or password")
 
         user = await self._db.fetchone(
-            "SELECT * FROM users WHERE email = $1 COLLATE NOCASE", (email,)
+            "SELECT * FROM users WHERE LOWER(email) = LOWER($1)", (email,)
         )
 
         if not user:

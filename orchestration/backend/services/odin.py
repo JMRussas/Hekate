@@ -34,7 +34,7 @@ logger = logging.getLogger("orchestration.odin")
 MAX_ROUNDS = 4
 TICK_INTERVAL = int(cfg("odin.tick_interval", 30))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", cfg("ollama.url", "http://localhost:11434"))
-ODIN_MODEL = cfg("odin.model", "qwen3.5:latest")
+ODIN_MODEL = cfg("odin.model", "qwen3.5:4b")
 STALENESS_THRESHOLD = int(cfg("odin.staleness_seconds", 300))
 
 
