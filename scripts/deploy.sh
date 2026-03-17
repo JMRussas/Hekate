@@ -2,32 +2,31 @@
 # Hekate — deploy from source repo to C:\Hekate (NSSM service directory)
 # Usage: bash scripts/deploy.sh
 #
-# Source: C:\Users\jruss\Documents\GitHub\Hekate (git repo)
-# Target: C:\Hekate (NSSM service directory)
-#
-# Deploys:
-#   - Context Store: dotnet publish (binary)
-#   - Orchestration: full source copy + DB sync + migration sync
-#   - Scripts: copy
-#
-# Preserves:
-#   - config.json (never overwritten if it exists)
-#   - .hekate index directories
+# Can be run from:
+#   - Git Bash: bash scripts/deploy.sh
+#   - PowerShell (admin): bash scripts/deploy.sh
+#   - Any terminal in the source repo directory
 #
 # Requires: admin terminal for NSSM service management
 
 set -e
 
-# Resolve paths — handle both Git Bash (/c/) and PowerShell (C:\) contexts
-SOURCE="${HEKATE_SOURCE:-/c/Users/jruss/Documents/GitHub/Hekate}"
-TARGET="${HEKATE_TARGET:-/c/Hekate}"
+# ---------------------------------------------------------------
+# Path resolution — works from Git Bash, PowerShell, or cmd
+# ---------------------------------------------------------------
 
-# Also try Windows paths if the unix paths don't exist
-if [ ! -d "$SOURCE" ]; then
-    SOURCE="C:/Users/jruss/Documents/GitHub/Hekate"
-fi
-if [ ! -d "$TARGET" ]; then
+# Find source repo from script location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Target is always C:\Hekate — try both path formats
+if [ -d "/c/Hekate" ]; then
+    TARGET="/c/Hekate"
+elif [ -d "C:/Hekate" ]; then
     TARGET="C:/Hekate"
+else
+    echo "ERROR: C:\\Hekate not found"
+    exit 1
 fi
 
 GREEN='\033[0;32m'
@@ -44,31 +43,31 @@ echo ""
 # Pre-flight checks
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Pre-flight checks...${NC}"
+PREFLIGHT_OK=true
 
-# Verify source exists
 if [ ! -d "$SOURCE/orchestration" ]; then
-    echo -e "  ${RED}Source repo not found at $SOURCE${NC}"
-    exit 1
+    echo -e "  ${RED}Source repo missing orchestration/ at $SOURCE${NC}"
+    PREFLIGHT_OK=false
 fi
-
-# Verify target exists
 if [ ! -d "$TARGET" ]; then
-    echo -e "  ${RED}Target directory not found at $TARGET${NC}"
-    exit 1
+    echo -e "  ${RED}Target $TARGET not found${NC}"
+    PREFLIGHT_OK=false
 fi
-
-# Check node is on system PATH
 if ! command -v node &> /dev/null; then
-    echo -e "  ${RED}node not found on PATH — add C:\\Program Files\\nodejs to system PATH${NC}"
-    exit 1
+    echo -e "  ${RED}node not on PATH${NC}"
+    PREFLIGHT_OK=false
 fi
-
-# Check dotnet
 if ! command -v dotnet &> /dev/null; then
-    echo -e "  ${RED}dotnet not found on PATH${NC}"
-    exit 1
+    echo -e "  ${RED}dotnet not on PATH${NC}"
+    PREFLIGHT_OK=false
+fi
+if ! command -v nssm &> /dev/null; then
+    echo -e "  ${YELLOW}nssm not on PATH — service management will fail${NC}"
 fi
 
+if [ "$PREFLIGHT_OK" = false ]; then
+    exit 1
+fi
 echo -e "  ${GREEN}OK${NC}"
 
 # ---------------------------------------------------------------
@@ -90,109 +89,147 @@ dotnet publish -c Release -o "$TARGET/context-store/" -q 2>&1
 echo -e "  ${GREEN}Published${NC}"
 
 # ---------------------------------------------------------------
-# 3. Copy Orchestration (full source — Python runs from source)
+# 3. Copy Orchestration source
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Copying orchestration source...${NC}"
 
-# Copy all Python source, templates, knowledge, tools
-# Preserve: data/ (DB), config.json, .worktrees/
-# Convert to Windows paths for robocopy
-WIN_SOURCE=$(echo "$SOURCE" | sed 's|^/c/|C:\\|;s|/|\\|g')
-WIN_TARGET=$(echo "$TARGET" | sed 's|^/c/|C:\\|;s|/|\\|g')
+# Use cp -r instead of robocopy for cross-platform compatibility
+# Backend
+rm -rf "$TARGET/orchestration/backend"
+cp -r "$SOURCE/orchestration/backend" "$TARGET/orchestration/backend"
+find "$TARGET/orchestration/backend" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
-robocopy "${WIN_SOURCE}\\orchestration\\backend" "${WIN_TARGET}\\orchestration\\backend" /MIR \
-    /XD __pycache__ > /dev/null 2>&1 || true
+# Tools
+rm -rf "$TARGET/orchestration/tools"
+cp -r "$SOURCE/orchestration/tools" "$TARGET/orchestration/tools"
 
-robocopy "${WIN_SOURCE}\\orchestration\\tools" "${WIN_TARGET}\\orchestration\\tools" /MIR \
-    /XD __pycache__ > /dev/null 2>&1 || true
+# Tests
+rm -rf "$TARGET/orchestration/tests"
+cp -r "$SOURCE/orchestration/tests" "$TARGET/orchestration/tests"
 
-robocopy "${WIN_SOURCE}\\orchestration\\tests" "${WIN_TARGET}\\orchestration\\tests" /MIR \
-    /XD __pycache__ > /dev/null 2>&1 || true
+# Root files
+cp "$SOURCE/orchestration/run.py" "$TARGET/orchestration/" 2>/dev/null || true
+cp "$SOURCE/orchestration/requirements.txt" "$TARGET/orchestration/" 2>/dev/null || true
+cp "$SOURCE/orchestration/Dockerfile" "$TARGET/orchestration/" 2>/dev/null || true
+cp "$SOURCE/orchestration/CLAUDE.md" "$TARGET/orchestration/" 2>/dev/null || true
 
-# Copy root files (run.py, requirements.txt, etc)
-cp "$SOURCE/orchestration/run.py" "$TARGET/orchestration/" 2>/dev/null
-cp "$SOURCE/orchestration/requirements.txt" "$TARGET/orchestration/" 2>/dev/null
-cp "$SOURCE/orchestration/Dockerfile" "$TARGET/orchestration/" 2>/dev/null
+# Frontend source (for build)
+if [ -d "$SOURCE/orchestration/frontend/src" ]; then
+    rm -rf "$TARGET/orchestration/frontend/src"
+    cp -r "$SOURCE/orchestration/frontend/src" "$TARGET/orchestration/frontend/src"
+    cp "$SOURCE/orchestration/frontend/package.json" "$TARGET/orchestration/frontend/" 2>/dev/null || true
+    cp "$SOURCE/orchestration/frontend/vite.config.ts" "$TARGET/orchestration/frontend/" 2>/dev/null || true
+    cp "$SOURCE/orchestration/frontend/tsconfig"* "$TARGET/orchestration/frontend/" 2>/dev/null || true
+    cp "$SOURCE/orchestration/frontend/index.html" "$TARGET/orchestration/frontend/" 2>/dev/null || true
+fi
 
-echo -e "  ${GREEN}Source copied${NC}"
+echo -e "  ${GREEN}Copied${NC}"
 
 # ---------------------------------------------------------------
-# 4. Sync migrations explicitly (robocopy /MIR handles this but verify)
+# 4. Sync migrations
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Syncing migrations...${NC}"
-SRC_COUNT=$(ls "$SOURCE/orchestration/backend/migrations/versions/"*.py 2>/dev/null | wc -l)
-TGT_COUNT=$(ls "$TARGET/orchestration/backend/migrations/versions/"*.py 2>/dev/null | wc -l)
+SRC_MIG="$SOURCE/orchestration/backend/migrations/versions"
+TGT_MIG="$TARGET/orchestration/backend/migrations/versions"
+SRC_COUNT=$(ls "$SRC_MIG/"*.py 2>/dev/null | wc -l)
+TGT_COUNT=$(ls "$TGT_MIG/"*.py 2>/dev/null | wc -l)
 echo -e "  Source: $SRC_COUNT  Target: $TGT_COUNT"
 if [ "$SRC_COUNT" != "$TGT_COUNT" ]; then
-    cp "$SOURCE/orchestration/backend/migrations/versions/"*.py "$TARGET/orchestration/backend/migrations/versions/"
+    cp "$SRC_MIG/"*.py "$TGT_MIG/"
     echo -e "  ${GREEN}Synced${NC}"
 else
-    echo -e "  ${GREEN}Already in sync${NC}"
+    echo -e "  ${GREEN}In sync${NC}"
 fi
 
 # ---------------------------------------------------------------
-# 5. Sync DB (copy source DB to target if target is older or missing)
+# 5. Sync DB
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Syncing database...${NC}"
 SRC_DB="$SOURCE/orchestration/data/orchestration.db"
 TGT_DB="$TARGET/orchestration/data/orchestration.db"
-
 mkdir -p "$TARGET/orchestration/data"
 
 if [ ! -f "$TGT_DB" ]; then
     cp "$SRC_DB" "$TGT_DB"
     cp "${SRC_DB}-wal" "$TARGET/orchestration/data/" 2>/dev/null || true
     cp "${SRC_DB}-shm" "$TARGET/orchestration/data/" 2>/dev/null || true
-    echo -e "  ${GREEN}Copied (target was missing)${NC}"
+    echo -e "  ${GREEN}Copied (missing)${NC}"
 elif [ "$SRC_DB" -nt "$TGT_DB" ]; then
     cp "$SRC_DB" "$TGT_DB"
     cp "${SRC_DB}-wal" "$TARGET/orchestration/data/" 2>/dev/null || true
     cp "${SRC_DB}-shm" "$TARGET/orchestration/data/" 2>/dev/null || true
-    echo -e "  ${GREEN}Copied (source is newer)${NC}"
+    echo -e "  ${GREEN}Copied (newer)${NC}"
 else
-    echo -e "  ${GREEN}Target DB is current${NC}"
+    echo -e "  ${GREEN}Current${NC}"
 fi
 
 # ---------------------------------------------------------------
-# 6. Config (copy only if target doesn't have one)
+# 6. Config
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Config...${NC}"
 if [ ! -f "$TARGET/orchestration/config.json" ]; then
     if [ -f "$SOURCE/orchestration/config.json" ]; then
         cp "$SOURCE/orchestration/config.json" "$TARGET/orchestration/"
-        echo -e "  ${GREEN}Copied from source${NC}"
-    elif [ -f "$TARGET/orchestration/config.example.json" ]; then
-        cp "$TARGET/orchestration/config.example.json" "$TARGET/orchestration/config.json"
-        echo -e "  ${YELLOW}Created from example — edit config.json${NC}"
+        echo -e "  ${GREEN}Copied${NC}"
+    else
+        echo -e "  ${YELLOW}Missing — create from config.example.json${NC}"
     fi
 else
-    echo -e "  ${GREEN}Exists (preserved)${NC}"
+    echo -e "  ${GREEN}Preserved${NC}"
 fi
 
 # ---------------------------------------------------------------
-# 7. Copy scripts
+# 7. Scripts
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Copying scripts...${NC}"
 mkdir -p "$TARGET/scripts"
-cp "$SOURCE/scripts/"* "$TARGET/scripts/" 2>/dev/null
+cp "$SOURCE/scripts/"* "$TARGET/scripts/" 2>/dev/null || true
 echo -e "  ${GREEN}Copied${NC}"
 
 # ---------------------------------------------------------------
-# 8. Build orchestration frontend
+# 8. Build frontend
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Building orchestration frontend...${NC}"
-if [ -d "$TARGET/orchestration/frontend/node_modules" ]; then
-    cd "$TARGET/orchestration/frontend"
-    npm run build --silent 2>&1 | tail -1
-else
-    cd "$TARGET/orchestration/frontend"
+cd "$TARGET/orchestration/frontend"
+if [ ! -d "node_modules" ]; then
     npm install --silent 2>&1 | tail -1
-    npm run build --silent 2>&1 | tail -1
 fi
+npm run build --silent 2>&1 | tail -1
 echo -e "  ${GREEN}Built${NC}"
 
 # ---------------------------------------------------------------
-# 9. Start services
+# 9. Python syntax check
+# ---------------------------------------------------------------
+echo -e "${YELLOW}Syntax check...${NC}"
+SYNTAX_ERRORS=$(python -c "
+import os
+errors = []
+for root, dirs, files in os.walk('$TARGET/orchestration/backend'):
+    dirs[:] = [d for d in dirs if d != '__pycache__']
+    for f in files:
+        if f.endswith('.py'):
+            path = os.path.join(root, f)
+            try:
+                with open(path, 'r', encoding='utf-8') as fh:
+                    compile(fh.read(), path, 'exec')
+            except SyntaxError as e:
+                errors.append(f'{path}:{e.lineno} {e.msg}')
+if errors:
+    for e in errors:
+        print(e)
+" 2>/dev/null)
+
+if [ -n "$SYNTAX_ERRORS" ]; then
+    echo -e "  ${RED}ERRORS:${NC}"
+    echo "$SYNTAX_ERRORS" | while read line; do echo "    $line"; done
+    echo -e "  ${RED}Fix syntax errors before starting services${NC}"
+    exit 1
+else
+    echo -e "  ${GREEN}All clean${NC}"
+fi
+
+# ---------------------------------------------------------------
+# 10. Start services
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Starting services...${NC}"
 for svc in HekateContextStore HekateOrchestration HekateServer HekatePythonWorker HekateTypeScriptWorker HekateCppWorker; do
@@ -212,21 +249,16 @@ for i in $(seq 1 20); do
 done
 
 # ---------------------------------------------------------------
-# 10. Verify
+# 11. Verify
 # ---------------------------------------------------------------
 echo ""
 echo -e "${YELLOW}Verification:${NC}"
-curl -s http://localhost:5200/api/services \
-    -H "Authorization: Bearer orch_7e2939b473d112d3a6072164d0bebc38983f5fc1c032736c" 2>/dev/null | python -c "
-import sys,json
-try:
-    for s in json.load(sys.stdin):
-        if s.get('category') in ('ai','cli'):
-            status = s['status']
-            color = '\033[0;32m' if status == 'online' else '\033[0;31m'
-            print(f'  {s[\"name\"]}: {color}{status}\033[0m')
-except: pass
-" 2>/dev/null
+curl -s http://localhost:5200/api/health > /dev/null 2>&1 \
+    && echo -e "  Orchestration (5200): ${GREEN}UP${NC}" \
+    || echo -e "  Orchestration (5200): ${RED}DOWN${NC}"
+curl -s http://localhost:5102/api/health > /dev/null 2>&1 \
+    && echo -e "  Context Store (5102): ${GREEN}UP${NC}" \
+    || echo -e "  Context Store (5102): ${RED}DOWN${NC}"
 
 echo ""
 echo -e "${GREEN}=== Deploy complete ===${NC}"
