@@ -406,10 +406,12 @@ def route_to_model(model: str, message: str) -> str:
         return f"Unknown model: {model}. Available: {', '.join(list(model_routes.keys()) + ['ollama', 'qwen'])}"
 
     executable, args = route
-    import subprocess
+    import subprocess, shutil
+    # Resolve .cmd wrappers on Windows (npm-installed CLIs)
+    resolved = shutil.which(executable) or executable
     try:
         result = subprocess.run(
-            [executable] + args,
+            [resolved] + args,
             input=message, capture_output=True, text=True, timeout=120,
         )
         if result.returncode != 0:
