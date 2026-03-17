@@ -157,11 +157,15 @@ def estimate_task_cost(
 # Default: CLI-first routing — subscription CLIs are $0/call vs API billing.
 # Ollama for simple tasks (free, local), CLI for medium/complex.
 # API tiers (haiku/sonnet) available but not default — use config override.
-# CODEX_CLI re-enabled with gpt-5.1-codex-mini (ChatGPT subscription compatible).
+# CODEX_CLI disabled — low usage quota on current ChatGPT plan.
+# To re-enable: set ("code", "simple") to ModelTier.CODEX_CLI
+# Working models: gpt-5.2-codex, gpt-5.2, gpt-5.1-codex-max, gpt-5.1-codex-mini
+# Broken models: gpt-5.3-codex, gpt-5.4 (not supported on ChatGPT subscription)
+# Auth: file-based at ~/.codex/auth.json (works under NSSM LocalSystem with HOME set)
 # GEMINI_CLI enabled — requires GEMINI_FORCE_FILE_STORAGE=true in NSSM env.
 _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     # Code tasks
-    ("code", "simple"): ModelTier.CODEX_CLI,
+    ("code", "simple"): ModelTier.GEMINI_CLI,
     ("code", "medium"): ModelTier.CLAUDE_CODE,
     ("code", "complex"): ModelTier.CLAUDE_CODE,
     # Research
