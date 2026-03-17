@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS plans (
     cost_usd REAL NOT NULL DEFAULT 0.0,
     plan_json TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'draft',
+    node_mapping_json TEXT,
     created_at REAL NOT NULL
 );
 
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     verification_status TEXT,
     verification_notes TEXT,
     requirement_ids_json TEXT DEFAULT '[]',
+    rationale TEXT,
     error TEXT,
     started_at REAL,
     completed_at REAL,

@@ -64,6 +64,7 @@ plans = Table(
     Column("cost_usd", Float, nullable=False, server_default="0.0"),
     Column("plan_json", Text, nullable=False),
     Column("status", Text, nullable=False, server_default="draft"),
+    Column("node_mapping_json", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -96,6 +97,7 @@ tasks = Table(
     Column("verification_status", Text),
     Column("verification_notes", Text),
     Column("requirement_ids_json", Text, server_default="[]"),
+    Column("rationale", Text),
     Column("error", Text),
     Column("started_at", Float),
     Column("completed_at", Float),
