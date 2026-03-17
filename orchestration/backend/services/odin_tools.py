@@ -197,6 +197,51 @@ TOOLS: list[dict] = [
             },
         },
     },
+    # --- Project lifecycle tools ---
+    {
+        "type": "function",
+        "function": {
+            "name": "create_project",
+            "description": "Create a new orchestration project with requirements.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Short project name."},
+                    "requirements": {"type": "string", "description": "What the project should accomplish. Be specific."},
+                    "repo_path": {"type": "string", "description": "Git repo path for the project. Use C:/Users/jruss/Documents/GitHub/Hekate for Hekate work."},
+                },
+                "required": ["name", "requirements"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plan_project",
+            "description": "Generate a task plan for a draft project using Claude. The project must be in 'draft' status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "Project ID to plan."},
+                },
+                "required": ["project_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_project",
+            "description": "Start executing a planned project. Decomposes the plan into tasks and begins wave dispatch.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "Project ID to start."},
+                },
+                "required": ["project_id"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -236,6 +281,9 @@ INTERVENTION_TOOLS: set[str] = {
     "reassign_tier",
     "modify_prompt",
     "log_observation",
+    "create_project",
+    "plan_project",
+    "start_project",
 }
 
 # ---------------------------------------------------------------------------
@@ -618,6 +666,87 @@ async def _log_observation(db: Database, bus: SentinelBus, args: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Project lifecycle executors (call orchestration API — need DI context)
+# ---------------------------------------------------------------------------
+
+async def _create_project(db: Database, bus: SentinelBus, args: dict) -> str:
+    name = args.get("name")
+    requirements = args.get("requirements")
+    repo_path = args.get("repo_path", "C:/Users/jruss/Documents/GitHub/Hekate")
+    if not name or not requirements:
+        return "Error: name and requirements are required."
+
+    project_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    config = json.dumps({"execution_mode": "auto", "rigor": "L2"})
+
+    await db.execute_write(
+        "INSERT INTO projects (id, name, requirements, status, config_json, repo_path, created_at, updated_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        (project_id, name, requirements, "draft", config, repo_path, now, now),
+    )
+
+    logger.info("Odin created project: %s (%s)", name, project_id)
+    return f"Project '{name}' created (id={project_id}, status=draft). Call plan_project to generate a task plan."
+
+
+async def _plan_project(db: Database, bus: SentinelBus, args: dict) -> str:
+    import httpx
+    project_id = args.get("project_id")
+    if not project_id:
+        return "Error: project_id is required."
+
+    project = await db.fetchone("SELECT id, name, status FROM projects WHERE id = $1", (project_id,))
+    if not project:
+        return f"Error: project {project_id} not found."
+    if project["status"] != "draft":
+        return f"Error: project is '{project['status']}', must be 'draft' to plan."
+
+    # Call the orchestration API to trigger planning (needs planner service context)
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                f"http://localhost:5200/api/projects/{project_id}/plan",
+                headers={"Authorization": "Bearer odin-internal"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                plan_id = data.get("plan_id", "unknown")
+                task_count = data.get("task_count", 0)
+                return f"Plan generated for '{project['name']}' (plan_id={plan_id}, {task_count} tasks). Call start_project to begin execution."
+            else:
+                return f"Planning failed: {resp.status_code} {resp.text[:200]}"
+    except Exception as e:
+        return f"Planning request failed: {e}"
+
+
+async def _start_project(db: Database, bus: SentinelBus, args: dict) -> str:
+    import httpx
+    project_id = args.get("project_id")
+    if not project_id:
+        return "Error: project_id is required."
+
+    project = await db.fetchone("SELECT id, name, status FROM projects WHERE id = $1", (project_id,))
+    if not project:
+        return f"Error: project {project_id} not found."
+    if project["status"] not in ("planned", "draft"):
+        return f"Error: project is '{project['status']}', must be 'planned' to start."
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"http://localhost:5200/api/projects/{project_id}/start",
+                headers={"Authorization": "Bearer odin-internal"},
+            )
+            if resp.status_code == 200:
+                return f"Project '{project['name']}' execution started."
+            else:
+                return f"Start failed: {resp.status_code} {resp.text[:200]}"
+    except Exception as e:
+        return f"Start request failed: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -632,6 +761,9 @@ _EXECUTORS: dict[str, callable] = {
     "reassign_tier": _reassign_tier,
     "modify_prompt": _modify_prompt,
     "log_observation": _log_observation,
+    "create_project": _create_project,
+    "plan_project": _plan_project,
+    "start_project": _start_project,
 }
 
 
