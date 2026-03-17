@@ -50,20 +50,26 @@ logger = logging.getLogger("orchestration.executor")
 
 
 async def _sync_status_to_context_store(
-    *, db, task_id: str, plan_id: str, status: str, error: str | None = None,
+    *, db, task_title: str, plan_id: str, status: str, error: str | None = None,
 ):
     """Fire-and-forget: push a task status change to the context store node.
 
-    Loads the node_mapping from the plans table, finds the context store node
-    for this task, and updates its attributes.  Silently no-ops if the mapping
-    doesn't exist or the context store is unreachable (circuit breaker open).
+    Loads the node_mapping (title → node_id) from the plans table, finds the
+    context store node for this task by title, and updates its attributes.
+    Silently no-ops if the mapping doesn't exist or the context store is
+    unreachable (circuit breaker open).
     """
     try:
         from backend.services.plan_sync import PlanSyncService
         svc = PlanSyncService(db=db)
         mapping = await svc.get_node_mapping(plan_id)
-        node_id = mapping.get(task_id)
+        node_id = mapping.get(task_title)
         if not node_id:
+            return
+
+        # Circuit breaker check — _is_circuit_open is already called inside
+        # update_attributes, so this just ensures we don't build attrs for nothing
+        if svc._cs._is_circuit_open():
             return
 
         attrs: dict = {"status": status, "updated_at": time.time()}
@@ -72,7 +78,7 @@ async def _sync_status_to_context_store(
         await svc._cs.update_attributes(node_id, attrs)
     except Exception:
         # Never propagate — this is fire-and-forget
-        logger.debug("Context store status sync failed for task %s", task_id, exc_info=True)
+        logger.debug("Context store status sync failed for task %s", task_title, exc_info=True)
 
 # Transient errors that warrant automatic retry with backoff
 _TRANSIENT_ERRORS = (
@@ -175,9 +181,9 @@ async def validate_migration_files(
             continue
 
         # Extract revision = 'NNN'
-        rev_match = re.search(r"^revision:\s*str\s*=\s*['\"](\S+?)['\"]", content, re.MULTILINE)
+        rev_match = re.search(r"""^revision:\s*str\s*=\s*['"](\S+?)['"]""", content, re.MULTILINE)
         if not rev_match:
-            rev_match = re.search(r"^revision\s*=\s*['\"](\S+?)['\"]", content, re.MULTILINE)
+            rev_match = re.search(r"""^revision\s*=\s*['"](\S+?)['"]""", content, re.MULTILINE)
         if not rev_match:
             errors.append(f"Migration '{fname}': could not find revision variable")
             continue
@@ -196,7 +202,7 @@ async def validate_migration_files(
 
         # Extract down_revision
         down_match = re.search(
-            r"^down_revision[^=]*=\s*['\"](\S+?)['\"]", content, re.MULTILINE,
+            r"""^down_revision[^=]*=\s*['"](\S+?)['"]""", content, re.MULTILINE,
         )
         if not down_match:
             # down_revision = None is valid only for the first migration (001)
@@ -873,7 +879,7 @@ async def execute_task(
                 (TaskStatus.RUNNING, now, now, task_id),
             )
             asyncio.ensure_future(_sync_status_to_context_store(
-                db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
                 status=TaskStatus.RUNNING,
             ))
             await progress.push_event(
@@ -1013,7 +1019,7 @@ async def execute_task(
                         ),
                     )
                     asyncio.ensure_future(_sync_status_to_context_store(
-                        db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                        db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
                         status=TaskStatus.NEEDS_REVIEW, error="Budget exhausted",
                     ))
                     await progress.push_event(
@@ -1043,7 +1049,7 @@ async def execute_task(
                     ),
                 )
                 asyncio.ensure_future(_sync_status_to_context_store(
-                    db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                    db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
                     status=TaskStatus.COMPLETED,
                 ))
 
@@ -1325,7 +1331,7 @@ async def execute_task(
                         )
 
                     asyncio.ensure_future(_sync_status_to_context_store(
-                        db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                        db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
                         status=TaskStatus.FAILED, error=error_msg,
                     ))
                     await _push_telemetry(
@@ -1356,7 +1362,7 @@ async def execute_task(
                     (TaskStatus.FAILED, error_msg, time.time(), task_id),
                 )
                 asyncio.ensure_future(_sync_status_to_context_store(
-                    db=db, task_id=task_id, plan_id=task_row["plan_id"],
+                    db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
                     status=TaskStatus.FAILED, error=error_msg,
                 ))
                 await progress.push_event(
@@ -1505,5 +1511,233 @@ async def verify_csharp_build(csproj_path: str) -> tuple[bool, str]:
         if "error CS" in line or "error :" in line
     ]
     if error_lines:
-        return False, "Build errors:\n" + "\n".join(error_lines[:20])
-    return False, f"Build failed:\n{output[:2000]}"
+        return False, "Build errors:
+" + "
+".join(error_lines[:20])
+    return False, f"Build failed:
+{output[:2000]}"
+
+
+# ---------------------------------------------------------------------------
+# Wave Reassessment (Athena Loop)
+# ---------------------------------------------------------------------------
+
+from backend.models.schemas import TaskOutcomeSummary, WaveReassessmentContext
+
+async def collect_wave_reassessment_context(
+    *, db, project_id: str, wave_number: int
+) -> WaveReassessmentContext | None:
+    """Collect task outcomes, knowledge, and observations for wave reassessment."""
+
+    # 1. Get task outcomes for the wave
+    task_rows = await db.fetchall(
+        "SELECT id, title, status, output_text, error FROM tasks WHERE project_id = ? AND wave = ?",
+        (project_id, wave_number),
+    )
+    task_outcomes = []
+    for row in task_rows:
+        summary = (row["output_text"] or "")[:500]  # Truncate for summary
+        task_outcomes.append(
+            TaskOutcomeSummary(
+                task_id=row["id"],
+                title=row["title"],
+                status=row["status"],
+                output_summary=summary,
+                error=row["error"],
+            )
+        )
+
+    # 2. Get knowledge findings for the project (including rationale)
+    knowledge_rows = await db.fetchall(
+        "SELECT content, rationale, confidence FROM project_knowledge "
+        "WHERE project_id = ? ORDER BY created_at DESC",
+        (project_id,),
+    )
+    knowledge_findings = []
+    for row in knowledge_rows:
+        entry = row["content"]
+        if row.get("rationale"):
+            entry += f" [WHY: {row['rationale']}]"
+        if row.get("confidence"):
+            entry += f" [confidence: {row['confidence']}]"
+        knowledge_findings.append(entry)
+
+    # 3. Get sentinel observations for the project
+    observation_rows = await db.fetchall(
+        "SELECT message, details_json FROM sentinel_observations WHERE project_id = ? ORDER BY created_at DESC",
+        (project_id,),
+    )
+    sentinel_observations = []
+    for row in observation_rows:
+        details = json.loads(row["details_json"]) if row["details_json"] else {}
+        # a simple string representation
+        observation_str = f"{row['message']} (Details: {json.dumps(details)})"
+        sentinel_observations.append(observation_str)
+
+    # 4. Get the original plan
+    plan_row = await db.fetchone(
+        "SELECT plan_json FROM plans WHERE project_id = ? ORDER BY version DESC LIMIT 1",
+        (project_id,),
+    )
+    if not plan_row:
+        # Cannot proceed without a plan
+        return None
+
+    original_plan = json.loads(plan_row["plan_json"])
+
+    return WaveReassessmentContext(
+        project_id=project_id,
+        wave_number=wave_number,
+        task_outcomes=task_outcomes,
+        knowledge_findings=knowledge_findings,
+        sentinel_observations=sentinel_observations,
+        original_plan=original_plan,
+    )
+
+
+async def execute_replan(
+    *,
+    db,
+    budget,
+    plan_sync,
+    project_id: str,
+    completed_wave: int,
+    rationale: str,
+    suggested_changes: list[str],
+    wave_context_json: str | None = None,
+    observation_ids: list[str] | None = None,
+    finding_ids: list[str] | None = None,
+) -> dict:
+    """Cancel pending future-wave tasks, generate a new plan, decompose it, and record the revision.
+
+    Called when wave reassessment returns replan_remaining.
+
+    Args:
+        db: Database instance.
+        budget: BudgetManager instance.
+        plan_sync: PlanSyncService instance for context store revision tracking.
+        project_id: The project being replanned.
+        completed_wave: The wave number that just finished.
+        rationale: LLM rationale for why replanning is needed.
+        suggested_changes: High-level changes suggested by the reassessment.
+        wave_context_json: Serialized WaveReassessmentContext (appended to requirements).
+        observation_ids: Context store observation IDs that triggered this replan.
+        finding_ids: Context store finding IDs that informed this replan.
+
+    Returns:
+        Dict with replan summary (cancelled_count, new_plan_id, new_tasks_created, revision_node_id).
+    """
+    from backend.services.planner import PlannerService
+    from backend.services.decomposer import DecomposerService
+
+    logger.info(
+        "Executing replan for project %s after wave %d: %s",
+        project_id, completed_wave, rationale,
+    )
+
+    # 1. Cancel all pending/blocked tasks in waves after the completed wave
+    now = time.time()
+    cancelled = await db.execute_write(
+        "UPDATE tasks SET status = ?, updated_at = ? "
+        "WHERE project_id = ? AND wave > ? AND status IN (?, ?)",
+        (
+            TaskStatus.CANCELLED, now,
+            project_id, completed_wave,
+            TaskStatus.PENDING, TaskStatus.BLOCKED,
+        ),
+    )
+    cancelled_count = cancelled.rowcount if hasattr(cancelled, "rowcount") else 0
+    logger.info(
+        "Cancelled %s pending/blocked tasks in waves > %d for project %s",
+        cancelled_count, completed_wave, project_id,
+    )
+
+    # 2. Get the current plan ID (for revision tracking)
+    old_plan_row = await db.fetchone(
+        "SELECT id FROM plans WHERE project_id = ? ORDER BY version DESC LIMIT 1",
+        (project_id,),
+    )
+    old_plan_id = old_plan_row["id"] if old_plan_row else None
+
+    # 3. Augment project requirements with wave findings for the replanning call.
+    #    We temporarily update the project requirements to include the wave context,
+    #    then restore after plan generation.
+    project_row = await db.fetchone(
+        "SELECT requirements FROM projects WHERE id = ?", (project_id,),
+    )
+    original_requirements = project_row["requirements"] if project_row else ""
+
+    replan_addendum = (
+        f"\n\n--- WAVE {completed_wave} REASSESSMENT ---\n"
+        f"Rationale for replanning: {rationale}\n"
+    )
+    if suggested_changes:
+        replan_addendum += "Suggested changes:\n"
+        for change in suggested_changes:
+            replan_addendum += f"  - {change}\n"
+    if wave_context_json:
+        replan_addendum += f"\nWave context (task outcomes, knowledge, observations):\n{wave_context_json}\n"
+
+    augmented_requirements = original_requirements + replan_addendum
+
+    await db.execute_write(
+        "UPDATE projects SET requirements = ?, updated_at = ? WHERE id = ?",
+        (augmented_requirements, now, project_id),
+    )
+
+    try:
+        # 4. Generate a new plan
+        planner = PlannerService(db=db, budget=budget)
+        plan_result = await planner.generate(project_id)
+        new_plan_id = plan_result["plan_id"]
+        logger.info(
+            "New plan generated for project %s: plan_id=%s, version=%d",
+            project_id, new_plan_id, plan_result["version"],
+        )
+
+        # 5. Decompose the new plan into tasks
+        decomposer = DecomposerService(db=db)
+        decompose_result = await decomposer.decompose(project_id, new_plan_id)
+        logger.info(
+            "New plan decomposed for project %s: %d tasks, %d waves",
+            project_id, decompose_result["tasks_created"],
+            decompose_result.get("total_waves", 0),
+        )
+    finally:
+        # 6. Restore original requirements (the addendum was temporary context)
+        await db.execute_write(
+            "UPDATE projects SET requirements = ?, updated_at = ? WHERE id = ?",
+            (original_requirements, time.time(), project_id),
+        )
+
+    # 7. Record the revision in the context store
+    revision_node_id = None
+    if plan_sync and old_plan_id:
+        delta = {
+            "cancelled_tasks_in_waves_after": completed_wave,
+            "cancelled_count": cancelled_count,
+            "new_plan_id": new_plan_id,
+            "new_tasks_created": decompose_result["tasks_created"],
+            "suggested_changes": suggested_changes,
+        }
+        revision_node_id = await plan_sync.sync_revision(
+            old_plan_id,
+            wave_number=completed_wave,
+            outcome="replan_remaining",
+            rationale=rationale,
+            delta=delta,
+            observation_ids=observation_ids,
+            finding_ids=finding_ids,
+        )
+        if revision_node_id:
+            logger.info(
+                "Revision node created in context store: %s", revision_node_id,
+            )
+
+    return {
+        "cancelled_count": cancelled_count,
+        "new_plan_id": new_plan_id,
+        "new_tasks_created": decompose_result["tasks_created"],
+        "new_total_waves": decompose_result.get("total_waves", 0),
+        "revision_node_id": revision_node_id,
+    }
