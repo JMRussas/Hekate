@@ -95,7 +95,7 @@ class Container(containers.DeclarativeContainer):
     plan_sync = providers.Singleton(PlanSyncService, context_client=context_store_client, db=db)
 
     # --- Chat ---
-    chat_agent = providers.Singleton(ChatAgent, context_store=context_store_client)
+    chat_agent = providers.Singleton(ChatAgent, context_store=context_store_client, tool_registry=tool_registry)
 
     # --- Planning & Decomposition ---
     planner = providers.Factory(PlannerService, db=db, budget=budget, tool_registry=tool_registry)

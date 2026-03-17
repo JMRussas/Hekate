@@ -1,99 +1,220 @@
 #  Orchestration Engine - Chat Agent
 #
-#  Universal conversational agent that combines:
-#  - Context-store brain services (resolve, assemble, extract)
-#  - LLM routing via llm_router (Claude, Gemini, Codex, Ollama)
-#  - SSE streaming to the client
+#  Multi-round streaming chat with tool calling, context assembly,
+#  and auto-discovered tools. Inspired by noz-ai chat patterns.
 #
-#  Uses the existing llm_router for model calls and context_store_client
-#  for brain services. Does NOT reimplement CLI spawning or model routing.
+#  Architecture:
+#    - Anthropic SDK for streaming + native tool_use
+#    - Up to MAX_ROUNDS of LLM ↔ tool call loops per request
+#    - Tools from ToolRegistry (auto-discovered at startup)
+#    - Brain services (resolve, assemble) from context store
+#    - Message history maintained per conversation
+#    - Slash commands bypass LLM entirely
 #
-#  Depends on: context_store_client.py, llm_router.py
+#  Depends on: context_store_client.py, tools/registry.py, config.py
 #  Used by:    routes/chat.py
 
 import json
 import logging
+import os
 import re
 import time
 
 from starlette.responses import StreamingResponse
 
+from backend.config import ANTHROPIC_API_KEY, cfg
 from backend.services.context_store_client import ContextStoreClient
-from backend.services.llm_router import call_llm
+from backend.tools.registry import ToolRegistry
 
 logger = logging.getLogger("orchestration.chat_agent")
 
-# @mention → provider for llm_router
-_MENTION_TO_PROVIDER = {
-    "@sonnet": ("claude", "sonnet"),
-    "@opus": ("claude", "opus"),
-    "@haiku": ("claude", "haiku"),
-    "@claude": ("claude", "sonnet"),
-    "@gemini": ("gemini", "gemini"),
-    "@flash": ("gemini", "flash"),
-    "@pro": ("gemini", "pro"),
-    "@codex": ("codex", "codex"),
-    "@gpt": ("codex", "gpt"),
-    "@ollama": ("ollama", "ollama"),
-    "@qwen": ("ollama", "qwen"),
+MAX_ROUNDS = 4
+MAX_CONTEXT_TOKENS = int(cfg("chat.context_limit", 100000))
+MAX_OUTPUT_TOKENS = int(cfg("chat.max_tokens", 4096))
+
+# @mention → (provider, model_id, display_name)
+_MENTION_MAP = {
+    "@sonnet": ("anthropic", "claude-sonnet-4-20250514", "sonnet"),
+    "@opus": ("anthropic", "claude-opus-4-20250514", "opus"),
+    "@haiku": ("anthropic", "claude-haiku-4-5-20251001", "haiku"),
+    "@claude": ("anthropic", "claude-sonnet-4-20250514", "sonnet"),
+    "@gemini": ("gemini", "gemini", "gemini"),
+    "@flash": ("gemini", "flash", "flash"),
+    "@ollama": ("ollama", "ollama", "ollama"),
+    "@qwen": ("ollama", "qwen", "qwen"),
 }
 
+# Slash commands — bypass LLM entirely
+_COMMANDS: dict[str, str] = {}  # populated by register_command
 
-def _parse_mention(message: str) -> tuple[str, str, str]:
-    """Extract @model mention. Returns (cleaned_message, provider, display)."""
+
+def register_command(name: str, description: str, handler):
+    """Register a slash command. Handler is async fn(args: str) -> str."""
+    _COMMANDS[name] = {"description": description, "handler": handler}
+
+
+def _parse_mention(message: str) -> tuple[str, str, str, str]:
+    """Extract @model mention. Returns (cleaned, provider, model_id, display)."""
     match = re.match(r"^(@\w+)\s*", message)
     if match:
         mention = match.group(1).lower()
         cleaned = message[match.end():].strip()
-        if mention in _MENTION_TO_PROVIDER:
-            provider, display = _MENTION_TO_PROVIDER[mention]
-            return cleaned, provider, display
-    return message, "claude", "sonnet"
+        if mention in _MENTION_MAP:
+            provider, model_id, display = _MENTION_MAP[mention]
+            return cleaned, provider, model_id, display
+    return message, "anthropic", "claude-sonnet-4-20250514", "sonnet"
 
 
 def _sse(event: str, data: dict) -> str:
-    """Format a single SSE event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-class ChatAgent:
-    """Universal chat agent — brain services + model routing + SSE streaming."""
+def _estimate_tokens(messages: list[dict], tools: list[dict]) -> int:
+    """Rough token estimate: len(json) / 4."""
+    return len(json.dumps(messages + tools)) // 4
 
-    def __init__(self, context_store: ContextStoreClient):
+
+def _truncate_messages(
+    messages: list[dict], tools: list[dict], budget: int
+) -> list[dict]:
+    """Drop oldest messages (keep system) to fit within token budget."""
+    if not messages:
+        return messages
+
+    tool_tokens = len(json.dumps(tools)) // 4
+    available = budget - tool_tokens
+
+    # Always keep first message if it's system
+    system_msgs = []
+    user_msgs = list(messages)
+    if user_msgs and user_msgs[0].get("role") == "system":
+        system_msgs = [user_msgs.pop(0)]
+
+    # Drop from the front (oldest) until we fit
+    while user_msgs and _estimate_tokens(system_msgs + user_msgs, []) > available:
+        user_msgs.pop(0)
+
+    return system_msgs + user_msgs
+
+
+# ---------------------------------------------------------------------------
+# Built-in slash commands
+# ---------------------------------------------------------------------------
+
+async def _cmd_help(args: str) -> str:
+    lines = ["**Available commands:**"]
+    for name, info in sorted(_COMMANDS.items()):
+        lines.append(f"- `/{name}` — {info['description']}")
+    return "\n".join(lines)
+
+
+async def _cmd_clear(args: str) -> str:
+    return "[conversation cleared]"
+
+
+async def _cmd_models(args: str) -> str:
+    lines = ["**Available models:**"]
+    for mention, (provider, model_id, display) in sorted(_MENTION_MAP.items()):
+        lines.append(f"- `{mention}` → {provider}/{display}")
+    return "\n".join(lines)
+
+
+async def _cmd_tools(args: str) -> str:
+    # Filled dynamically when ChatAgent has access to registry
+    return "_tools list not available outside chat context_"
+
+
+# Register built-in commands
+register_command("help", "List available commands", _cmd_help)
+register_command("clear", "Clear conversation history", _cmd_clear)
+register_command("models", "List available models and @mentions", _cmd_models)
+register_command("tools", "List available tools", _cmd_tools)
+
+
+# ---------------------------------------------------------------------------
+# Chat Agent
+# ---------------------------------------------------------------------------
+
+class ChatAgent:
+    """Multi-round streaming chat with tool calling."""
+
+    def __init__(self, context_store: ContextStoreClient, tool_registry: ToolRegistry | None = None):
         self._cs = context_store
+        self._tools = tool_registry
+        self._anthropic = None
+
+    def _get_client(self):
+        if self._anthropic is None:
+            import anthropic
+            api_key = ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")
+            if not api_key:
+                raise RuntimeError("ANTHROPIC_API_KEY not set")
+            self._anthropic = anthropic.AsyncAnthropic(api_key=api_key)
+        return self._anthropic
+
+    def _get_tools_for_claude(self) -> list[dict]:
+        """Convert registered tools to Anthropic API format."""
+        if not self._tools:
+            return []
+        return [self._tools.get(n).to_claude_tool() for n in self._tools.all_names()]
 
     async def stream_response(
         self,
         message: str,
         conversation_id: str | None = None,
+        messages: list[dict] | None = None,
     ) -> StreamingResponse:
-        """Returns a StreamingResponse yielding SSE events."""
 
         async def _generate():
             nonlocal conversation_id
             t0 = time.monotonic()
 
-            # 1. Parse @mention → route to provider
-            cleaned, provider, display = _parse_mention(message)
+            # --- Slash command check ---
+            if message.startswith("/"):
+                cmd_match = re.match(r"^/(\w+)\s*(.*)", message)
+                if cmd_match:
+                    cmd_name = cmd_match.group(1).lower()
+                    cmd_args = cmd_match.group(2).strip()
+                    if cmd_name in _COMMANDS:
+                        # Special: /tools needs registry access
+                        if cmd_name == "tools" and self._tools:
+                            names = self._tools.all_names()
+                            result = "**Available tools:**\n" + "\n".join(f"- `{n}`" for n in sorted(names))
+                        else:
+                            result = await _COMMANDS[cmd_name]["handler"](cmd_args)
+                        yield _sse("command", {"name": cmd_name, "result": result})
+                        yield _sse("done", {})
+                        return
+
+            # --- Parse @mention ---
+            cleaned, provider, model_id, display = _parse_mention(message)
             yield _sse("debug_parse", {
                 "originalMessage": message,
                 "mention": f"@{display}",
                 "cleanedMessage": cleaned,
-                "model": {"provider": provider, "model": display, "display": display},
-                "durationMs": 0,
+                "provider": provider,
+                "model": model_id,
             })
 
-            # 2. Create or resume conversation via brain
+            # --- Non-Anthropic providers: fall back to llm_router ---
+            if provider != "anthropic":
+                yield _sse("phase", {"phase": "generating"})
+                try:
+                    from backend.services.llm_router import call_llm
+                    resp = await call_llm("You are a helpful assistant.", cleaned, provider=provider)
+                    yield _sse("token", {"text": resp.text})
+                except Exception as e:
+                    yield _sse("token", {"text": f"Error: {e}"})
+                yield _sse("done", {})
+                return
+
+            # --- Create/resume conversation ---
             if not conversation_id:
                 conversation_id = await self._cs.brain_create_conversation()
-                if not conversation_id:
-                    yield _sse("error", {"message": "Failed to create conversation in context store"})
-                    yield _sse("done", {})
-                    return
+            if conversation_id:
+                yield _sse("conversation_id", {"id": conversation_id})
 
-            yield _sse("conversation_id", {"id": conversation_id})
-
-            # 3. Entity resolution via brain
+            # --- Entity resolution via brain ---
             yield _sse("phase", {"phase": "resolving"})
             t1 = time.monotonic()
             resolved = await self._cs.brain_resolve(cleaned, conversation_id)
@@ -103,17 +224,10 @@ class ChatAgent:
                 yield _sse("debug_interpret", {
                     "intent": str(resolved.get("displayIntent", "Ideation")),
                     "confidence": resolved.get("confidence", 0.3),
-                    "reasoning": resolved.get("reasoning"),
-                    "isRegexFallback": resolved.get("isRegexFallback", True),
                     "durationMs": resolve_ms,
                 })
-                yield _sse("intent", {
-                    "intent": str(resolved.get("displayIntent", "Ideation")),
-                    "confidence": f"{resolved.get('confidence', 0.3):.2f}",
-                    "pattern": resolved.get("reasoning"),
-                })
 
-            # 4. Context assembly via brain
+            # --- Context assembly via brain ---
             yield _sse("phase", {"phase": "assembling"})
             t2 = time.monotonic()
             subject_state = None
@@ -129,46 +243,155 @@ class ChatAgent:
                 )
                 yield _sse("debug_context", {"nodeCount": node_count, "durationMs": assemble_ms})
 
-            # 5. Build prompt from subject state
+            # --- Build system prompt ---
             system_prompt = _build_system_prompt(subject_state, display)
 
-            # 6. Call model via llm_router (existing infrastructure)
-            yield _sse("model", {"provider": provider, "model": display, "display": display})
-            yield _sse("phase", {"phase": "generating"})
+            # --- Build message history ---
+            history = messages or []
+            history.append({"role": "user", "content": cleaned})
 
-            t3 = time.monotonic()
-            try:
-                llm_resp = await call_llm(
-                    system_prompt,
-                    cleaned,
-                    provider=provider,
-                    task_type="chat",
-                )
-                full_response = llm_resp.text
-                # Emit the response as a single token block
-                # (streaming will be added when llm_router supports it)
-                yield _sse("token", {"text": full_response})
-            except Exception as exc:
-                logger.error("LLM call failed: %s", exc)
-                full_response = f"Error calling {provider}: {exc}"
-                yield _sse("token", {"text": full_response})
+            # --- Get tools ---
+            claude_tools = self._get_tools_for_claude()
+            yield _sse("model", {"provider": provider, "model": model_id, "display": display})
 
-            generate_ms = (time.monotonic() - t3) * 1000
+            # --- Truncate to fit context ---
+            token_budget = MAX_CONTEXT_TOKENS - MAX_OUTPUT_TOKENS
+            working = _truncate_messages(history, claude_tools, token_budget)
+            yield _sse("context", {
+                "messages": len(working),
+                "tools": len(claude_tools),
+                "estimatedTokens": _estimate_tokens(working, claude_tools),
+            })
 
-            # 7. Store turns in brain (fire-and-forget pattern)
-            await self._cs.brain_store_turn(conversation_id, "user", message)
-            await self._cs.brain_store_turn(conversation_id, display, full_response)
+            # --- Multi-round LLM + tool loop ---
+            client = self._get_client()
+            full_response = ""
+            tool_context = {}  # shared between tool calls in same round
 
-            # 8. Extract ideas from response (async, non-blocking)
+            for round_num in range(MAX_ROUNDS):
+                yield _sse("phase", {"phase": "generating" if round_num == 0 else f"round_{round_num + 1}"})
+                t3 = time.monotonic()
+
+                try:
+                    # Stream from Anthropic API
+                    response_text = ""
+                    tool_use_blocks = []
+
+                    async with client.messages.stream(
+                        model=model_id,
+                        max_tokens=MAX_OUTPUT_TOKENS,
+                        system=system_prompt,
+                        messages=working,
+                        tools=claude_tools or None,
+                    ) as stream:
+                        async for event in stream:
+                            if event.type == "content_block_start":
+                                if hasattr(event.content_block, "text"):
+                                    pass  # text block starting
+                                elif hasattr(event.content_block, "type") and event.content_block.type == "tool_use":
+                                    tool_use_blocks.append({
+                                        "id": event.content_block.id,
+                                        "name": event.content_block.name,
+                                        "input": "",
+                                    })
+                            elif event.type == "content_block_delta":
+                                if hasattr(event.delta, "text"):
+                                    chunk = event.delta.text
+                                    response_text += chunk
+                                    # Only stream text to client on first round
+                                    if round_num == 0:
+                                        yield _sse("token", {"text": chunk})
+                                elif hasattr(event.delta, "partial_json"):
+                                    if tool_use_blocks:
+                                        tool_use_blocks[-1]["input"] += event.delta.partial_json
+
+                    generate_ms = (time.monotonic() - t3) * 1000
+
+                    if round_num == 0:
+                        full_response = response_text
+
+                    # --- Execute tool calls ---
+                    if not tool_use_blocks:
+                        break  # No tools called, we're done
+
+                    # Parse tool inputs from accumulated JSON
+                    for block in tool_use_blocks:
+                        try:
+                            block["input"] = json.loads(block["input"]) if block["input"] else {}
+                        except json.JSONDecodeError:
+                            block["input"] = {}
+
+                    # Append assistant message with tool_use to history
+                    assistant_content = []
+                    if response_text:
+                        assistant_content.append({"type": "text", "text": response_text})
+                    for block in tool_use_blocks:
+                        assistant_content.append({
+                            "type": "tool_use",
+                            "id": block["id"],
+                            "name": block["name"],
+                            "input": block["input"],
+                        })
+                    working.append({"role": "assistant", "content": assistant_content})
+
+                    # Execute each tool
+                    tool_results = []
+                    for block in tool_use_blocks:
+                        tool_name = block["name"]
+                        tool_input = block["input"]
+                        yield _sse("tool_call", {
+                            "name": tool_name,
+                            "toolId": block["id"],
+                            "input": tool_input,
+                        })
+
+                        tool = self._tools.get(tool_name) if self._tools else None
+                        if tool:
+                            try:
+                                result_text = await tool.execute(tool_input)
+                                tool_context[tool_name] = result_text
+                            except Exception as e:
+                                result_text = f"Tool error: {e}"
+                                logger.error("Tool %s failed: %s", tool_name, e)
+                        else:
+                            result_text = f"Unknown tool: {tool_name}"
+
+                        yield _sse("tool_result", {
+                            "name": tool_name,
+                            "toolId": block["id"],
+                            "resultLength": len(result_text),
+                        })
+
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block["id"],
+                            "content": result_text[:10000],  # Cap tool output
+                        })
+
+                    # Append tool results to history
+                    working.append({"role": "user", "content": tool_results})
+
+                except Exception as exc:
+                    logger.error("LLM call failed (round %d): %s", round_num, exc)
+                    if round_num == 0:
+                        full_response = f"Error: {exc}"
+                        yield _sse("token", {"text": full_response})
+                    break
+
+            # --- Store turns in brain ---
+            if conversation_id:
+                await self._cs.brain_store_turn(conversation_id, "user", message)
+                if full_response:
+                    await self._cs.brain_store_turn(conversation_id, display, full_response)
+
+            # --- Extract ideas (fire and forget) ---
             yield _sse("phase", {"phase": "extracting"})
-            # TODO: create proper thread per exchange, pass thread_id to extract
 
-            # 9. Timing
+            # --- Timing ---
             total_ms = (time.monotonic() - t0) * 1000
             yield _sse("debug_timing", {
                 "resolveMs": resolve_ms,
                 "assembleMs": assemble_ms,
-                "generateMs": generate_ms,
                 "totalMs": total_ms,
             })
 
@@ -187,12 +410,12 @@ def _build_system_prompt(subject_state: dict | None, model_display: str) -> str:
         f"You are {model_display}, an AI assistant in the Hekate platform.",
         "You help with coding, writing, analysis, planning, and creative work.",
         "Be concise and direct. Use markdown for formatting when helpful.",
+        "You have access to tools — use them when they would help answer the question.",
     ]
 
     if not subject_state:
         return "\n".join(parts)
 
-    # Resolved node context
     resolved_nodes = subject_state.get("resolvedNodeStates", [])
     if resolved_nodes:
         parts.append("\n## Relevant Context")
@@ -201,21 +424,18 @@ def _build_system_prompt(subject_state: dict | None, model_display: str) -> str:
             value = node.get("value", "")
             parts.append(f"- **{name}**: {value[:300] if value else '(no content)'}")
 
-    # Connected nodes
     connected = subject_state.get("connectedNodes", [])
     if connected:
         parts.append("\n## Related")
         for node in connected[:5]:
             parts.append(f"- {node.get('name') or node.get('nodeType', '?')}")
 
-    # Open items
     open_items = subject_state.get("openItems", [])
     if open_items:
         parts.append("\n## Open Items")
         for item in open_items[:3]:
             parts.append(f"- {item.get('name') or item.get('nodeType', '?')}")
 
-    # Agent contract
     contract = subject_state.get("contract")
     if contract:
         parts.append(f"\n## Your Role\n{contract.get('function', '')}")

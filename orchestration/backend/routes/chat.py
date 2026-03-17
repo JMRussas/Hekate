@@ -1,7 +1,7 @@
 #  Orchestration Engine - Chat Routes
 #
 #  Universal chat endpoint — SSE streaming with brain services + model routing.
-#  Replaces the context-store's direct CLI spawning.
+#  Supports @mention routing, slash commands, multi-round tool calling.
 #
 #  Depends on: services/chat_agent.py, container.py
 #  Used by:    app.py
@@ -24,11 +24,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class ChatStreamRequest(BaseModel):
     message: str
     conversation_id: Optional[str] = None
-    context_node_id: Optional[str] = None  # For scoped chat (workspace)
-
-
-class ConversationListRequest(BaseModel):
-    pass
+    messages: Optional[list[dict]] = None  # Full message history from client
 
 
 @router.post("/stream")
@@ -40,9 +36,14 @@ async def chat_stream(
     """Stream a chat response via SSE.
 
     Resolves entities via context-store brain, assembles context,
-    routes to the right model via llm_router, and streams back.
+    routes to the right model via Anthropic SDK (streaming + tools),
+    and streams back token-by-token with tool_call events.
+
+    Supports slash commands (/help, /clear, /models, /tools) which
+    bypass the LLM entirely.
     """
     return await chat_agent.stream_response(
         message=request.message,
         conversation_id=request.conversation_id,
+        messages=request.messages,
     )
