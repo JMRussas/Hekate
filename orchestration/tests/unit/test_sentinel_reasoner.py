@@ -695,3 +695,109 @@ class TestWhyStepIndependence:
         step2 = result.why_chain[1]
         assert "Model consistently" in step2.conclusion
         assert "retry" in step2.question.lower()
+
+
+# ---------------------------------------------------------------------------
+# Retry Diagnosis — fix_type routing
+# ---------------------------------------------------------------------------
+
+class TestReasonerRetryDiagnosis:
+    """Tests for the retry diagnosis feature: error text → fix_type routing."""
+
+    @patch("backend.services.sentinel.reasoner.call_llm")
+    async def test_model_not_found_recommends_reassign_tier(self, mock_call_llm):
+        """Given a 'model not found' error, the reasoner returns fix_type=reassign_tier."""
+        mock_call_llm.return_value = _llm_response(json.dumps({
+            "status": "root_cause_found",
+            "conclusion": "The assigned model tier does not exist or is unavailable",
+            "root_cause": "Model not found — the configured model tier is invalid",
+            "confidence": 0.95,
+            "recommended_action": "retry_task",
+            "next_question": None,
+            "sources_to_query": [],
+            "knowledge_gaps": [],
+            "fix_type": "reassign_tier",
+            "fix_params": {"new_tier": "claude_code"},
+        }))
+
+        obs = _make_obs(
+            category="cascade_failure",
+            message="Task task-001 failed: model not found",
+            details={"task_errors": {"task-001": "Error: model not found"}},
+        )
+        state = _make_state(
+            task_errors={"task-001": "Error: model not found"},
+            task_tiers={"task-001": "opus"},
+            failure_counts={"task-001": 2},
+        )
+
+        reasoner = SentinelReasoner(context=_mock_context(), enabled=True)
+        result = await reasoner.reason(obs, state)
+
+        assert result is not None
+        assert result.fix_type == "reassign_tier"
+        assert result.fix_params.get("new_tier") == "claude_code"
+        assert result.root_cause is not None
+        assert "model" in result.root_cause.lower()
+
+    @patch("backend.services.sentinel.reasoner.call_llm")
+    async def test_task_errors_included_in_prompt(self, mock_call_llm):
+        """Verify that task_errors from PlanState are present in the LLM prompt."""
+        mock_call_llm.return_value = _llm_response(_step_json(
+            status="root_cause_found",
+            root_cause="Model error",
+            confidence=0.9,
+            recommended_action="retry_task",
+        ))
+
+        state = _make_state(
+            task_errors={"task-001": "Error: model 'gemini-ultra' not found"},
+            task_tiers={"task-001": "gemini_cli"},
+        )
+
+        reasoner = SentinelReasoner(context=_mock_context(), enabled=True)
+        await reasoner.reason(_make_obs(), state)
+
+        # Inspect the user message sent to call_llm
+        args, _ = mock_call_llm.call_args
+        user_message = args[1]  # second positional arg is the user message
+        assert "model 'gemini-ultra' not found" in user_message
+
+    @patch("backend.services.sentinel.reasoner.call_llm")
+    async def test_fix_type_defaults_to_retry_as_is(self, mock_call_llm):
+        """When LLM response omits fix_type, result defaults to retry_as_is."""
+        mock_call_llm.return_value = _llm_response(_step_json(
+            status="root_cause_found",
+            root_cause="Transient network blip",
+            confidence=0.8,
+            recommended_action="retry_task",
+        ))
+
+        reasoner = SentinelReasoner(context=_mock_context(), enabled=True)
+        result = await reasoner.reason(_make_obs(), _make_state())
+
+        assert result is not None
+        assert result.fix_type == "retry_as_is"
+        assert result.fix_params == {}
+
+    @patch("backend.services.sentinel.reasoner.call_llm")
+    async def test_invalid_fix_type_falls_back_to_retry_as_is(self, mock_call_llm):
+        """If LLM returns an unknown fix_type, it falls back to retry_as_is."""
+        mock_call_llm.return_value = _llm_response(json.dumps({
+            "status": "root_cause_found",
+            "conclusion": "Something weird",
+            "root_cause": "Unknown issue",
+            "confidence": 0.6,
+            "recommended_action": "retry_task",
+            "next_question": None,
+            "sources_to_query": [],
+            "knowledge_gaps": [],
+            "fix_type": "delete_everything",
+            "fix_params": {},
+        }))
+
+        reasoner = SentinelReasoner(context=_mock_context(), enabled=True)
+        result = await reasoner.reason(_make_obs(), _make_state())
+
+        assert result is not None
+        assert result.fix_type == "retry_as_is"

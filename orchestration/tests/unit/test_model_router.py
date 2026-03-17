@@ -6,12 +6,18 @@
 #  Depends on: backend/services/model_router.py, backend/models/enums.py
 #  Used by:    pytest
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from backend.models.enums import ModelTier
 from backend.services.model_router import (
+    _BASE_TIER_MAP,
+    _STRATEGY_MAPS,
+    _STRATEGY_OVERRIDES,
     calculate_cost,
     estimate_task_cost,
+    get_available_tiers,
     get_model_id,
     recommend_tier,
     recommend_tools,
@@ -115,8 +121,15 @@ class TestEstimateTaskCost:
 # ---------------------------------------------------------------------------
 
 class TestRecommendTier:
-    def test_research_simple_is_ollama(self):
-        assert recommend_tier("research", "simple") == ModelTier.OLLAMA
+    """Tests use default routing_strategy='best'."""
+
+    def test_research_simple_is_gemini(self):
+        """Best strategy: research/simple → Gemini (strong at search)."""
+        assert recommend_tier("research", "simple") == ModelTier.GEMINI_CLI
+
+    def test_code_simple_is_claude_code(self):
+        """Best strategy: code/simple → Claude Code (strongest code executor)."""
+        assert recommend_tier("code", "simple") == ModelTier.CLAUDE_CODE
 
     def test_code_medium_is_claude_code(self):
         assert recommend_tier("code", "medium") == ModelTier.CLAUDE_CODE
@@ -176,3 +189,161 @@ class TestRecommendTools:
         assert len(tools) > 0
         assert "search_knowledge" in tools
         assert "local_llm" in tools
+
+
+# ---------------------------------------------------------------------------
+# Routing strategy selection
+# ---------------------------------------------------------------------------
+
+class TestRoutingStrategy:
+    """Test configurable routing_strategy (best/cheapest/balanced)."""
+
+    def test_best_routes_code_simple_to_claude(self):
+        with patch("backend.services.model_router.cfg", return_value="best"):
+            assert recommend_tier("code", "simple") == ModelTier.CLAUDE_CODE
+
+    def test_cheapest_routes_code_simple_to_gemini(self):
+        with patch("backend.services.model_router.cfg", return_value="cheapest"):
+            assert recommend_tier("code", "simple") == ModelTier.GEMINI_CLI
+
+    def test_balanced_routes_code_simple_to_gemini(self):
+        with patch("backend.services.model_router.cfg", return_value="balanced"):
+            assert recommend_tier("code", "simple") == ModelTier.GEMINI_CLI
+
+    def test_cheapest_routes_analysis_simple_to_ollama(self):
+        with patch("backend.services.model_router.cfg", return_value="cheapest"):
+            assert recommend_tier("analysis", "simple") == ModelTier.OLLAMA
+
+    def test_best_routes_analysis_simple_to_gemini(self):
+        with patch("backend.services.model_router.cfg", return_value="best"):
+            assert recommend_tier("analysis", "simple") == ModelTier.GEMINI_CLI
+
+    def test_balanced_routes_analysis_simple_to_gemini(self):
+        with patch("backend.services.model_router.cfg", return_value="balanced"):
+            assert recommend_tier("analysis", "simple") == ModelTier.GEMINI_CLI
+
+    def test_cheapest_routes_docs_simple_to_ollama(self):
+        with patch("backend.services.model_router.cfg", return_value="cheapest"):
+            assert recommend_tier("documentation", "simple") == ModelTier.OLLAMA
+
+    def test_best_routes_docs_simple_to_gemini(self):
+        with patch("backend.services.model_router.cfg", return_value="best"):
+            assert recommend_tier("documentation", "simple") == ModelTier.GEMINI_CLI
+
+    def test_all_strategies_agree_on_complex_code(self):
+        """All strategies should route complex code to Claude Code."""
+        for strategy in ("best", "cheapest", "balanced"):
+            with patch("backend.services.model_router.cfg", return_value=strategy):
+                assert recommend_tier("code", "complex") == ModelTier.CLAUDE_CODE
+
+    def test_all_strategies_agree_on_assets(self):
+        """All strategies should route assets to Ollama."""
+        for strategy in ("best", "cheapest", "balanced"):
+            with patch("backend.services.model_router.cfg", return_value=strategy):
+                assert recommend_tier("asset", "medium") == ModelTier.OLLAMA
+
+    def test_unknown_strategy_falls_back_to_best(self):
+        with patch("backend.services.model_router.cfg", return_value="nonexistent"):
+            # Should behave like "best" — code/simple → CLAUDE_CODE
+            assert recommend_tier("code", "simple") == ModelTier.CLAUDE_CODE
+
+    def test_default_strategy_is_best(self):
+        """When config has no routing_strategy, default should be 'best'."""
+        # recommend_tier calls cfg("routing_strategy", "best") — default arg is "best"
+        assert recommend_tier("code", "simple") == ModelTier.CLAUDE_CODE
+
+
+# ---------------------------------------------------------------------------
+# Map merging and materialization
+# ---------------------------------------------------------------------------
+
+class TestStrategyMapMerging:
+    """Test that base map + overrides produce correct materialized maps."""
+
+    def test_all_strategies_have_36_entries(self):
+        for name, tier_map in _STRATEGY_MAPS.items():
+            assert len(tier_map) == 36, f"Strategy '{name}' has {len(tier_map)} entries, expected 36"
+
+    def test_three_strategies_exist(self):
+        assert set(_STRATEGY_MAPS.keys()) == {"best", "cheapest", "balanced"}
+
+    def test_overrides_are_subset_of_materialized(self):
+        """Every override key should appear in the materialized map."""
+        for name, overrides in _STRATEGY_OVERRIDES.items():
+            materialized = _STRATEGY_MAPS[name]
+            for key, tier in overrides.items():
+                assert key in materialized
+                assert materialized[key] == tier
+
+    def test_base_entries_present_when_not_overridden(self):
+        """Base map entries should be in materialized map when no override exists."""
+        for name, overrides in _STRATEGY_OVERRIDES.items():
+            materialized = _STRATEGY_MAPS[name]
+            for key, tier in _BASE_TIER_MAP.items():
+                if key not in overrides:
+                    assert materialized[key] == tier, (
+                        f"Strategy '{name}': base entry {key} should be {tier}, got {materialized.get(key)}"
+                    )
+
+    def test_strategies_differ_on_code_simple(self):
+        """The key differentiator: code/simple varies by strategy."""
+        assert _STRATEGY_MAPS["best"][("code", "simple")] == ModelTier.CLAUDE_CODE
+        assert _STRATEGY_MAPS["cheapest"][("code", "simple")] == ModelTier.GEMINI_CLI
+        assert _STRATEGY_MAPS["balanced"][("code", "simple")] == ModelTier.GEMINI_CLI
+
+    def test_all_tiers_are_valid_model_tiers(self):
+        """Every value in every strategy map should be a valid ModelTier."""
+        for name, tier_map in _STRATEGY_MAPS.items():
+            for key, tier in tier_map.items():
+                assert isinstance(tier, ModelTier), f"Strategy '{name}': {key} → {tier} is not a ModelTier"
+
+
+# ---------------------------------------------------------------------------
+# Quota-aware fallback (get_available_tiers)
+# ---------------------------------------------------------------------------
+
+class TestGetAvailableTiers:
+    """Test that get_available_tiers respects routing strategy + quota fallback."""
+
+    @pytest.mark.asyncio
+    async def test_no_quota_manager_returns_recommended(self):
+        """Without quota manager, behaves like recommend_tier."""
+        result = await get_available_tiers("code", "simple", quota_manager=None)
+        assert result == recommend_tier("code", "simple")
+
+    @pytest.mark.asyncio
+    async def test_ollama_always_returns_ollama(self):
+        """Ollama has no limits — should always return Ollama."""
+        quota = AsyncMock()
+        with patch("backend.services.model_router.cfg", return_value="cheapest"):
+            result = await get_available_tiers("analysis", "simple", quota_manager=quota)
+        assert result == ModelTier.OLLAMA
+        quota.is_provider_available.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_available_provider_returns_recommended(self):
+        """When recommended provider is available, return it."""
+        quota = AsyncMock()
+        quota.is_provider_available.return_value = True
+        result = await get_available_tiers("code", "simple", quota_manager=quota)
+        assert result == ModelTier.CLAUDE_CODE  # "best" default
+
+    @pytest.mark.asyncio
+    async def test_hot_provider_falls_back(self):
+        """When recommended provider is hot, fall back to next available."""
+        quota = AsyncMock()
+        # Claude Code hot, Gemini available
+        async def is_available(provider):
+            return provider != "claude_code"
+        quota.is_provider_available.side_effect = is_available
+
+        result = await get_available_tiers("code", "simple", quota_manager=quota)
+        assert result == ModelTier.GEMINI_CLI
+
+    @pytest.mark.asyncio
+    async def test_all_hot_falls_back_to_ollama(self):
+        """When all cloud providers are hot, force Ollama."""
+        quota = AsyncMock()
+        quota.is_provider_available.return_value = False
+        result = await get_available_tiers("code", "simple", quota_manager=quota)
+        assert result == ModelTier.OLLAMA
