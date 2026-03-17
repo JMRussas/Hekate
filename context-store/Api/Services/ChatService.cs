@@ -469,18 +469,31 @@ public class ChatService
         await EmitTypewriter(rawOutput, http, ct);
     }
 
-    /// <summary>Claude CLI with multi-round tool calling. Uses --output-format json
-    /// to detect tool_use blocks, executes skills, and feeds results back.</summary>
+    /// <summary>Claude CLI with multi-round tool calling. Uses text mode with
+    /// JSON tool-call detection in the response text.</summary>
     private async Task StreamClaudeCli(ModelRoute route, AssembledPrompt prompt, StringBuilder fullResponse,
         Microsoft.AspNetCore.Http.HttpResponse http, CancellationToken ct)
     {
         const int maxRounds = 5;
-        var combinedPrompt = $"<system>\n{prompt.SystemPrompt}\n</system>\n\n{prompt.UserPrompt}";
+
+        // Inject tool definitions + calling convention into the system prompt
+        var skills = _skillLoader.LoadSkillDefinitions();
+        var toolBlock = "";
+        if (skills.Count > 0)
+        {
+            var toolDefs = skills.Select(s => new { name = s.Name, description = s.Description, parameters = s.Parameters });
+            toolBlock = $"\n\n<available_tools>\n{JsonSerializer.Serialize(toolDefs, new JsonSerializerOptions { WriteIndented = true })}\n</available_tools>\n"
+                + "To call a tool, output ONLY a JSON block on its own line:\n"
+                + "{\"tool_call\": {\"name\": \"tool_name\", \"arguments\": {...}}}\n"
+                + "After the tool result, continue your response naturally.\n"
+                + "If no tool is needed, just respond normally with text.";
+        }
+
+        var combinedPrompt = $"<system>\n{prompt.SystemPrompt}{toolBlock}\n</system>\n\n{prompt.UserPrompt}";
 
         for (int round = 0; round < maxRounds; round++)
         {
-            // Run claude with json output to get structured response with tool_use blocks
-            var args = new List<string> { "--print", "-", "--output-format", "json", "--model", route.ModelId };
+            var args = new List<string> { "--print", "-", "--output-format", "text", "--model", route.ModelId };
             var rawOutput = await RunCliOnce("claude", args, combinedPrompt, ct);
 
             if (rawOutput.StartsWith("Failed to start"))
@@ -489,78 +502,53 @@ public class ChatService
                 return;
             }
 
-            // Parse JSON output: single JSON array of content blocks
-            // Format: [{"type":"text","text":"..."}, {"type":"tool_use","id":"...","name":"...","input":{...}}]
-            var textParts = new StringBuilder();
-            var toolUseBlocks = new List<(string Id, string Name, string ArgsJson)>();
+            // Check if response contains a tool call JSON block
+            var toolCallMatch = Regex.Match(rawOutput, @"\{[\s]*""tool_call""[\s]*:[\s]*\{.*?\}\s*\}", RegexOptions.Singleline);
 
+            if (!toolCallMatch.Success)
+            {
+                // No tool call — just text, emit and done
+                fullResponse.Append(rawOutput);
+                await EmitTypewriter(rawOutput, http, ct);
+                return;
+            }
+
+            // Emit text before the tool call
+            var textBefore = rawOutput[..toolCallMatch.Index].Trim();
+            if (!string.IsNullOrEmpty(textBefore))
+            {
+                fullResponse.Append(textBefore + "\n");
+                await EmitTypewriter(textBefore + "\n", http, ct);
+            }
+
+            // Parse and execute the tool call
             try
             {
-                using var doc = JsonDocument.Parse(rawOutput);
-                var root = doc.RootElement;
+                using var doc = JsonDocument.Parse(toolCallMatch.Value);
+                var tc = doc.RootElement.GetProperty("tool_call");
+                var toolName = tc.GetProperty("name").GetString() ?? "";
+                var argsJson = tc.TryGetProperty("arguments", out var a) ? a.ToString() : "{}";
 
-                // --output-format json returns an array of content blocks
-                var contentArr = root.ValueKind == JsonValueKind.Array ? root : default;
-                if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("content", out var ca))
-                    contentArr = ca;
-
-                if (contentArr.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var block in contentArr.EnumerateArray())
-                    {
-                        var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
-                        if (blockType == "text")
-                        {
-                            var text = block.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
-                            textParts.Append(text);
-                            await EmitTypewriter(text, http, ct);
-                        }
-                        else if (blockType == "tool_use")
-                        {
-                            var toolId = block.TryGetProperty("id", out var id) ? id.GetString() ?? "" : $"tool_{round}";
-                            var toolName = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
-                            var argsJson = block.TryGetProperty("input", out var inp) ? inp.ToString() : "{}";
-                            toolUseBlocks.Add((toolId, toolName, argsJson));
-                        }
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                // Not JSON — plain text response (fallback)
-                textParts.Append(rawOutput);
-                await EmitTypewriter(rawOutput, http, ct);
-            }
-
-            fullResponse.Append(textParts);
-
-            // No tool calls — we're done
-            if (toolUseBlocks.Count == 0)
-                return;
-
-            // Execute tool calls and build prompt for next round
-            var toolResults = new StringBuilder();
-            toolResults.Append("\n\n<tool_results>\n");
-
-            foreach (var (toolId, toolName, argsJson) in toolUseBlocks)
-            {
-                await SendSseEvent(http, "tool_call", JsonSerializer.Serialize(new { name = toolName, toolId }), ct);
+                await SendSseEvent(http, "tool_call", JsonSerializer.Serialize(new { name = toolName, toolId = $"call_{round}" }), ct);
                 await SendSseEvent(http, "phase", JsonSerializer.Serialize(new { phase = "calling_tool" }), ct);
 
                 var result = await ExecuteSkill(toolName, argsJson);
 
                 await SendSseEvent(http, "tool_result", JsonSerializer.Serialize(new
                 {
-                    name = toolName, toolId, resultLength = result.Length
+                    name = toolName, toolId = $"call_{round}", resultLength = result.Length
                 }), ct);
 
-                toolResults.Append($"<tool_result tool_use_id=\"{toolId}\" name=\"{toolName}\">\n{result}\n</tool_result>\n");
+                // Next round: append tool result
+                combinedPrompt += $"\n\n{textBefore}\n\n<tool_result name=\"{toolName}\">\n{result}\n</tool_result>\n\nContinue your response based on the tool result above.";
             }
-
-            toolResults.Append("</tool_results>\n\nContinue based on the tool results above.");
-
-            // Next round: append tool results to the prompt
-            combinedPrompt += textParts.ToString() + toolResults.ToString();
+            catch (JsonException)
+            {
+                // Couldn't parse tool call — treat as plain text
+                fullResponse.Append(rawOutput);
+                await EmitTypewriter(rawOutput, http, ct);
+                return;
+            }
         }
     }
 
@@ -639,7 +627,7 @@ public class ChatService
                 {
                     var model = args.TryGetProperty("model", out var m) ? m.GetString() ?? "ollama" : "ollama";
                     var message = args.TryGetProperty("message", out var msg) ? msg.GetString() ?? "" : "";
-                    return $"[route_to_model is not supported in tool-calling mode. The user can send directly to @{model}.]";
+                    return await RouteToModel(model, message);
                 }
 
                 case "orchestrate":
@@ -657,6 +645,36 @@ public class ChatService
         {
             return $"Skill error: {ex.Message}";
         }
+    }
+
+    /// <summary>Send a message to another model and return its response. No tools (prevents recursion).</summary>
+    private async Task<string> RouteToModel(string modelName, string message)
+    {
+        var mention = $"@{modelName}";
+        if (!ModelRoutes.TryGetValue(mention, out var route))
+            return $"Unknown model: {modelName}. Available: {string.Join(", ", ModelRoutes.Keys)}";
+
+        if (route.Provider == "ollama")
+        {
+            // Direct HTTP — fast, no CLI
+            var requestBody = new { model = route.ModelId, messages = new[] { new { role = "user", content = message } }, stream = false, think = false };
+            var resp = await _httpClient.PostAsJsonAsync($"{OllamaBaseUrl}/api/chat", requestBody);
+            resp.EnsureSuccessStatusCode();
+            using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+            return doc.RootElement.GetProperty("message").GetProperty("content").GetString() ?? "(empty response)";
+        }
+
+        // CLI route — single shot, no tools
+        var (executable, args) = route.Provider switch
+        {
+            "claude" => ("claude", new List<string> { "--print", "-", "--output-format", "text", "--model", route.ModelId }),
+            "gemini" => ("gemini", new List<string> { "-p", "-", "-m", route.ModelId }),
+            "codex" => ("codex", new List<string> { "exec", "--", "--model", route.ModelId }),
+            _ => ("claude", new List<string> { "--print", "-", "--output-format", "text", "--model", "sonnet" })
+        };
+
+        var result = await RunCliOnce(executable, args, message, CancellationToken.None);
+        return string.IsNullOrWhiteSpace(result) ? "(empty response)" : result.Trim();
     }
 
     /// <summary>Run a CLI process once. Returns stdout or error message.</summary>
