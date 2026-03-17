@@ -15,7 +15,7 @@ import uuid
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 
 from backend.config import AUTH_OIDC_PROVIDERS, AUTH_OIDC_REDIRECT_URIS, AUTH_REFRESH_TOKEN_EXPIRE_DAYS
-from backend.db.connection import Database
+from backend.db.connection import Database, parse_rowcount
 from backend.exceptions import AccountLinkError, NotFoundError, OIDCError
 from backend.services.auth import AuthService
 
@@ -280,11 +280,11 @@ class OIDCService:
                     "Cannot unlink the only authentication method. Set a password first."
                 )
 
-            cursor = await conn.execute(
+            status = await conn.execute(
                 "DELETE FROM user_identities WHERE user_id = $1 AND provider = $2",
                 (user_id, provider_name),
             )
-            if cursor.rowcount == 0:
+            if parse_rowcount(status) == 0:
                 raise NotFoundError(f"No linked identity for provider '{provider_name}'")
 
     async def get_user_identities(self, user_id: str) -> list[dict]:

@@ -15,7 +15,7 @@ from dependency_injector.wiring import inject, Provide
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.container import Container
-from backend.db.connection import Database
+from backend.db.connection import Database, parse_rowcount
 from backend.middleware.auth import get_current_user
 from backend.models.enums import (
     ExecutionMode,
@@ -168,14 +168,14 @@ async def claim_task(
 
     # Atomic claim via CAS
     now = time.time()
-    cursor = await db.execute_write(
+    claim_status = await db.execute_write(
         "UPDATE tasks SET status = $1, claimed_by = $2, claimed_at = $3, "
         "started_at = $4, updated_at = $5 "
         "WHERE id = $6 AND status = $7",
         (TaskStatus.RUNNING, user["id"], now, now, now,
          task_id, TaskStatus.PENDING),
     )
-    if cursor.rowcount == 0:
+    if parse_rowcount(claim_status) == 0:
         raise HTTPException(
             status_code=409,
             detail="Task not claimable — already claimed or not pending",

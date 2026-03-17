@@ -496,7 +496,7 @@ class _SqliteConnProxy:
         if stripped.startswith("SELECT") or stripped.startswith("WITH"):
             rows = await cursor.fetchall()
             return _CursorResult(rows)
-        return cursor
+        return f"OK {cursor.rowcount}"
 
     async def fetchrow(self, sql, params=()):
         sql = _pg_to_sqlite(sql)
@@ -584,3 +584,19 @@ class Database:
         if self._backend:
             await self._backend.close()
             self._backend = None
+
+
+def parse_rowcount(status: str) -> int:
+    """Extract the affected row count from an execute_write status string.
+
+    Both backends return strings: Postgres returns e.g. "UPDATE 1", "DELETE 3",
+    "INSERT 0 1"; SQLite backend returns "OK 5". This extracts the last integer.
+    Returns 0 if no number is found.
+    """
+    parts = status.strip().split()
+    if parts:
+        try:
+            return int(parts[-1])
+        except ValueError:
+            pass
+    return 0

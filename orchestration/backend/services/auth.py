@@ -28,7 +28,7 @@ from backend.config import (
     AUTH_SECRET_KEY,
     AUTH_SSE_TOKEN_EXPIRE_SECONDS,
 )
-from backend.db.connection import Database
+from backend.db.connection import Database, parse_rowcount
 
 logger = logging.getLogger("orchestration.auth")
 
@@ -418,20 +418,20 @@ class AuthService:
 
     async def revoke_user_tokens(self, user_id: str) -> int:
         """Revoke all refresh token families for a user. Returns count of revoked records."""
-        cursor = await self._db.execute_write(
+        status = await self._db.execute_write(
             "UPDATE refresh_token_families SET is_revoked = 1 "
             "WHERE user_id = $1 AND is_revoked = 0",
             (user_id,),
         )
-        return cursor.rowcount
+        return parse_rowcount(status)
 
     async def cleanup_expired_tokens(self) -> int:
         """Delete expired refresh token records. Returns count of deleted records."""
-        cursor = await self._db.execute_write(
+        status = await self._db.execute_write(
             "DELETE FROM refresh_token_families WHERE expires_at < $1",
             (time.time(),),
         )
-        return cursor.rowcount
+        return parse_rowcount(status)
 
     # ------------------------------------------------------------------
     # Password management
@@ -507,11 +507,11 @@ class AuthService:
 
     async def revoke_api_key(self, key_id: str, user_id: str) -> bool:
         """Revoke an API key. Returns True if the key was found and revoked."""
-        cursor = await self._db.execute_write(
+        status = await self._db.execute_write(
             "UPDATE api_keys SET is_active = 0 WHERE id = $1 AND user_id = $2",
             (key_id, user_id),
         )
-        if cursor.rowcount > 0:
+        if parse_rowcount(status) > 0:
             logger.info("API key %s revoked by user %s", key_id, user_id)
             return True
         return False

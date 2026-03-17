@@ -41,6 +41,7 @@ from backend.config import (
     VERIFICATION_ENABLED,
 )
 from backend.logging_config import set_task_id
+from backend.db.connection import parse_rowcount
 from backend.models.enums import ModelTier, TaskStatus, VerificationResult
 from backend.services.claude_agent import run_claude_task
 from backend.services.claude_code_executor import run_claude_code_task
@@ -1289,6 +1290,7 @@ async def execute_task(
                 if tier == ModelTier.OLLAMA:
                     result = await run_ollama_task(
                         task_row=_dispatch_row, http_client=http_client, budget=budget,
+                        tool_registry=tool_registry,
                     )
                 elif tier == ModelTier.CLAUDE_CODE:
                     result = await run_claude_code_task(
@@ -1976,7 +1978,7 @@ async def execute_replan(
 
     # 1. Cancel all pending/blocked tasks in waves after the completed wave
     now = time.time()
-    cancelled = await db.execute_write(
+    cancelled_status = await db.execute_write(
         "UPDATE tasks SET status = $1, updated_at = $2 "
         "WHERE project_id = $3 AND wave > $4 AND status IN ($5, $6)",
         (
@@ -1985,7 +1987,7 @@ async def execute_replan(
             TaskStatus.PENDING, TaskStatus.BLOCKED,
         ),
     )
-    cancelled_count = cancelled.rowcount if hasattr(cancelled, "rowcount") else 0
+    cancelled_count = parse_rowcount(cancelled_status)
     logger.info(
         "Cancelled %s pending/blocked tasks in waves > %d for project %s",
         cancelled_count, completed_wave, project_id,

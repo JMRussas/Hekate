@@ -30,6 +30,7 @@ from backend.config import (
     WAVE_CHECKPOINTS,
 )
 from backend.models.enums import ExecutionMode, ModelTier, ProjectStatus, TaskStatus
+from backend.db.connection import parse_rowcount
 from backend.services.model_router import calculate_cost, get_model_id
 from backend.services.git_service import GitService
 from backend.services.task_lifecycle import execute_task
@@ -116,14 +117,15 @@ class Executor:
         # Reset internally-dispatched running/queued tasks to pending so they can
         # be re-dispatched after restart. Exclude externally-claimed tasks — their
         # executor is independent of this process lifecycle.
-        reset_cursor = await self._db.execute_write(
+        reset_status = await self._db.execute_write(
             "UPDATE tasks SET status = $1, error = $2, updated_at = $3 "
             "WHERE status IN ($4, $5) AND claimed_by IS NULL",
             (TaskStatus.PENDING, "Interrupted by shutdown", time.time(),
              TaskStatus.RUNNING, TaskStatus.QUEUED),
         )
-        if reset_cursor.rowcount > 0:
-            logger.info("Reset %d running/queued task(s) to pending on shutdown", reset_cursor.rowcount)
+        reset_count = parse_rowcount(reset_status)
+        if reset_count > 0:
+            logger.info("Reset %d running/queued task(s) to pending on shutdown", reset_count)
 
         # Close the shared Anthropic client and clear state
         if self._client:
@@ -466,11 +468,11 @@ class Executor:
                         await self._budget.release_reservation_project(pid, est_cost)
                     continue
                 self._dispatched.add(task_row["id"])
-                cursor = await self._db.execute_write(
+                claim_status = await self._db.execute_write(
                     "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4",
                     (TaskStatus.QUEUED, time.time(), task_row["id"], TaskStatus.PENDING),
                 )
-                if cursor.rowcount == 0:
+                if parse_rowcount(claim_status) == 0:
                     self._dispatched.discard(task_row["id"])
                     if est_cost > 0:
                         await self._budget.release_reservation(est_cost)
