@@ -724,6 +724,10 @@ class Executor:
         base_branch = row["git_base_branch"] or "main"
         worktree_dir = str(Path(repo_path) / ".worktrees" / slugify(row["name"]))
 
+        # Ensure workspace directory exists with CLI config
+        from backend.services.task_lifecycle import _ensure_workspace
+        await _ensure_workspace(repo_path, self._db, project_id)
+
         # Pull latest base branch in the main repo
         try:
             await self._git.pull_branch(repo_path, base_branch)
