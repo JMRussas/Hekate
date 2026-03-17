@@ -9,6 +9,7 @@
 #   - HekatePythonWorker
 #   - HekateTypeScriptWorker
 #   - HekateCppWorker
+#   - HekateAdmin        (hades — port 5201)
 #   - Ollama
 #   - ComfyUI
 
@@ -21,7 +22,7 @@ NC='\033[0m'
 CORE_SERVICES=(HekateOrchestration HekateContextStore)
 
 # All services (for full restart)
-ALL_SERVICES=(HekateOrchestration HekateContextStore HekateServer HekatePythonWorker HekateTypeScriptWorker HekateCppWorker)
+ALL_SERVICES=(HekateOrchestration HekateContextStore HekateServer HekatePythonWorker HekateTypeScriptWorker HekateCppWorker HekateAdmin)
 
 # Pick service set
 SERVICES=("${CORE_SERVICES[@]}")
@@ -93,7 +94,7 @@ restart_services() {
 
 status() {
     echo -e "${YELLOW}NSSM Services:${NC}"
-    for svc in "${ALL_SERVICES[@]}" Ollama ComfyUI; do
+    for svc in "${ALL_SERVICES[@]}" HekateAdmin Ollama ComfyUI; do
         STATUS=$(nssm status "$svc" 2>/dev/null)
         if [ "$STATUS" = "SERVICE_RUNNING" ]; then
             echo -e "  $svc: ${GREEN}$STATUS${NC}"
@@ -114,6 +115,9 @@ status() {
     curl -s http://localhost:5179 > /dev/null 2>&1 \
         && echo -e "  Context Store UI (5179): ${GREEN}UP${NC}" \
         || echo -e "  Context Store UI (5179): ${RED}DOWN${NC}"
+    curl -s http://localhost:5201/health > /dev/null 2>&1 \
+        && echo -e "  Hades (5201): ${GREEN}UP${NC}" \
+        || echo -e "  Hades (5201): ${RED}DOWN${NC}"
 }
 
 case "${1:-restart}" in

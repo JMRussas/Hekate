@@ -74,7 +74,7 @@ echo -e "  ${GREEN}OK${NC}"
 # 1. Stop services
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Stopping services...${NC}"
-for svc in HekateOrchestration HekateContextStore HekateServer HekatePythonWorker HekateTypeScriptWorker HekateCppWorker; do
+for svc in HekateOrchestration HekateContextStore HekateServer HekatePythonWorker HekateTypeScriptWorker HekateCppWorker HekateAdmin; do
     nssm stop "$svc" > /dev/null 2>&1 || true
 done
 sleep 2
@@ -123,6 +123,15 @@ if [ -d "$SOURCE/orchestration/frontend/src" ]; then
     cp "$SOURCE/orchestration/frontend/index.html" "$TARGET/orchestration/frontend/" 2>/dev/null || true
 fi
 
+echo -e "  ${GREEN}Copied${NC}"
+
+# ---------------------------------------------------------------
+# 3b. Copy Hades
+# ---------------------------------------------------------------
+echo -e "${YELLOW}Copying hades...${NC}"
+mkdir -p "$TARGET/hades"
+cp "$SOURCE/hades/"*.py "$TARGET/hades/" 2>/dev/null || true
+cp "$SOURCE/hades/requirements.txt" "$TARGET/hades/" 2>/dev/null || true
 echo -e "  ${GREEN}Copied${NC}"
 
 # ---------------------------------------------------------------
@@ -232,7 +241,7 @@ fi
 # 10. Start services
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Starting services...${NC}"
-for svc in HekateContextStore HekateOrchestration HekateServer HekatePythonWorker HekateTypeScriptWorker HekateCppWorker; do
+for svc in HekateContextStore HekateOrchestration HekateServer HekatePythonWorker HekateTypeScriptWorker HekateCppWorker HekateAdmin; do
     nssm start "$svc" > /dev/null 2>&1 || true
 done
 

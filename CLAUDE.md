@@ -1,6 +1,6 @@
 # Hekate
 
-Unified AI agent platform: VSCode extension (fleet control) + orchestration backend (task execution) + context store (agent memory). Three components, one repo.
+Unified AI agent platform: VSCode extension (fleet control) + orchestration backend (task execution) + context store (agent memory) + admin service (infra). Four components, one repo.
 
 ## CRITICAL: Two Directories
 
@@ -42,6 +42,7 @@ All services run via NSSM from `C:\Hekate`, **not** from the source repo.
 | HekatePythonWorker | `HekateMcp.Worker.Python.exe` | 9200 | |
 | HekateTypeScriptWorker | similar | 9202 | |
 | HekateCppWorker | similar | 9201 | |
+| HekateAdmin | Python 3.14 `server.py` | 5201 | Hades — admin service. Needs `PATH` with nssm + python |
 
 ### NSSM Environment (HekateOrchestration)
 
@@ -90,6 +91,7 @@ bash scripts/restart.sh restart --all  # restart everything including MCP worker
 | **Context Store** | `context-store/` | C#/.NET 8 | `dotnet publish context-store/Api/Api.csproj -o C:\Hekate\context-store\` | NSSM service (port 5102) |
 | **Context Store UI** | `context-store/ui/` | React/Vite | `cd context-store/ui && npm install && npm run dev` | port 5179 |
 | **Orchestration Dashboard** | `orchestration/frontend/` | React/Vite | `cd orchestration/frontend && npm run build` | Served by FastAPI from `dist/` |
+| **Hades** | `hades/` | Python/FastAPI | `pip install -r hades/requirements.txt` | `python hades/server.py` (port 5201) |
 
 ## Project Structure
 
@@ -152,6 +154,7 @@ Read **on-demand** when working in the relevant area.
 | Context Store API | 5102 | `CODESTORAGE_CONNSTR` env var |
 | Context Store UI | 5179 | Vite dev server |
 | Orchestration API + Dashboard | 5200 | `orchestration/config.json` |
+| Hades (admin) | 5201 | `HEKATE_ROOT`, `HEKATE_SOURCE` env vars |
 | Ollama | 11434 | `OLLAMA_URL` env var |
 | hekate-mcp | 5110 | NSSM `HekateServer` |
 

@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""
+Hades — privileged admin service for the Hekate production environment.
+
+Runs as an NSSM service (HekateAdmin) under LocalSystem, exposing
+service management, deployment, and log tailing via HTTP on port 5201.
+"""
+
+import asyncio
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+HEKATE_ROOT = Path(os.environ.get("HEKATE_ROOT", "C:/Hekate"))
+SOURCE_ROOT = Path(os.environ.get("HEKATE_SOURCE", "C:/Users/jruss/Documents/GitHub/Hekate"))
+PORT = int(os.environ.get("ADMIN_MCP_PORT", "5201"))
+
+# All known NSSM services
+SERVICES = {
+    "HekateOrchestration":    {"port": 5200, "health": "http://localhost:5200/api/health"},
+    "HekateContextStore":     {"port": 5102, "health": "http://localhost:5102/api/health"},
+    "HekateServer":           {"port": 5110, "health": None},
+    "HekatePythonWorker":     {"port": 9200, "health": None},
+    "HekateTypeScriptWorker": {"port": 9202, "health": None},
+    "HekateCppWorker":        {"port": 9201, "health": None},
+    "HekateAdmin":            {"port": 5201, "health": "http://localhost:5201/health"},
+    "Ollama":                 {"port": 11434, "health": "http://localhost:11434/"},
+    "ComfyUI":                {"port": 8188, "health": "http://localhost:8188/"},
+}
+
+CORE_SERVICES = ["HekateOrchestration", "HekateContextStore"]
+
+log = logging.getLogger("hades")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _run(cmd: list[str], timeout: int = 30, cwd: str | None = None) -> dict:
+    """Run a subprocess and return structured result."""
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+        return {
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+        }
+    except subprocess.TimeoutExpired:
+        return {"returncode": -1, "stdout": "", "stderr": f"Timeout after {timeout}s"}
+    except FileNotFoundError:
+        return {"returncode": -1, "stdout": "", "stderr": f"Command not found: {cmd[0]}"}
+
+
+def _nssm_status(service: str) -> str:
+    """Get NSSM service status."""
+    result = _run(["nssm", "status", service])
+    if result["returncode"] == 0:
+        return result["stdout"].strip()
+    return result["stderr"] or "UNKNOWN"
+
+
+def _validate_service(name: str) -> None:
+    """Raise 404 if service name is not in the whitelist."""
+    if name not in SERVICES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown service '{name}'. Valid: {', '.join(sorted(SERVICES.keys()))}",
+        )
+
+
+async def _health_check(url: str, timeout: float = 3.0) -> dict:
+    """Check an HTTP health endpoint."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url)
+            return {"status": "ok", "code": resp.status_code}
+    except httpx.ConnectError:
+        return {"status": "unreachable"}
+    except httpx.TimeoutException:
+        return {"status": "timeout"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("Hades starting on port %d", PORT)
+    log.info("HEKATE_ROOT: %s", HEKATE_ROOT)
+    log.info("SOURCE_ROOT: %s", SOURCE_ROOT)
+    yield
+    log.info("Hades shutting down")
+
+
+app = FastAPI(
+    title="Hades",
+    description="Privileged admin service for the Hekate production environment",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
+class ServiceAction(BaseModel):
+    service: str
+
+class DeployRequest(BaseModel):
+    skip_frontend: bool = False
+
+class TailRequest(BaseModel):
+    service: str
+    lines: int = 50
+
+class ClearCacheRequest(BaseModel):
+    path: Optional[str] = None  # defaults to HEKATE_ROOT/orchestration
+
+
+# ---------------------------------------------------------------------------
+# Routes — Health
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "hades", "port": PORT}
+
+
+# ---------------------------------------------------------------------------
+# Routes — Service Status
+# ---------------------------------------------------------------------------
+
+@app.get("/services")
+async def list_services():
+    """Get status of all known NSSM services."""
+    results = {}
+    for name, info in SERVICES.items():
+        status = _nssm_status(name)
+        entry = {"nssm_status": status, "port": info["port"]}
+
+        # Health check for running services with health endpoints
+        if status == "SERVICE_RUNNING" and info.get("health"):
+            entry["health"] = await _health_check(info["health"])
+
+        results[name] = entry
+
+    return {"services": results}
+
+
+@app.get("/services/{name}")
+async def get_service(name: str):
+    """Get status of a specific NSSM service."""
+    _validate_service(name)
+    info = SERVICES[name]
+    status = _nssm_status(name)
+    result = {"service": name, "nssm_status": status, "port": info["port"]}
+
+    if status == "SERVICE_RUNNING" and info.get("health"):
+        result["health"] = await _health_check(info["health"])
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Routes — Service Control
+# ---------------------------------------------------------------------------
+
+@app.post("/services/{name}/restart")
+async def restart_service(name: str):
+    """Restart an NSSM service."""
+    _validate_service(name)
+    log.info("Restarting service: %s", name)
+
+    stop_result = _run(["nssm", "stop", name], timeout=15)
+    await asyncio.sleep(2)
+    start_result = _run(["nssm", "start", name], timeout=15)
+    await asyncio.sleep(1)
+
+    new_status = _nssm_status(name)
+
+    # Health check if available
+    health = None
+    info = SERVICES[name]
+    if new_status == "SERVICE_RUNNING" and info.get("health"):
+        # Give it a moment to boot
+        for _ in range(10):
+            await asyncio.sleep(1)
+            health = await _health_check(info["health"])
+            if health["status"] == "ok":
+                break
+
+    return {
+        "service": name,
+        "action": "restart",
+        "stop": stop_result,
+        "start": start_result,
+        "status": new_status,
+        "health": health,
+    }
+
+
+@app.post("/services/{name}/stop")
+async def stop_service(name: str):
+    """Stop an NSSM service."""
+    _validate_service(name)
+
+    # Don't let it stop itself
+    if name == "HekateAdmin":
+        raise HTTPException(400, "Cannot stop the admin service from itself")
+
+    log.info("Stopping service: %s", name)
+    result = _run(["nssm", "stop", name], timeout=15)
+    await asyncio.sleep(1)
+    new_status = _nssm_status(name)
+
+    return {"service": name, "action": "stop", "result": result, "status": new_status}
+
+
+@app.post("/services/{name}/start")
+async def start_service(name: str):
+    """Start an NSSM service."""
+    _validate_service(name)
+    log.info("Starting service: %s", name)
+    result = _run(["nssm", "start", name], timeout=15)
+    await asyncio.sleep(1)
+    new_status = _nssm_status(name)
+
+    health = None
+    info = SERVICES[name]
+    if new_status == "SERVICE_RUNNING" and info.get("health"):
+        for _ in range(10):
+            await asyncio.sleep(1)
+            health = await _health_check(info["health"])
+            if health["status"] == "ok":
+                break
+
+    return {"service": name, "action": "start", "result": result, "status": new_status, "health": health}
+
+
+# ---------------------------------------------------------------------------
+# Routes — Deploy
+# ---------------------------------------------------------------------------
+
+@app.post("/deploy")
+async def deploy(req: DeployRequest = DeployRequest()):
+    """Run the deploy script from source repo to C:\\Hekate."""
+    log.info("Starting deploy (skip_frontend=%s)", req.skip_frontend)
+
+    deploy_script = SOURCE_ROOT / "scripts" / "deploy.sh"
+    if not deploy_script.exists():
+        raise HTTPException(404, f"Deploy script not found: {deploy_script}")
+
+    # Run deploy in bash
+    cmd = ["bash", str(deploy_script)]
+    result = _run(cmd, timeout=300, cwd=str(SOURCE_ROOT))
+
+    log.info("Deploy finished with returncode %d", result["returncode"])
+    return {
+        "action": "deploy",
+        "returncode": result["returncode"],
+        "stdout": result["stdout"][-3000:],  # Trim to last 3k chars
+        "stderr": result["stderr"][-1000:] if result["stderr"] else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes — Log Tailing
+# ---------------------------------------------------------------------------
+
+@app.post("/logs/tail")
+async def tail_logs(req: TailRequest):
+    """Tail NSSM service log files."""
+    _validate_service(req.service)
+
+    # NSSM logs go to stdout/stderr files configured per service
+    # Query NSSM for the log paths
+    stdout_result = _run(["nssm", "get", req.service, "AppStdout"])
+    stderr_result = _run(["nssm", "get", req.service, "AppStderr"])
+
+    logs = {}
+
+    for label, result in [("stdout", stdout_result), ("stderr", stderr_result)]:
+        path = result["stdout"].strip()
+        if path and Path(path).exists():
+            try:
+                # Read last N lines
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    all_lines = f.readlines()
+                    tail = all_lines[-req.lines:]
+                logs[label] = {
+                    "path": path,
+                    "lines": len(tail),
+                    "total_lines": len(all_lines),
+                    "content": "".join(tail),
+                }
+            except Exception as e:
+                logs[label] = {"path": path, "error": str(e)}
+        elif path:
+            logs[label] = {"path": path, "error": "File not found"}
+        else:
+            logs[label] = {"error": "No log path configured in NSSM"}
+
+    return {"service": req.service, "logs": logs}
+
+
+@app.get("/logs/{service}")
+async def get_logs(service: str, lines: int = 50):
+    """GET shorthand for log tailing."""
+    return await tail_logs(TailRequest(service=service, lines=lines))
+
+
+# ---------------------------------------------------------------------------
+# Routes — Cache Management
+# ---------------------------------------------------------------------------
+
+@app.post("/clear-pycache")
+async def clear_pycache(req: ClearCacheRequest = ClearCacheRequest()):
+    """Recursively delete __pycache__ directories."""
+    target = Path(req.path) if req.path else HEKATE_ROOT / "orchestration"
+
+    if not target.exists():
+        raise HTTPException(404, f"Path not found: {target}")
+
+    # Safety: only allow clearing under known roots
+    target_resolved = target.resolve()
+    allowed_roots = [HEKATE_ROOT.resolve(), SOURCE_ROOT.resolve()]
+    if not any(str(target_resolved).startswith(str(r)) for r in allowed_roots):
+        raise HTTPException(
+            403,
+            f"Path must be under {HEKATE_ROOT} or {SOURCE_ROOT}",
+        )
+
+    removed = []
+    for cache_dir in target.rglob("__pycache__"):
+        if cache_dir.is_dir():
+            shutil.rmtree(cache_dir)
+            removed.append(str(cache_dir))
+
+    log.info("Cleared %d __pycache__ dirs under %s", len(removed), target)
+    return {"action": "clear_pycache", "target": str(target), "removed": len(removed), "paths": removed[:20]}
+
+
+# ---------------------------------------------------------------------------
+# Routes — Bulk Operations
+# ---------------------------------------------------------------------------
+
+@app.post("/restart-core")
+async def restart_core():
+    """Restart core services (Orchestration + Context Store) with health checks."""
+    log.info("Restarting core services")
+    results = {}
+
+    for svc in CORE_SERVICES:
+        _run(["nssm", "stop", svc], timeout=15)
+
+    await asyncio.sleep(2)
+
+    for svc in CORE_SERVICES:
+        _run(["nssm", "start", svc], timeout=15)
+
+    # Wait for health
+    await asyncio.sleep(2)
+    for _ in range(15):
+        all_ok = True
+        for svc in CORE_SERVICES:
+            info = SERVICES[svc]
+            if info.get("health"):
+                h = await _health_check(info["health"])
+                results[svc] = h
+                if h["status"] != "ok":
+                    all_ok = False
+        if all_ok:
+            break
+        await asyncio.sleep(1)
+
+    return {"action": "restart_core", "health": results}
+
+
+@app.post("/restart-all")
+async def restart_all():
+    """Restart all services (excluding Ollama and ComfyUI)."""
+    log.info("Restarting all Hekate services")
+    managed = [s for s in SERVICES if s not in ("Ollama", "ComfyUI", "HekateAdmin")]
+
+    for svc in managed:
+        _run(["nssm", "stop", svc], timeout=15)
+
+    await asyncio.sleep(3)
+
+    for svc in managed:
+        _run(["nssm", "start", svc], timeout=15)
+
+    await asyncio.sleep(3)
+
+    # Check health of services that have endpoints
+    results = {}
+    for _ in range(15):
+        all_ok = True
+        for svc in managed:
+            info = SERVICES[svc]
+            status = _nssm_status(svc)
+            entry = {"nssm_status": status}
+            if status == "SERVICE_RUNNING" and info.get("health"):
+                h = await _health_check(info["health"])
+                entry["health"] = h
+                if h["status"] != "ok":
+                    all_ok = False
+            results[svc] = entry
+        if all_ok:
+            break
+        await asyncio.sleep(1)
+
+    return {"action": "restart_all", "services": results}
+
+
+# ---------------------------------------------------------------------------
+# Routes — System Info
+# ---------------------------------------------------------------------------
+
+@app.get("/info")
+async def system_info():
+    """Basic system information."""
+    import platform
+    return {
+        "hostname": platform.node(),
+        "platform": platform.platform(),
+        "python": sys.version,
+        "hekate_root": str(HEKATE_ROOT),
+        "source_root": str(SOURCE_ROOT),
+        "port": PORT,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
