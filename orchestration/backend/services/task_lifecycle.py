@@ -83,6 +83,65 @@ async def _sync_status_to_context_store(
         # Never propagate — this is fire-and-forget
         logger.debug("Context store status sync failed for task %s", task_title, exc_info=True)
 
+SOURCE_ROOT = os.environ.get("HEKATE_SOURCE", r"C:\Users\jruss\Documents\GitHub\Hekate")
+
+
+async def _ensure_workspace(cwd: str, db, project_id: str):
+    """Ensure a working directory exists and has CLI config files.
+
+    Called before every task dispatch. Creates the directory if missing,
+    copies .mcp.json and CLAUDE.md templates, and inits git if needed.
+    """
+    try:
+        # Create directory if it doesn't exist
+        if not os.path.isdir(cwd):
+            os.makedirs(cwd, exist_ok=True)
+            logger.info("Created workspace directory: %s", cwd)
+
+        # Ensure git repo exists
+        git_dir = os.path.join(cwd, ".git")
+        if not os.path.isdir(git_dir):
+            import subprocess
+            subprocess.run(["git", "init"], cwd=cwd, capture_output=True, timeout=10)
+            logger.info("Initialized git repo in %s", cwd)
+
+        # Copy .mcp.json if missing (gives Claude CLI access to MCP tools)
+        mcp_target = os.path.join(cwd, ".mcp.json")
+        if not os.path.isfile(mcp_target):
+            mcp_source = os.path.join(SOURCE_ROOT, "context-store", ".mcp.json")
+            if os.path.isfile(mcp_source):
+                import shutil
+                shutil.copy2(mcp_source, mcp_target)
+                logger.info("Copied .mcp.json to %s", cwd)
+
+        # Copy CLAUDE.md if missing (gives CLI context about the project)
+        claude_md_target = os.path.join(cwd, "CLAUDE.md")
+        if not os.path.isfile(claude_md_target):
+            # Check if project has a specific repo with its own CLAUDE.md
+            # If not, use a minimal template
+            _write_default_claude_md(claude_md_target, db, project_id)
+
+    except Exception as e:
+        logger.warning("Workspace setup failed for %s: %s", cwd, e)
+
+
+def _write_default_claude_md(path: str, db, project_id: str):
+    """Write a minimal CLAUDE.md for projects that don't have one."""
+    try:
+        with open(path, "w") as f:
+            f.write("# Project Workspace\n\n")
+            f.write("This workspace is managed by the Hekate orchestration engine.\n\n")
+            f.write("## Available MCP Tools\n\n")
+            f.write("The `.mcp.json` in this directory provides:\n")
+            f.write("- `search_ideas` — search the knowledge store\n")
+            f.write("- `get_node_details` — inspect a node in depth\n")
+            f.write("- `list_threads` — list conversation threads\n")
+            f.write("- `route_to_model` — ask another AI model a question\n")
+        logger.info("Created default CLAUDE.md at %s", path)
+    except Exception as e:
+        logger.debug("Failed to write CLAUDE.md: %s", e)
+
+
 # Transient errors that warrant automatic retry with backoff
 _TRANSIENT_ERRORS = (
     anthropic.RateLimitError,
@@ -1211,6 +1270,12 @@ async def execute_task(
             )
 
             try:
+                # --- Ensure working directory exists with CLI config ---
+                from backend.services.cli_common import resolve_cwd
+                _task_cwd = await resolve_cwd(db, project_id)
+                if _task_cwd:
+                    await _ensure_workspace(_task_cwd, db, project_id)
+
                 # --- Context enrichment (pre-dispatch) ---
                 # Query the context store for relevant knowledge and append the
                 # XML block to the task description before handing off to the
