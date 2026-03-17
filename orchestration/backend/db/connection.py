@@ -273,7 +273,9 @@ class Database:
             from backend.db.migrate import run_migrations as _migrate
             await asyncio.to_thread(_migrate, self._path)
 
-        self._conn = await aiosqlite.connect(str(self._path))
+        self._conn = await aiosqlite.connect(
+            str(self._path), isolation_level=None
+        )
         self._conn.row_factory = sqlite3.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
