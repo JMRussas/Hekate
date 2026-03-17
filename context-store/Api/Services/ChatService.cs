@@ -424,21 +424,23 @@ public class ChatService
     }
 
     /// <summary>Stream response from a CLI provider (claude, gemini, codex). Spawns the CLI,
-    /// pipes the prompt to stdin, reads stdout in chunks and emits SSE token events.</summary>
+    /// pipes the prompt to stdin, reads stdout in chunks and emits SSE token events.
+    /// Claude supports multi-round tool calling via stream-json output format.</summary>
     private async Task StreamCli(ModelRoute route, AssembledPrompt prompt, StringBuilder fullResponse,
         Microsoft.AspNetCore.Http.HttpResponse http, CancellationToken ct)
     {
-        // Build CLI command + args per provider
+        if (route.Provider == "claude")
+        {
+            await StreamClaudeCli(route, prompt, fullResponse, http, ct);
+            return;
+        }
+
+        // Gemini/Codex: simple single-shot text mode
         string executable;
         var args = new List<string>();
 
         switch (route.Provider)
         {
-            case "claude":
-                executable = "claude";
-                args.AddRange(["--print", "-", "--output-format", "text"]);
-                args.AddRange(["--model", route.ModelId]);
-                break;
             case "gemini":
                 executable = "gemini";
                 args.AddRange(["-p", "-"]);
@@ -454,11 +456,253 @@ public class ChatService
                 return;
         }
 
-        // Combine system + user prompts (CLIs take a single prompt via stdin)
+        var combinedPrompt = $"<system>\n{prompt.SystemPrompt}\n</system>\n\n{prompt.UserPrompt}";
+        var rawOutput = await RunCliOnce(executable, args, combinedPrompt, ct);
+
+        if (rawOutput.StartsWith("Failed to start"))
+        {
+            await SendSseEvent(http, "token", JsonSerializer.Serialize(new { text = rawOutput }), ct);
+            return;
+        }
+
+        fullResponse.Append(rawOutput);
+        await EmitTypewriter(rawOutput, http, ct);
+    }
+
+    /// <summary>Claude CLI with multi-round tool calling. Uses --output-format stream-json
+    /// to detect tool_use blocks, executes skills, and feeds results back.</summary>
+    private async Task StreamClaudeCli(ModelRoute route, AssembledPrompt prompt, StringBuilder fullResponse,
+        Microsoft.AspNetCore.Http.HttpResponse http, CancellationToken ct)
+    {
+        const int maxRounds = 5;
         var combinedPrompt = $"<system>\n{prompt.SystemPrompt}\n</system>\n\n{prompt.UserPrompt}";
 
-        var resolvedExe = CliResolver.Resolve(executable);
+        for (int round = 0; round < maxRounds; round++)
+        {
+            // Run claude with stream-json to get structured output
+            var args = new List<string> { "--print", "-", "--output-format", "stream-json", "--model", route.ModelId };
+            var rawOutput = await RunCliOnce("claude", args, combinedPrompt, ct);
 
+            if (rawOutput.StartsWith("Failed to start"))
+            {
+                await SendSseEvent(http, "token", JsonSerializer.Serialize(new { text = rawOutput }), ct);
+                return;
+            }
+
+            // Parse stream-json: each line is a JSON event
+            var textParts = new StringBuilder();
+            var toolUseBlocks = new List<(string Id, string Name, string ArgsJson)>();
+
+            foreach (var line in rawOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+
+                    // stream-json emits different event types
+                    if (root.TryGetProperty("type", out var typeEl))
+                    {
+                        var eventType = typeEl.GetString();
+
+                        if (eventType == "content_block_delta" &&
+                            root.TryGetProperty("delta", out var delta))
+                        {
+                            if (delta.TryGetProperty("type", out var deltaType) &&
+                                deltaType.GetString() == "text_delta" &&
+                                delta.TryGetProperty("text", out var textVal))
+                            {
+                                var text = textVal.GetString() ?? "";
+                                textParts.Append(text);
+                                await SendSseEvent(http, "token", JsonSerializer.Serialize(new { text }), ct);
+                            }
+                        }
+                        else if (eventType == "content_block_start" &&
+                                 root.TryGetProperty("content_block", out var block))
+                        {
+                            if (block.TryGetProperty("type", out var blockType) &&
+                                blockType.GetString() == "tool_use")
+                            {
+                                var toolId = block.TryGetProperty("id", out var id) ? id.GetString() ?? "" : $"tool_{round}_{toolUseBlocks.Count}";
+                                var toolName = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
+                                toolUseBlocks.Add((toolId, toolName, ""));
+                            }
+                        }
+                        else if (eventType == "content_block_delta" &&
+                                 root.TryGetProperty("delta", out var toolDelta) &&
+                                 toolDelta.TryGetProperty("type", out var tdType) &&
+                                 tdType.GetString() == "input_json_delta" &&
+                                 toolUseBlocks.Count > 0)
+                        {
+                            var partial = toolDelta.TryGetProperty("partial_json", out var pj) ? pj.GetString() ?? "" : "";
+                            var last = toolUseBlocks[^1];
+                            toolUseBlocks[^1] = (last.Id, last.Name, last.ArgsJson + partial);
+                        }
+                    }
+                    // Also handle the simple result format (non-streaming fallback)
+                    else if (root.TryGetProperty("content", out var contentArr) && contentArr.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var block in contentArr.EnumerateArray())
+                        {
+                            var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
+                            if (blockType == "text")
+                            {
+                                var text = block.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+                                textParts.Append(text);
+                                await EmitTypewriter(text, http, ct);
+                            }
+                            else if (blockType == "tool_use")
+                            {
+                                var toolId = block.TryGetProperty("id", out var id) ? id.GetString() ?? "" : $"tool_{round}";
+                                var toolName = block.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
+                                var argsJson = block.TryGetProperty("input", out var inp) ? inp.ToString() : "{}";
+                                toolUseBlocks.Add((toolId, toolName, argsJson));
+                            }
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Non-JSON line (text output fallback) — emit as-is
+                    if (!string.IsNullOrWhiteSpace(line))
+                    {
+                        textParts.Append(line);
+                        await SendSseEvent(http, "token", JsonSerializer.Serialize(new { text = line + "\n" }), ct);
+                    }
+                }
+            }
+
+            fullResponse.Append(textParts);
+
+            // No tool calls — we're done
+            if (toolUseBlocks.Count == 0)
+                return;
+
+            // Execute tool calls and build prompt for next round
+            var toolResults = new StringBuilder();
+            toolResults.Append("\n\n<tool_results>\n");
+
+            foreach (var (toolId, toolName, argsJson) in toolUseBlocks)
+            {
+                await SendSseEvent(http, "tool_call", JsonSerializer.Serialize(new { name = toolName, toolId }), ct);
+                await SendSseEvent(http, "phase", JsonSerializer.Serialize(new { phase = "calling_tool" }), ct);
+
+                var result = await ExecuteSkill(toolName, argsJson);
+
+                await SendSseEvent(http, "tool_result", JsonSerializer.Serialize(new
+                {
+                    name = toolName, toolId, resultLength = result.Length
+                }), ct);
+
+                toolResults.Append($"<tool_result tool_use_id=\"{toolId}\" name=\"{toolName}\">\n{result}\n</tool_result>\n");
+            }
+
+            toolResults.Append("</tool_results>\n\nContinue based on the tool results above.");
+
+            // Next round: append tool results to the prompt
+            combinedPrompt += textParts.ToString() + toolResults.ToString();
+        }
+    }
+
+    /// <summary>Execute a skill by name with JSON arguments. Returns result string.</summary>
+    private async Task<string> ExecuteSkill(string skillName, string argsJson)
+    {
+        try
+        {
+            JsonElement args;
+            try { args = JsonDocument.Parse(string.IsNullOrEmpty(argsJson) ? "{}" : argsJson).RootElement; }
+            catch { args = JsonDocument.Parse("{}").RootElement; }
+
+            switch (skillName)
+            {
+                case "search_ideas":
+                {
+                    var query = args.TryGetProperty("query", out var q) ? q.GetString() ?? "" : "";
+                    var limit = args.TryGetProperty("limit", out var l) ? l.GetInt32() : 5;
+                    await using var conn = new Npgsql.NpgsqlConnection(_connStr);
+                    await conn.OpenAsync();
+                    await using var cmd = conn.CreateCommand();
+                    cmd.CommandText = @"SELECT id, node_type, name, LEFT(value, 200) as value
+                        FROM nodes WHERE node_type IN ('idea','question','decision','action_item')
+                        AND (name ILIKE @q OR value ILIKE @q) ORDER BY created_at DESC LIMIT @limit";
+                    cmd.Parameters.AddWithValue("q", $"%{query}%");
+                    cmd.Parameters.AddWithValue("limit", limit);
+                    var results = new List<string>();
+                    await using var reader = await cmd.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        var name = reader.IsDBNull(2) ? "" : reader.GetString(2);
+                        var value = reader.IsDBNull(3) ? "" : reader.GetString(3);
+                        results.Add($"- [{reader.GetString(1)}] {name}: {value}");
+                    }
+                    return results.Count > 0 ? string.Join("\n", results) : "No matching ideas found.";
+                }
+
+                case "get_node_details":
+                {
+                    var nodeIdStr = args.TryGetProperty("node_id", out var nid) ? nid.GetString() ?? "" : "";
+                    if (!Guid.TryParse(nodeIdStr, out var nodeId))
+                        return "Invalid node_id format.";
+                    await using var conn = new Npgsql.NpgsqlConnection(_connStr);
+                    await conn.OpenAsync();
+                    await using var cmd = conn.CreateCommand();
+                    cmd.CommandText = @"SELECT n.id, n.node_type, n.name, LEFT(n.value, 1000),
+                        (SELECT string_agg(key || '=' || value, ', ') FROM node_attributes WHERE node_id = n.id)
+                        FROM nodes n WHERE n.id = @id";
+                    cmd.Parameters.AddWithValue("id", nodeId);
+                    await using var reader = await cmd.ExecuteReaderAsync();
+                    if (!await reader.ReadAsync()) return "Node not found.";
+                    var attrs = reader.IsDBNull(4) ? "" : reader.GetString(4);
+                    return $"Type: {reader.GetString(1)}\nName: {(reader.IsDBNull(2) ? "" : reader.GetString(2))}\nValue: {(reader.IsDBNull(3) ? "" : reader.GetString(3))}\nAttributes: {attrs}";
+                }
+
+                case "list_threads":
+                {
+                    var limit = args.TryGetProperty("limit", out var l) ? l.GetInt32() : 10;
+                    await using var conn = new Npgsql.NpgsqlConnection(_connStr);
+                    await conn.OpenAsync();
+                    await using var cmd = conn.CreateCommand();
+                    cmd.CommandText = @"SELECT id, name, created_at FROM nodes
+                        WHERE node_type = 'thread' ORDER BY created_at DESC LIMIT @limit";
+                    cmd.Parameters.AddWithValue("limit", limit);
+                    var results = new List<string>();
+                    await using var reader = await cmd.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        var name = reader.IsDBNull(1) ? "" : reader.GetString(1);
+                        results.Add($"- {name} (id: {reader.GetGuid(0)}, created: {reader.GetDateTime(2):yyyy-MM-dd HH:mm})");
+                    }
+                    return results.Count > 0 ? string.Join("\n", results) : "No threads found.";
+                }
+
+                case "route_to_model":
+                {
+                    var model = args.TryGetProperty("model", out var m) ? m.GetString() ?? "ollama" : "ollama";
+                    var message = args.TryGetProperty("message", out var msg) ? msg.GetString() ?? "" : "";
+                    return $"[route_to_model is not supported in tool-calling mode. The user can send directly to @{model}.]";
+                }
+
+                case "orchestrate":
+                {
+                    var name = args.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                    var reqs = args.TryGetProperty("requirements", out var r) ? r.GetString() ?? "" : "";
+                    return $"[Orchestration requested: \"{name}\" — {reqs}. Use the orchestration dashboard to create this project.]";
+                }
+
+                default:
+                    return $"Unknown skill: {skillName}";
+            }
+        }
+        catch (Exception ex)
+        {
+            return $"Skill error: {ex.Message}";
+        }
+    }
+
+    /// <summary>Run a CLI process once. Returns stdout or error message.</summary>
+    private static async Task<string> RunCliOnce(string executable, List<string> args, string input, CancellationToken ct)
+    {
+        var resolvedExe = CliResolver.Resolve(executable);
         var psi = new ProcessStartInfo
         {
             FileName = resolvedExe,
@@ -478,29 +722,18 @@ public class ChatService
         }
         catch (Exception ex)
         {
-            await SendSseEvent(http, "token", JsonSerializer.Serialize(new
-            {
-                text = $"Failed to start {executable} CLI (resolved: {resolvedExe}): {ex.Message}\n\nMake sure the CLI is installed and on your PATH."
-            }), ct);
-            return;
+            return $"Failed to start {executable} CLI (resolved: {resolvedExe}): {ex.Message}\n\nMake sure the CLI is installed and on your PATH.";
         }
 
         if (process == null)
-        {
-            await SendSseEvent(http, "token", JsonSerializer.Serialize(new { text = $"Failed to start {executable} CLI" }), ct);
-            return;
-        }
+            return $"Failed to start {executable} CLI";
 
         using (process)
         {
-            // Write prompt to stdin, then close to signal EOF
-            await process.StandardInput.WriteAsync(combinedPrompt.AsMemory(), ct);
+            await process.StandardInput.WriteAsync(input.AsMemory(), ct);
             process.StandardInput.Close();
 
-            // Read stderr in background to prevent deadlock
             var stderrTask = process.StandardError.ReadToEndAsync(ct);
-
-            // Read full response (CLIs return all output at once, not streamed)
             var rawOutput = await process.StandardOutput.ReadToEndAsync(ct);
             await process.WaitForExitAsync(ct);
 
@@ -508,15 +741,10 @@ public class ChatService
             {
                 var stderr = await stderrTask;
                 if (!string.IsNullOrWhiteSpace(stderr))
-                {
                     rawOutput += $"\n\n[{executable} error (exit {process.ExitCode})]: {stderr.Trim()}";
-                }
             }
 
-            fullResponse.Append(rawOutput);
-
-            // Typewriter effect — emit word-by-word with small delays
-            await EmitTypewriter(rawOutput, http, ct);
+            return rawOutput;
         }
     }
 
