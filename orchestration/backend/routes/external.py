@@ -210,6 +210,7 @@ async def claim_task(
         context=context,
         tools=tools,
         depends_on=[d["depends_on"] for d in deps],
+        rationale=task["rationale"],
         max_tokens=task["max_tokens"],
         requirement_ids=requirement_ids,
     )

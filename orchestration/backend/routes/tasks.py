@@ -74,6 +74,7 @@ async def _row_to_dict(row, db: Database, deps_list: list[str] | None = None) ->
         "context": json.loads(row["context_json"]) if row["context_json"] else [],
         "error": row["error"],
         "depends_on": deps_list,
+        "rationale": row["rationale"],
         "started_at": row["started_at"],
         "completed_at": row["completed_at"],
         "created_at": row["created_at"],

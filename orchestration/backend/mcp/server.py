@@ -99,7 +99,7 @@ def create_server(config_path: Path | None = None) -> FastMCP:
 
     @mcp.tool(
         name="create_project",
-        description="Create a new project with requirements. Automatically sets hybrid execution mode.",
+        description="Create a new project with requirements. Uses auto execution mode (engine dispatches all tasks).",
     )
     async def create_project(
         name: str,
@@ -112,7 +112,7 @@ def create_server(config_path: Path | None = None) -> FastMCP:
                 "name": name,
                 "requirements": requirements,
                 "planning_rigor": planning_rigor,
-                "config": {"execution_mode": "hybrid"},
+                "config": {"execution_mode": "auto"},
             })
             return (
                 f"--- Project Created ---\n"
@@ -120,7 +120,7 @@ def create_server(config_path: Path | None = None) -> FastMCP:
                 f"Name: {result['name']}\n"
                 f"Status: {result['status']}\n"
                 f"Planning Rigor: {planning_rigor}\n"
-                f"Execution Mode: hybrid\n\n"
+                f"Execution Mode: auto\n\n"
                 f"Next: Use plan_project to generate an execution plan."
             )
         except Exception as e:
