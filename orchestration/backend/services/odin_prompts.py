@@ -7,6 +7,18 @@ Odin uses qwen3.5 via Ollama to observe system state and decide interventions.
 from datetime import datetime, timezone
 
 
+def _format_project_summary(summary: dict) -> str:
+    """Format the system-wide project status counts."""
+    if not summary:
+        return "No projects"
+    parts = []
+    for status in ["executing", "planning", "draft", "failed", "completed", "cancelled"]:
+        count = summary.get(status, 0)
+        if count > 0:
+            parts.append(f"{status}: {count}")
+    return "Projects across system — " + ", ".join(parts) if parts else "No projects"
+
+
 def _format_duration(seconds: float) -> str:
     """Format seconds into a human-readable duration."""
     if seconds < 60:
@@ -145,10 +157,10 @@ Your role:
 Timestamp: {now}
 
 == System Summary ==
-Executing projects: {total_projects}
-Active tasks: {total_tasks}
+{_format_project_summary(world_state.get("project_summary", {}))}
+Active tasks in focus: {total_tasks}
 
-== Projects ==
+== Focus Project ==
 {_format_projects(projects)}
 
 == Resources ==

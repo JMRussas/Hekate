@@ -96,28 +96,46 @@ class Odin:
         logger.info("Odin stopped (decisions=%d)", self._decisions_count)
 
     async def _run_loop(self):
-        """Main loop — tick, sleep, repeat."""
+        """Main loop — round-robin one project per tick, response time IS the interval."""
+        self._project_cursor = 0  # round-robin index
         while self._running:
             try:
                 await self._tick()
             except Exception as e:
                 logger.error("Odin tick failed: %s", e, exc_info=True)
-            await asyncio.sleep(TICK_INTERVAL)
+            # Brief pause between ticks — just enough to not spin
+            await asyncio.sleep(2)
 
     async def _tick(self):
-        """One observation-reasoning-intervention cycle."""
+        """One observation-reasoning-intervention cycle for a SINGLE project."""
         t0 = time.monotonic()
         self._last_tick_at = time.time()
 
-        # 1. Build world state
-        world = await self._build_world_state()
-        self._world_model = world
-
-        # 2. Skip reasoning if nothing is executing
-        if world["total_executing_projects"] == 0:
+        # 1. Get all active project IDs (lightweight query)
+        rows = await self._db.fetchall(
+            "SELECT id, name, status FROM projects "
+            "WHERE status NOT IN ($1, $2) "
+            "ORDER BY CASE status "
+            "  WHEN 'failed' THEN 0 WHEN 'executing' THEN 1 "
+            "  WHEN 'planning' THEN 2 WHEN 'draft' THEN 3 ELSE 4 END, "
+            "created_at DESC",
+            ("completed", "cancelled"),
+        )
+        if not rows:
             return
 
-        # 3. Reason via LLM
+        # 2. Round-robin — pick one project
+        idx = self._project_cursor % len(rows)
+        self._project_cursor = idx + 1
+        target = rows[idx]
+
+        # 3. Build focused world state for just this project
+        world = await self._build_world_state(target_project_id=target["id"])
+        self._world_model = world
+
+        # 4. Reason via LLM
+        focus_name = world["projects"][0]["name"] if world["projects"] else "none"
+        logger.info("Odin tick: focusing on '%s' (%s)", focus_name, target["status"])
         decisions = await self._reason(world)
 
         # 4. Persist
@@ -131,16 +149,22 @@ class Odin:
                 len(decisions), elapsed, world["total_executing_projects"],
             )
 
-    async def _build_world_state(self) -> dict:
-        """Query DB for current system state."""
+    async def _build_world_state(self, target_project_id: str | None = None) -> dict:
+        """Query DB for current system state, focused on one project."""
         now = time.time()
 
-        # Active projects
         projects = []
-        rows = await self._db.fetchall(
-            "SELECT id, name, status, config_json FROM projects WHERE status IN ($1, $2)",
-            ("executing", "planning"),
-        )
+        if target_project_id:
+            rows = await self._db.fetchall(
+                "SELECT id, name, status, config_json FROM projects WHERE id = $1",
+                (target_project_id,),
+            )
+        else:
+            rows = await self._db.fetchall(
+                "SELECT id, name, status, config_json FROM projects "
+                "WHERE status NOT IN ($1, $2) LIMIT 1",
+                ("completed", "cancelled"),
+            )
         for row in rows:
             pid = row["id"]
 
@@ -189,7 +213,8 @@ class Odin:
         # Resource health
         resources = {}
         if self._resource_monitor:
-            for name, state in self._resource_monitor.get_all().items():
+            for state in self._resource_monitor.get_all():
+                name = state.resource_id if hasattr(state, "resource_id") else str(state)
                 resources[name] = {
                     "status": state.status.value if hasattr(state.status, "value") else str(state.status),
                     "details": state.details if hasattr(state, "details") else {},
@@ -212,11 +237,18 @@ class Odin:
             for r in stale_rows
         ]
 
+        # Quick summary of all projects for context
+        summary_rows = await self._db.fetchall(
+            "SELECT status, COUNT(*) as cnt FROM projects GROUP BY status", ()
+        )
+        project_summary = {r["status"]: r["cnt"] for r in summary_rows}
+
         return {
             "projects": projects,
             "resources": resources,
             "stale_tasks": stale,
-            "total_executing_projects": len([p for p in projects if p["status"] == "executing"]),
+            "project_summary": project_summary,
+            "total_executing_projects": project_summary.get("executing", 0),
             "total_active_tasks": sum(
                 sum(p["task_counts"].values()) - p["task_counts"].get("completed", 0) - p["task_counts"].get("cancelled", 0)
                 for p in projects
@@ -240,7 +272,7 @@ class Odin:
             try:
                 text, tool_calls = await self._call_llm(messages, TOOLS)
             except Exception as e:
-                logger.warning("Odin LLM call failed (round %d): %s", round_num, e)
+                logger.warning("Odin LLM call failed (round %d): %s: %s", round_num, type(e).__name__, e)
                 break
 
             if not tool_calls:
@@ -324,9 +356,19 @@ class Odin:
             "temperature": 0.3,  # Low temperature for consistent reasoning
         }
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
+        # Prefer Gungnir (4090, full VRAM), fall back to Sisyphus (3090, VRAM pressure)
+        ollama_hosts = ["http://192.168.1.164:11434", OLLAMA_URL]
+        resp = None
+        async with httpx.AsyncClient(timeout=180) as client:
+            for host in ollama_hosts:
+                try:
+                    resp = await client.post(f"{host}/v1/chat/completions", json=payload)
+                    resp.raise_for_status()
+                    break
+                except Exception:
+                    continue
+            if resp is None:
+                raise RuntimeError("All Ollama hosts unreachable")
             data = resp.json()
 
         choice = data["choices"][0]
