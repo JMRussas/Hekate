@@ -64,7 +64,7 @@ plans = Table(
     Column("cost_usd", Float, nullable=False, server_default="0.0"),
     Column("plan_json", Text, nullable=False),
     Column("status", Text, nullable=False, server_default="draft"),
-    Column("node_mapping", Text, nullable=True),
+    Column("node_mapping_json", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -288,3 +288,23 @@ sentinel_decisions = Table(
 )
 Index("idx_sentinel_dec_project", sentinel_decisions.c.project_id)
 Index("idx_sentinel_dec_timestamp", sentinel_decisions.c.timestamp)
+
+# -- Security findings (Ares pre-plan security review) --
+security_findings = Table(
+    "security_findings",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("plan_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("task_index", Integer, nullable=False),
+    Column("task_title", Text, nullable=False),
+    Column("category", Text, nullable=False),
+    Column("severity", Text, nullable=False),
+    Column("description", Text, nullable=False),
+    Column("recommended_mitigation", Text, nullable=False),
+    Column("affected_files_json", Text, nullable=False),
+    Column("context_store_node_id", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+)
+Index("idx_security_findings_plan", security_findings.c.plan_id)
+Index("idx_security_findings_project", security_findings.c.project_id)

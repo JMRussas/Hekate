@@ -99,7 +99,7 @@ class PlanOut(BaseModel):
     cost_usd: float
     plan: dict  # The structured plan JSON
     status: PlanStatus
-    node_mapping: str | None = None
+    node_mapping_json: str | None = None
     created_at: float
 
 
@@ -195,9 +195,9 @@ class FindingOut(BaseModel):
     task_id: str | None = None
     category: str
     content: str
-    rationale: str | None = ""
+    rationale: str | None = None
     alternatives_considered: str | None = ""
-    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
+    confidence: float | str = Field(default=ConfidenceLevel.MEDIUM)
     source_task_title: str | None = None
     created_at: float
 

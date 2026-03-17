@@ -96,7 +96,7 @@ _SCHEMA_STATEMENTS = [
         cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
         plan_json TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'draft',
-        node_mapping TEXT,
+        node_mapping_json TEXT,
         created_at DOUBLE PRECISION NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS tasks (
@@ -285,6 +285,23 @@ _SCHEMA_STATEMENTS = [
         decisions_count INTEGER DEFAULT 0,
         updated_at DOUBLE PRECISION NOT NULL
     )""",
+    # Security findings (Ares pre-plan security review)
+    """CREATE TABLE IF NOT EXISTS security_findings (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        task_index INTEGER NOT NULL,
+        task_title TEXT NOT NULL,
+        category TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        description TEXT NOT NULL,
+        recommended_mitigation TEXT NOT NULL,
+        affected_files_json TEXT NOT NULL,
+        context_store_node_id TEXT,
+        created_at DOUBLE PRECISION NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_security_findings_plan ON security_findings(plan_id)",
+    "CREATE INDEX IF NOT EXISTS idx_security_findings_project ON security_findings(project_id)",
 ]
 
 
@@ -329,6 +346,7 @@ class _PostgresBackend:
 
         self._pool = await asyncpg.create_pool(
             dsn, min_size=2, max_size=10, command_timeout=60,
+            timeout=30,  # connection acquisition timeout
         )
 
         if not run_migrations:

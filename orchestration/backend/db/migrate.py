@@ -9,9 +9,15 @@
 import logging
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 logger = logging.getLogger("orchestration.migrate")
+
+# Startup readiness: wait up to 90s for Postgres (Docker containers can be slow)
+_PG_READY_MAX_ATTEMPTS = 30
+_PG_READY_INTERVAL = 3  # seconds between retries
+_PG_CONNECT_TIMEOUT = 5  # seconds per connection attempt
 
 _MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
 _VERSIONS_DIR = _MIGRATIONS_DIR / "versions"
@@ -31,6 +37,42 @@ def _get_head_revision() -> str:
 
 def _is_postgres(target: str) -> bool:
     return str(target).startswith("postgresql://") or str(target).startswith("postgres://")
+
+
+def _pg_engine(dsn: str):
+    """Create a synchronous SQLAlchemy engine with connect timeout."""
+    from sqlalchemy import create_engine
+    url = dsn.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return create_engine(
+        url,
+        connect_args={"connect_timeout": _PG_CONNECT_TIMEOUT},
+        pool_pre_ping=True,
+    )
+
+
+def _wait_for_postgres(dsn: str) -> None:
+    """Block until Postgres accepts connections, or raise after max attempts."""
+    from sqlalchemy import text
+    engine = _pg_engine(dsn)
+    for attempt in range(1, _PG_READY_MAX_ATTEMPTS + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("Postgres ready (attempt %d/%d)", attempt, _PG_READY_MAX_ATTEMPTS)
+            engine.dispose()
+            return
+        except Exception as e:
+            if attempt == _PG_READY_MAX_ATTEMPTS:
+                engine.dispose()
+                raise RuntimeError(
+                    f"Postgres not reachable after {_PG_READY_MAX_ATTEMPTS * _PG_READY_INTERVAL}s "
+                    f"at {dsn.split('@')[-1]}: {e}"
+                ) from e
+            logger.warning(
+                "Waiting for Postgres (attempt %d/%d): %s",
+                attempt, _PG_READY_MAX_ATTEMPTS, e,
+            )
+            time.sleep(_PG_READY_INTERVAL)
 
 
 def _get_current_revision_sqlite(db_path: Path) -> str | None:
@@ -54,10 +96,8 @@ def _get_current_revision_sqlite(db_path: Path) -> str | None:
 def _get_current_revision_postgres(dsn: str) -> str | None:
     """Get the current DB revision from Postgres using synchronous connection."""
     try:
-        # Use synchronous SQLAlchemy to avoid asyncio.run() issues in to_thread()
-        from sqlalchemy import create_engine, text
-        url = dsn.replace("postgresql://", "postgresql+psycopg2://", 1)
-        engine = create_engine(url)
+        from sqlalchemy import text
+        engine = _pg_engine(dsn)
         with engine.connect() as conn:
             result = conn.execute(text(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
@@ -87,9 +127,8 @@ def _has_schema_sqlite(db_path: Path) -> bool:
 
 def _has_schema_postgres(dsn: str) -> bool:
     try:
-        from sqlalchemy import create_engine, text
-        url = dsn.replace("postgresql://", "postgresql+psycopg2://", 1)
-        engine = create_engine(url)
+        from sqlalchemy import text
+        engine = _pg_engine(dsn)
         with engine.connect() as conn:
             result = conn.execute(text(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
@@ -108,6 +147,9 @@ def run_migrations(target) -> None:
     """
     target_str = str(target)
     is_pg = _is_postgres(target_str)
+
+    if is_pg:
+        _wait_for_postgres(target_str)
 
     head = _get_head_revision()
     current = (
