@@ -18,9 +18,16 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # If tables already exist (pre-Alembic database), skip creation.
     conn = op.get_bind()
-    result = conn.execute(
-        sa.text("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
-    )
+    dialect = conn.dialect.name
+    if dialect == "sqlite":
+        result = conn.execute(
+            sa.text("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
+        )
+    else:
+        result = conn.execute(
+            sa.text("SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema='public' AND table_name='projects'")
+        )
     if result.fetchone() is not None:
         return  # Schema already applied before Alembic was introduced
 

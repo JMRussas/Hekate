@@ -125,7 +125,8 @@ def run_migrations(target) -> None:
     from alembic.config import Config
 
     if is_pg:
-        url = target_str.replace("postgresql://", "postgresql+asyncpg://", 1)
+        # Alembic runs synchronously — use psycopg2, not asyncpg
+        url = target_str.replace("postgresql://", "postgresql+psycopg2://", 1)
     else:
         url = f"sqlite:///{target_str}"
 
