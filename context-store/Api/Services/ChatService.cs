@@ -493,7 +493,8 @@ public class ChatService
 
         for (int round = 0; round < maxRounds; round++)
         {
-            var args = new List<string> { "--print", "-", "--output-format", "text", "--model", route.ModelId };
+            var args = new List<string> { "--print", "-", "--output-format", "text", "--model", route.ModelId,
+                "--allowedTools", "mcp__context-skills__route_to_model,mcp__context-skills__search_ideas,mcp__context-skills__get_node_details,mcp__context-skills__list_threads" };
             var rawOutput = await RunCliOnce("claude", args, combinedPrompt, ct);
 
             if (rawOutput.StartsWith("Failed to start"))
