@@ -68,8 +68,8 @@ public class ChatService
         ["@codex"]   = new("codex", "gpt-4.1", "codex"),
         ["@gpt"]     = new("codex", "gpt-4.1", "gpt"),
         // Ollama HTTP — local inference
-        ["@ollama"]  = new("ollama", "qwen2.5-coder:14b", "ollama"),
-        ["@qwen"]    = new("ollama", "qwen2.5-coder:14b", "qwen"),
+        ["@ollama"]  = new("ollama", "qwen3.5:4b", "ollama"),
+        ["@qwen"]    = new("ollama", "qwen3.5:4b", "qwen"),
     };
 
     // Regex to match @mention at start of message or anywhere

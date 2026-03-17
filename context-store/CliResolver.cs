@@ -43,13 +43,30 @@ public static class CliResolver
         return resolved ?? executable;
     }
 
+    // Well-known directories where npm/pip install CLI tools on Windows
+    private static readonly string[] _fallbackDirs =
+    [
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"),
+        @"C:\Users\jruss\AppData\Roaming\npm",
+        @"C:\Program Files\nodejs",
+    ];
+
     private static string? SearchPath(string executable)
     {
         var pathVar = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrEmpty(pathVar))
-            return null;
+        Console.WriteLine($"[CLI] Resolving '{executable}', PATH length: {pathVar?.Length ?? 0}");
 
-        var dirs = pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+        var dirs = new List<string>();
+
+        if (!string.IsNullOrEmpty(pathVar))
+            dirs.AddRange(pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries));
+
+        // Add fallback directories (NSSM LocalSystem may not have user PATH)
+        foreach (var fb in _fallbackDirs)
+        {
+            if (!dirs.Contains(fb, StringComparer.OrdinalIgnoreCase) && Directory.Exists(fb))
+                dirs.Add(fb);
+        }
 
         foreach (var dir in dirs)
         {
@@ -58,15 +75,22 @@ public static class CliResolver
             {
                 var candidate = Path.Combine(dir, executable + ext);
                 if (File.Exists(candidate))
+                {
+                    Console.WriteLine($"[CLI] Resolved '{executable}' → {candidate}");
                     return candidate;
+                }
             }
 
             // Check bare name (Linux/Git Bash executables)
             var bare = Path.Combine(dir, executable);
             if (File.Exists(bare))
+            {
+                Console.WriteLine($"[CLI] Resolved '{executable}' → {bare}");
                 return bare;
+            }
         }
 
+        Console.WriteLine($"[CLI] FAILED to resolve '{executable}' in {dirs.Count} directories");
         return null;
     }
 }
