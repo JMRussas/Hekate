@@ -96,7 +96,7 @@ _SCHEMA_STATEMENTS = [
         cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
         plan_json TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'draft',
-        node_mapping_json TEXT,
+        node_mapping TEXT,
         created_at DOUBLE PRECISION NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS tasks (
