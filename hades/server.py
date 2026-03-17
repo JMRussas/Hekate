@@ -395,7 +395,19 @@ async def deploy(req: DeployRequest = DeployRequest()):
         else:
             steps.append({"step": "frontend_build", "status": "skipped"})
 
-        # --- 8. Python syntax check ---
+        # --- 8. Install Python dependencies ---
+        req_file = orch_dst / "requirements.txt"
+        if req_file.exists():
+            pip_result = _run(
+                [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)],
+                timeout=120,
+            )
+            steps.append({
+                "step": "pip_install",
+                "returncode": pip_result["returncode"],
+            })
+
+        # --- 9. Python syntax check ---
         py_dir = orch_dst / "backend"
         syntax_errors = []
         if py_dir.exists():
@@ -425,8 +437,8 @@ async def deploy(req: DeployRequest = DeployRequest()):
 
     all_healthy = all(
         r.get("health", {}).get("status") == "ok"
-        for r in start_results.values()
-        if SERVICES.get(svc, {}).get("health")
+        for name, r in start_results.items()
+        if SERVICES.get(name, {}).get("health")
     )
 
     log.info("Deploy complete — healthy: %s", all_healthy)

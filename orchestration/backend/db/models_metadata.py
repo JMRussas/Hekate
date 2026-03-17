@@ -64,7 +64,7 @@ plans = Table(
     Column("cost_usd", Float, nullable=False, server_default="0.0"),
     Column("plan_json", Text, nullable=False),
     Column("status", Text, nullable=False, server_default="draft"),
-    Column("node_mapping_json", Text, nullable=True),
+    Column("node_mapping", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 

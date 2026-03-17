@@ -1,4 +1,4 @@
-"""add node_mapping_json to plans
+"""add node_mapping to plans
 
 Revision ID: 019
 Revises: 018
@@ -19,9 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     with op.batch_alter_table('plans', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('node_mapping_json', sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column('node_mapping', sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
     with op.batch_alter_table('plans', schema=None) as batch_op:
-        batch_op.drop_column('node_mapping_json')
+        batch_op.drop_column('node_mapping')

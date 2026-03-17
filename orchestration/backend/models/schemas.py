@@ -99,7 +99,7 @@ class PlanOut(BaseModel):
     cost_usd: float
     plan: dict  # The structured plan JSON
     status: PlanStatus
-    node_mapping_json: str | None = None
+    node_mapping: str | None = None
     created_at: float
 
 
