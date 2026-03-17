@@ -61,7 +61,7 @@ public class ChatService
         ["@haiku"]   = new("claude", "haiku", "haiku"),
         ["@claude"]  = new("claude", "sonnet", "claude"),
         // Gemini CLI — gemini -p -
-        ["@gemini"]  = new("gemini", "gemini-2.5-flash", "gemini"),
+        ["@gemini"]  = new("gemini", "gemini-2.5-pro", "gemini"),
         ["@flash"]   = new("gemini", "gemini-2.5-flash", "flash"),
         ["@pro"]     = new("gemini", "gemini-2.5-pro", "pro"),
         // Codex CLI — codex exec --
