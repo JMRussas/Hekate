@@ -363,5 +363,94 @@ def _handle_orchestrate(params: dict) -> dict:
         return {"error": f"Orchestration failed: {str(exc)}"}
 
 
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+
+
+@mcp_server.tool()
+def route_to_model(model: str, message: str) -> str:
+    """Send a message to another AI model and get its response.
+
+    Use this to communicate with other models — e.g., ask qwen for a quick answer,
+    or delegate a sub-task to haiku.
+
+    Args:
+        model: Target model — sonnet, haiku, opus, ollama, qwen, gemini, pro, flash
+        message: The message to send
+    """
+    model_routes = {
+        "sonnet": ("claude", ["--print", "-", "--output-format", "text", "--model", "sonnet"]),
+        "haiku": ("claude", ["--print", "-", "--output-format", "text", "--model", "haiku"]),
+        "opus": ("claude", ["--print", "-", "--output-format", "text", "--model", "opus"]),
+        "gemini": ("gemini", ["-p", "-", "-m", "gemini-2.5-pro"]),
+        "pro": ("gemini", ["-p", "-", "-m", "gemini-2.5-pro"]),
+        "flash": ("gemini", ["-p", "-", "-m", "gemini-2.5-flash"]),
+    }
+
+    # Ollama models — direct HTTP
+    if model in ("ollama", "qwen"):
+        try:
+            resp = httpx.post(f"{OLLAMA_URL}/api/chat", json={
+                "model": "qwen3.5:4b",
+                "messages": [{"role": "user", "content": message}],
+                "stream": False,
+                "think": False,
+            }, timeout=60)
+            resp.raise_for_status()
+            return resp.json()["message"]["content"]
+        except Exception as e:
+            return f"Ollama error: {e}"
+
+    # CLI models
+    route = model_routes.get(model)
+    if not route:
+        return f"Unknown model: {model}. Available: {', '.join(list(model_routes.keys()) + ['ollama', 'qwen'])}"
+
+    executable, args = route
+    import subprocess
+    try:
+        result = subprocess.run(
+            [executable] + args,
+            input=message, capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            return f"CLI error (exit {result.returncode}): {result.stderr[:300]}"
+        return result.stdout.strip() or "(empty response)"
+    except Exception as e:
+        return f"CLI error: {e}"
+
+
+@mcp_server.tool()
+def search_ideas(query: str, limit: int = 5) -> str:
+    """Search previously discussed ideas, questions, decisions, and action items.
+
+    Args:
+        query: Search text — matches against names and descriptions
+        limit: Max results (default 5)
+    """
+    return json.dumps(_handle_search_ideas({"query": query, "limit": limit}), indent=2)
+
+
+@mcp_server.tool()
+def get_node_details(node_id: str, include_children: bool = True) -> str:
+    """Get full details of a node including attributes and children.
+
+    Args:
+        node_id: UUID of the node
+        include_children: Whether to include child nodes (default true)
+    """
+    return json.dumps(_handle_get_node_details({"node_id": node_id, "include_children": include_children}), indent=2)
+
+
+@mcp_server.tool()
+def list_threads(status: str = "open", limit: int = 10) -> str:
+    """List conversation threads with status and activity.
+
+    Args:
+        status: Filter — open, parked, or all (default open)
+        limit: Max results (default 10)
+    """
+    return json.dumps(_handle_list_threads({"status": status, "limit": limit}), indent=2)
+
+
 if __name__ == "__main__":
     mcp_server.run()

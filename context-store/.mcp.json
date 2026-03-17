@@ -6,6 +6,14 @@
       "args": ["tools/agent-context-mcp/server.py"],
       "env": {}
     },
+    "context-skills": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["tools/skills-mcp/server.py"],
+      "env": {
+        "OLLAMA_URL": "http://localhost:11434"
+      }
+    },
     "comfyui-mcp": {
       "type": "stdio",
       "command": "python",

@@ -86,6 +86,12 @@ echo -e "  ${RED}Stopped${NC}"
 echo -e "${YELLOW}Publishing context store...${NC}"
 cd "$SOURCE/context-store/Api"
 dotnet publish -c Release -o "$TARGET/context-store/" -q 2>&1
+# Copy MCP config + tools + CLAUDE.md for CLI discovery
+cp -f "$SOURCE/context-store/.mcp.json" "$TARGET/context-store/.mcp.json" 2>/dev/null || true
+cp -f "$SOURCE/context-store/CLAUDE.md" "$TARGET/context-store/CLAUDE.md" 2>/dev/null || true
+rm -rf "$TARGET/context-store/tools"
+cp -r "$SOURCE/context-store/tools" "$TARGET/context-store/tools"
+find "$TARGET/context-store/tools" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 echo -e "  ${GREEN}Published${NC}"
 
 # ---------------------------------------------------------------
@@ -132,6 +138,11 @@ echo -e "${YELLOW}Copying hades...${NC}"
 mkdir -p "$TARGET/hades"
 cp "$SOURCE/hades/"*.py "$TARGET/hades/" 2>/dev/null || true
 cp "$SOURCE/hades/requirements.txt" "$TARGET/hades/" 2>/dev/null || true
+# Seed services.json only if missing (target may have custom services)
+if [ ! -f "$TARGET/hades/services.json" ] && [ -f "$SOURCE/hades/services.json" ]; then
+    cp "$SOURCE/hades/services.json" "$TARGET/hades/services.json"
+    echo -e "  Seeded services.json"
+fi
 echo -e "  ${GREEN}Copied${NC}"
 
 # ---------------------------------------------------------------
