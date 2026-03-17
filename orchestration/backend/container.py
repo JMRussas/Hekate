@@ -90,7 +90,7 @@ class Container(containers.DeclarativeContainer):
 
     # --- Context Store ---
     context_store_client = providers.Singleton(ContextStoreClient)
-    plan_sync = providers.Singleton(PlanSyncService, context_client=context_store_client)
+    plan_sync = providers.Singleton(PlanSyncService, context_client=context_store_client, db=db)
 
     # --- Planning & Decomposition ---
     planner = providers.Factory(PlannerService, db=db, budget=budget, tool_registry=tool_registry)

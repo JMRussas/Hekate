@@ -1,6 +1,7 @@
 #  Orchestration Engine - Model Router
 #
-#  Selects the cheapest model that can handle a task, and calculates costs.
+#  Selects model tier based on configurable routing strategy.
+#  Strategies: "best" (strongest model), "cheapest" (lowest cost), "balanced" (middle ground).
 #
 #  Depends on: backend/config.py, backend/services/model_discovery.py, backend/services/provider_quota.py
 #  Used by:    services/planner.py, services/decomposer.py, services/executor.py
@@ -153,53 +154,34 @@ def estimate_task_cost(
 # Recommended tier selection
 # ---------------------------------------------------------------------------
 
-# Mapping: (task_type, complexity) -> recommended model tier
-# Default: CLI-first routing — subscription CLIs are $0/call vs API billing.
-# Ollama for simple tasks (free, local), CLI for medium/complex.
-# API tiers (haiku/sonnet) available but not default — use config override.
+# Configurable via config.json "routing_strategy": "best" | "cheapest" | "balanced"
+# - best:     strongest model for every task (Claude Code for code, Gemini for research)
+# - cheapest: lowest-cost model that can handle the task (Ollama → Gemini → Claude)
+# - balanced: middle ground (Gemini for simple, Claude Code for medium+)
+#
 # CODEX_CLI disabled — low usage quota on current ChatGPT plan.
-# To re-enable: set ("code", "simple") to ModelTier.CODEX_CLI
-# Working models: gpt-5.2-codex, gpt-5.2, gpt-5.1-codex-max, gpt-5.1-codex-mini
-# Broken models: gpt-5.3-codex, gpt-5.4 (not supported on ChatGPT subscription)
-# Auth: file-based at ~/.codex/auth.json (works under NSSM LocalSystem with HOME set)
 # GEMINI_CLI enabled — requires GEMINI_FORCE_FILE_STORAGE=true in NSSM env.
-_TIER_MAP: dict[tuple[str, str], ModelTier] = {
-    # Code tasks
-    ("code", "simple"): ModelTier.GEMINI_CLI,
+
+# Base map shared by all strategies. Strategies override specific entries.
+# Key: (task_type, complexity) → ModelTier
+_BASE_TIER_MAP: dict[tuple[str, str], ModelTier] = {
     ("code", "medium"): ModelTier.CLAUDE_CODE,
     ("code", "complex"): ModelTier.CLAUDE_CODE,
-    # Research
     ("research", "simple"): ModelTier.GEMINI_CLI,
     ("research", "medium"): ModelTier.GEMINI_CLI,
     ("research", "complex"): ModelTier.CLAUDE_CODE,
-    # Analysis
-    ("analysis", "simple"): ModelTier.OLLAMA,
-    ("analysis", "medium"): ModelTier.GEMINI_CLI,
     ("analysis", "complex"): ModelTier.CLAUDE_CODE,
-    # Asset generation
     ("asset", "simple"): ModelTier.OLLAMA,
     ("asset", "medium"): ModelTier.OLLAMA,
     ("asset", "complex"): ModelTier.OLLAMA,
-    # Integration
-    ("integration", "simple"): ModelTier.GEMINI_CLI,
     ("integration", "medium"): ModelTier.CLAUDE_CODE,
     ("integration", "complex"): ModelTier.CLAUDE_CODE,
-    # Documentation
-    ("documentation", "simple"): ModelTier.OLLAMA,
-    ("documentation", "medium"): ModelTier.GEMINI_CLI,
     ("documentation", "complex"): ModelTier.CLAUDE_CODE,
-    # Claude Code CLI — for tasks requiring file I/O, git, MCP tools
     ("code_cli", "simple"): ModelTier.CLAUDE_CODE,
     ("code_cli", "medium"): ModelTier.CLAUDE_CODE,
     ("code_cli", "complex"): ModelTier.CLAUDE_CODE,
-    # Game development task types
-    ("game_design", "simple"): ModelTier.GEMINI_CLI,
-    ("game_design", "medium"): ModelTier.GEMINI_CLI,
     ("game_design", "complex"): ModelTier.CLAUDE_CODE,
-    ("game_content", "simple"): ModelTier.GEMINI_CLI,
-    ("game_content", "medium"): ModelTier.GEMINI_CLI,
     ("game_content", "complex"): ModelTier.CLAUDE_CODE,
-    ("game_code", "simple"): ModelTier.GEMINI_CLI,
     ("game_code", "medium"): ModelTier.CLAUDE_CODE,
     ("game_code", "complex"): ModelTier.CLAUDE_CODE,
     ("game_ui", "simple"): ModelTier.CLAUDE_CODE,
@@ -210,10 +192,65 @@ _TIER_MAP: dict[tuple[str, str], ModelTier] = {
     ("game_build_verify", "complex"): ModelTier.CLAUDE_CODE,
 }
 
+# Per-strategy overrides on top of _BASE_TIER_MAP.
+_STRATEGY_OVERRIDES: dict[str, dict[tuple[str, str], ModelTier]] = {
+    # Best: Claude Code for all code/integration, Gemini only for research/docs/design
+    "best": {
+        ("code", "simple"): ModelTier.CLAUDE_CODE,
+        ("analysis", "simple"): ModelTier.GEMINI_CLI,
+        ("analysis", "medium"): ModelTier.CLAUDE_CODE,
+        ("integration", "simple"): ModelTier.CLAUDE_CODE,
+        ("documentation", "simple"): ModelTier.GEMINI_CLI,
+        ("documentation", "medium"): ModelTier.CLAUDE_CODE,
+        ("game_design", "simple"): ModelTier.GEMINI_CLI,
+        ("game_design", "medium"): ModelTier.CLAUDE_CODE,
+        ("game_content", "simple"): ModelTier.GEMINI_CLI,
+        ("game_content", "medium"): ModelTier.CLAUDE_CODE,
+        ("game_code", "simple"): ModelTier.CLAUDE_CODE,
+    },
+    # Cheapest: Ollama where possible, then Gemini, Claude Code only for medium+/complex
+    "cheapest": {
+        ("code", "simple"): ModelTier.GEMINI_CLI,
+        ("analysis", "simple"): ModelTier.OLLAMA,
+        ("analysis", "medium"): ModelTier.GEMINI_CLI,
+        ("integration", "simple"): ModelTier.GEMINI_CLI,
+        ("documentation", "simple"): ModelTier.OLLAMA,
+        ("documentation", "medium"): ModelTier.GEMINI_CLI,
+        ("game_design", "simple"): ModelTier.GEMINI_CLI,
+        ("game_design", "medium"): ModelTier.GEMINI_CLI,
+        ("game_content", "simple"): ModelTier.GEMINI_CLI,
+        ("game_content", "medium"): ModelTier.GEMINI_CLI,
+        ("game_code", "simple"): ModelTier.GEMINI_CLI,
+    },
+    # Balanced: Gemini for simple, Claude Code for medium+
+    "balanced": {
+        ("code", "simple"): ModelTier.GEMINI_CLI,
+        ("analysis", "simple"): ModelTier.GEMINI_CLI,
+        ("analysis", "medium"): ModelTier.CLAUDE_CODE,
+        ("integration", "simple"): ModelTier.GEMINI_CLI,
+        ("documentation", "simple"): ModelTier.GEMINI_CLI,
+        ("documentation", "medium"): ModelTier.CLAUDE_CODE,
+        ("game_design", "simple"): ModelTier.GEMINI_CLI,
+        ("game_design", "medium"): ModelTier.CLAUDE_CODE,
+        ("game_content", "simple"): ModelTier.GEMINI_CLI,
+        ("game_content", "medium"): ModelTier.CLAUDE_CODE,
+        ("game_code", "simple"): ModelTier.GEMINI_CLI,
+    },
+}
+
+# Materialized maps built at import time — one dict lookup per call.
+_STRATEGY_MAPS: dict[str, dict[tuple[str, str], ModelTier]] = {}
+for _name, _overrides in _STRATEGY_OVERRIDES.items():
+    _merged = dict(_BASE_TIER_MAP)
+    _merged.update(_overrides)
+    _STRATEGY_MAPS[_name] = _merged
+
 
 def recommend_tier(task_type: str, complexity: str) -> ModelTier:
-    """Get the recommended model tier for a task type and complexity."""
-    return _TIER_MAP.get((task_type, complexity), ModelTier.CLAUDE_CODE)
+    """Get the recommended model tier based on the active routing strategy."""
+    strategy = cfg("routing_strategy", "best")
+    tier_map = _STRATEGY_MAPS.get(strategy, _STRATEGY_MAPS["best"])
+    return tier_map.get((task_type, complexity), ModelTier.CLAUDE_CODE)
 
 
 # Maps ModelTier to the provider name used in provider_quotas config.
