@@ -13,7 +13,13 @@ from typing import Optional
 
 from backend.config import PLANNING_MODEL
 from backend.exceptions import BudgetExhaustedError, NotFoundError, PlanParseError
-from backend.models.enums import PlanningRigor, PlanStatus, ProjectStatus
+from backend.models.enums import (
+    PlanningRigor,
+    PlanStatus,
+    ProjectStatus,
+    ReassessmentOutcome,
+)
+from backend.models.schemas import ReassessmentResult, WaveReassessmentContext
 from backend.services.llm_router import call_llm
 from backend.utils.json_utils import extract_json_object, parse_requirements
 
@@ -46,6 +52,7 @@ Requirements are numbered [R1], [R2], etc. for traceability.
 - Map each task to the requirement IDs it satisfies using requirement_ids.
 - Include verification_criteria: a concrete check to confirm task completion.
 - Include affected_files: list of files this task will create or modify (best guess).
+- Include rationale: explain WHY this approach was chosen, what alternatives were considered and rejected, and what constraints or dependencies drove the decision. This captures decision context so future tasks and revisions understand the reasoning.
 </task_guidelines>
 
 <available_tools>
@@ -68,7 +75,8 @@ _TASK_SCHEMA = """{
       "tools_needed": ["search_knowledge", "lookup_type", "local_llm", "generate_image", "read_file", "write_file"],
       "requirement_ids": ["R1", "R3"],
       "verification_criteria": "How to verify this task was completed correctly",
-      "affected_files": ["src/auth.ts", "db/schema.sql"]
+      "affected_files": ["src/auth.ts", "db/schema.sql"],
+      "rationale": "Why this approach was chosen, alternatives considered, and driving constraints"
     }"""
 
 _RIGOR_SUFFIX_L0 = """Produce a high-level roadmap of epics. Do NOT decompose into individual tasks — \
@@ -253,6 +261,9 @@ Task assignment heuristics:
 - Game design documents, design decisions → gemini_cli (game_design)
 - Build verification, integration tests → claude_code (game_build_verify)
 
+Rationale requirement:
+- Every task MUST include a rationale field explaining why this approach was chosen, what alternatives were considered and rejected, and what constraints drove the decision.
+
 Anti-patterns to avoid:
 - Don't create a single massive "Implement game" task — decompose into focused work units.
 - Don't assign UI/rendering tasks to agents without engine knowledge context.
@@ -294,7 +305,8 @@ _GAMEDEV_TASK_SCHEMA = """{
       "tools_needed": ["search_knowledge", "lookup_type", "local_llm", "generate_image", "read_file", "write_file"],
       "requirement_ids": ["R1", "R3"],
       "verification_criteria": "How to verify this task was completed correctly",
-      "affected_files": ["game/Combat.cs", "assets/monsters.json"]
+      "affected_files": ["game/Combat.cs", "assets/monsters.json"],
+      "rationale": "Why this approach was chosen, alternatives considered, and driving constraints"
     }"""
 
 # Platform-specific context blocks injected into the game dev preamble
@@ -411,6 +423,7 @@ You will receive:
 - Map depends_on to the task indices (0-based, global across phases) of methods that must complete before this one.
 - For new methods on existing classes, include the existing method signatures in available_methods.
 - For methods that modify shared state, note potential concurrency concerns in the description.
+- Every task MUST include a rationale field explaining why this approach was chosen, what alternatives were considered, and what constraints drove the decision.
 </rules>
 
 """
@@ -427,7 +440,8 @@ _CSHARP_TASK_SCHEMA = """{
       "constructor_params": ["IDbContext db", "ILogger logger"],
       "requirement_ids": ["R1"],
       "verification_criteria": "How to verify this method works correctly",
-      "affected_files": ["src/Services/MyService.cs"]
+      "affected_files": ["src/Services/MyService.cs"],
+      "rationale": "Why this approach was chosen, alternatives considered, and driving constraints"
     }"""
 
 _CSHARP_RIGOR_SUFFIX = f"""Produce a JSON plan organized into phases. Each phase corresponds to one class being modified or created.
@@ -475,6 +489,40 @@ def _build_csharp_system_prompt(type_map: str) -> str:
         + f"<reflected_types>\n{type_map}\n</reflected_types>\n\n"
         + _CSHARP_RIGOR_SUFFIX
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave Reassessment (Athena Loop)
+# ---------------------------------------------------------------------------
+
+_REASSESSMENT_PROMPT = """You are an expert project manager AI. Your task is to evaluate the progress of a software project after a "wave" of tasks has completed and decide if the project plan needs to be adjusted.
+
+You will be given a JSON object containing:
+1. `project_id`: The ID of the project.
+2. `wave_number`: The wave number that just finished.
+3. `task_outcomes`: A list of tasks in the wave, their status (completed/failed), and a summary of their output.
+4. `knowledge_findings`: Discoveries made during the wave (e.g., API limitations, new requirements).
+5. `sentinel_observations`: Automated checks and observations about the project state.
+6. `original_plan`: The complete original project plan.
+
+Based on this context, you must decide on the next course of action. Your response must be a JSON object with the following structure:
+{
+  "outcome": "continue_as_planned" | "replan_remaining" | "escalate_to_human",
+  "rationale": "A detailed explanation for your decision. Explain what factors led to this outcome.",
+  "suggested_changes": ["A list of specific, high-level changes to make if you are recommending a replan."]
+}
+
+Possible outcomes:
+- `continue_as_planned`: The project is on track. The remaining waves in the original plan are still valid. Use this if the completed wave was successful and no new information invalidates the existing plan.
+- `replan_remaining`: The project has deviated significantly, or new information requires a change in direction. The remaining waves should be replanned. Use this if tasks failed, new knowledge invalidates assumptions, or a better path has been discovered. Provide a high-level list of `suggested_changes` for the new plan.
+- `escalate_to_human`: The project is in a state that requires human intervention. This could be due to critical failures, unresolvable ambiguities, or a fundamental problem with the project's goals. Clearly explain why human help is needed in the `rationale`.
+
+Analyze the inputs carefully. Are there failed tasks? Do the knowledge findings contradict the plan's assumptions? Are the sentinel observations indicating a problem? Is the project drifting from its original requirements?
+
+Your analysis in the `rationale` is critical. It will be used to inform the human project manager or the replanning AI.
+
+Respond with ONLY the JSON object, with no markdown fences or other text.
+"""
 
 
 class PlannerService:
@@ -676,6 +724,81 @@ class PlannerService:
             "completion_tokens": 0,
             "cost_usd": 0.0,
         }
+
+    async def evaluate_wave_reassessment(
+        self, context: WaveReassessmentContext
+    ) -> ReassessmentResult:
+        """
+        Calls an LLM to evaluate the outcome of a wave and decide on the next step.
+
+        Args:
+            context: The context of the completed wave.
+
+        Returns:
+            A ReassessmentResult object with the outcome and rationale.
+        """
+        logger.info(
+            "Evaluating wave %d for project %s for reassessment.",
+            context.wave_number,
+            context.project_id,
+        )
+
+        user_message = context.model_dump_json(indent=2)
+
+        try:
+            # Using Haiku for this evaluation as it's fast and good at structured JSON output.
+            llm_response = await call_llm(
+                system_prompt=_REASSESSMENT_PROMPT,
+                user_message=user_message,
+                provider="claude",  # Assuming 'claude' provider can route to Haiku
+                model="haiku",
+                task_type="simple",  # This is more of a classification/extraction task
+            )
+
+            response_text = llm_response.text
+            if not response_text:
+                raise PlanParseError("LLM returned an empty response for reassessment.")
+
+            # Record spend for audit trail — $0 on CLI subscription billing
+            await self._budget.record_spend(
+                cost_usd=0.0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                provider=llm_response.provider or "claude",
+                model=llm_response.model or "haiku",
+                purpose="wave_reassessment",
+                project_id=context.project_id,
+            )
+
+            # Parse the JSON response
+            try:
+                result_data = json.loads(response_text)
+            except json.JSONDecodeError:
+                result_data = extract_json_object(response_text)
+                if result_data is None:
+                    raise PlanParseError(
+                        f"Failed to parse reassessment JSON from {llm_response.provider} response"
+                    )
+
+            # Validate with Pydantic schema
+            return ReassessmentResult(**result_data)
+
+        except Exception as e:
+            logger.error(
+                "Wave reassessment failed for project %s, wave %d: %s",
+                context.project_id,
+                context.wave_number,
+                e,
+                exc_info=True,
+            )
+            # Fallback: if evaluation fails, escalate to human to be safe.
+            return ReassessmentResult(
+                outcome=ReassessmentOutcome.ESCALATE_TO_HUMAN,
+                rationale=(
+                    f"The automated wave reassessment process failed with an error: {e}. "
+                    "Human review is required to determine the next steps for this project."
+                ),
+            )
 
 
 async def generate_plan(

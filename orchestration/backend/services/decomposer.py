@@ -216,15 +216,17 @@ class DecomposerService:
             est_cost = estimate_task_cost(tier, _EST_DECOMPOSE_INPUT_TOKENS, DEFAULT_MAX_TOKENS)
             total_estimated_cost += est_cost
 
+            rationale = task_def.get("rationale")
+
             write_statements.append((
                 "INSERT INTO tasks (id, project_id, plan_id, title, description, task_type, "
                 "priority, status, model_tier, context_json, tools_json, "
-                "max_tokens, wave, phase, requirement_ids_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "max_tokens, wave, phase, requirement_ids_json, rationale, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (task_id, project_id, plan_id, title, description, task_type,
                  priority, TaskStatus.PENDING, tier.value, json.dumps(context),
                  json.dumps(tools), DEFAULT_MAX_TOKENS, waves[i], phase,
-                 json.dumps(requirement_ids), now, now),
+                 json.dumps(requirement_ids), rationale, now, now),
             ))
 
         # Create dependency edges
