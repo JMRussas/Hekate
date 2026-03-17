@@ -160,9 +160,11 @@ public class AgentDispatcher : IAsyncDisposable
 
             Console.WriteLine($"[DISPATCH] Spawning {rule.Agent} for trigger '{rule.Name}'...");
 
+            var resolvedExe = CliResolver.Resolve(executable);
+
             var psi = new ProcessStartInfo
             {
-                FileName = executable,
+                FileName = resolvedExe,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

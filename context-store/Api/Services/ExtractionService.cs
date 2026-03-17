@@ -8,6 +8,7 @@
 // Used by:    ChatService
 
 using System.Diagnostics;
+using System.Net.Http.Json;
 using System.Text.Json;
 using CodeStoragePoc.ContextRouter;
 using CodeStoragePoc.DbLayer;
@@ -25,10 +26,17 @@ public class ExtractionService
     private readonly string _connStr;
     private readonly EmbeddingService _embeddingService;
     private readonly CodeStoragePoc.GraphLayer.AgeLayer _ageLayer;
+    private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(120) };
 
     private static readonly Guid ProjectId = Guid.TryParse(
         Environment.GetEnvironmentVariable("CODESTORAGE_PROJECT_ID"), out var pid)
         ? pid : new("8196b44e-6299-45a0-a5b0-bbd111f2990b");
+
+    private static readonly string OllamaBaseUrl =
+        Environment.GetEnvironmentVariable("OLLAMA_BASE_URL") ?? "http://localhost:11434";
+
+    private static readonly string ExtractionModel =
+        Environment.GetEnvironmentVariable("EXTRACTION_MODEL") ?? "qwen3.5:4b";
 
     /// <summary>Cosine distance threshold for auto-creating RELATES_TO edges between similar ideas.</summary>
     private const double RelatesToThreshold = 0.3;
@@ -46,25 +54,73 @@ public class ExtractionService
         if (string.IsNullOrWhiteSpace(response) || response.Length < 50)
             return new ExtractionResult(new List<ExtractedItem>(), 0);
 
-        var extractionPrompt = $@"<task>
-Extract any ideas, questions, decisions, or action items from this AI response.
+        var extractionPrompt = @"Extract any ideas, questions, decisions, or action items from this AI response.
 Return a JSON array. Each item has: type (idea|question|decision|action_item), name (short label), description (one sentence).
 If nothing worth extracting, return an empty array [].
 Only extract substantive items — not greetings, acknowledgments, or meta-commentary.
-</task>
-
-<response>
-{response}
-</response>
-
 Return ONLY a JSON array, no markdown fences, no preamble.";
 
-        string text;
+        // Try Ollama first (fast, free, no CLI dependency), fall back to Claude CLI
+        var text = await ExtractViaOllama(extractionPrompt, response)
+                ?? await ExtractViaCli(extractionPrompt, response);
+
+        if (string.IsNullOrWhiteSpace(text))
+            return new ExtractionResult(new List<ExtractedItem>(), 0);
+
+        var items = ParseExtractionJson(text);
+
+        foreach (var item in items)
+        {
+            await StoreExtractedNode(item, conversationId, turnId);
+        }
+
+        return new ExtractionResult(items, items.Count);
+    }
+
+    private async Task<string?> ExtractViaOllama(string systemPrompt, string response)
+    {
         try
         {
+            var requestBody = new
+            {
+                model = ExtractionModel,
+                messages = new[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = response }
+                },
+                stream = false,
+                think = false
+            };
+
+            var httpResponse = await _httpClient.PostAsJsonAsync($"{OllamaBaseUrl}/api/chat", requestBody);
+            httpResponse.EnsureSuccessStatusCode();
+
+            using var doc = await JsonDocument.ParseAsync(await httpResponse.Content.ReadAsStreamAsync());
+            var content = doc.RootElement.GetProperty("message").GetProperty("content").GetString();
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                Console.WriteLine($"[EXTRACT] Ollama ({ExtractionModel}) succeeded");
+                return content;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[EXTRACT] Ollama failed, falling back to CLI: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    private static async Task<string?> ExtractViaCli(string systemPrompt, string response)
+    {
+        try
+        {
+            var resolvedExe = CliResolver.Resolve("claude");
+
             var psi = new ProcessStartInfo
             {
-                FileName = "claude",
+                FileName = resolvedExe,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -81,26 +137,34 @@ Return ONLY a JSON array, no markdown fences, no preamble.";
             using var process = Process.Start(psi)
                 ?? throw new InvalidOperationException("Failed to start claude CLI");
 
-            await process.StandardInput.WriteAsync(extractionPrompt);
+            var combinedPrompt = $"<system>\n{systemPrompt}\n</system>\n\n{response}";
+            await process.StandardInput.WriteAsync(combinedPrompt);
             process.StandardInput.Close();
 
-            text = await process.StandardOutput.ReadToEndAsync();
+            var text = await process.StandardOutput.ReadToEndAsync();
             await process.WaitForExitAsync();
 
             if (process.ExitCode != 0)
             {
-                Console.WriteLine($"[WARN] Extraction CLI exited with code {process.ExitCode}");
-                return new ExtractionResult(new List<ExtractedItem>(), 0);
+                Console.WriteLine($"[EXTRACT] Claude CLI exited with code {process.ExitCode}");
+                return null;
             }
+
+            Console.WriteLine("[EXTRACT] Claude CLI succeeded (fallback)");
+            return text;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[WARN] Extraction CLI failed: {ex.Message}");
-            return new ExtractionResult(new List<ExtractedItem>(), 0);
+            Console.WriteLine($"[EXTRACT] Claude CLI failed: {ex.Message}");
+            return null;
         }
+    }
 
-        // Defensive JSON parsing — handle markdown fences and trailing commas
+    private static List<ExtractedItem> ParseExtractionJson(string text)
+    {
         text = text.Trim();
+
+        // Strip markdown fences
         if (text.StartsWith("```"))
         {
             var firstNewline = text.IndexOf('\n');
@@ -112,27 +176,17 @@ Return ONLY a JSON array, no markdown fences, no preamble.";
         // Remove trailing commas before ] or }
         text = System.Text.RegularExpressions.Regex.Replace(text, @",\s*([}\]])", "$1");
 
-        List<ExtractedItem> items;
         try
         {
-            items = JsonSerializer.Deserialize<List<ExtractedItem>>(text, new JsonSerializerOptions
+            return JsonSerializer.Deserialize<List<ExtractedItem>>(text, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
             }) ?? new List<ExtractedItem>();
         }
         catch (JsonException)
         {
-            // Model returned something unparseable — skip extraction
-            return new ExtractionResult(new List<ExtractedItem>(), 0);
+            return new List<ExtractedItem>();
         }
-
-        // Store extracted items as nodes
-        foreach (var item in items)
-        {
-            await StoreExtractedNode(item, conversationId, turnId);
-        }
-
-        return new ExtractionResult(items, items.Count);
     }
 
     private async Task StoreExtractedNode(ExtractedItem item, Guid conversationId, Guid turnId)

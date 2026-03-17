@@ -457,9 +457,11 @@ public class ChatService
         // Combine system + user prompts (CLIs take a single prompt via stdin)
         var combinedPrompt = $"<system>\n{prompt.SystemPrompt}\n</system>\n\n{prompt.UserPrompt}";
 
+        var resolvedExe = CliResolver.Resolve(executable);
+
         var psi = new ProcessStartInfo
         {
-            FileName = executable,
+            FileName = resolvedExe,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -478,7 +480,7 @@ public class ChatService
         {
             await SendSseEvent(http, "token", JsonSerializer.Serialize(new
             {
-                text = $"Failed to start {executable} CLI: {ex.Message}\n\nMake sure the CLI is installed and on your PATH."
+                text = $"Failed to start {executable} CLI (resolved: {resolvedExe}): {ex.Message}\n\nMake sure the CLI is installed and on your PATH."
             }), ct);
             return;
         }
@@ -546,7 +548,8 @@ public class ChatService
                 new { role = "system", content = prompt.SystemPrompt },
                 new { role = "user", content = prompt.UserPrompt }
             },
-            stream = true
+            stream = true,
+            think = false
         };
 
         var request = new HttpRequestMessage(HttpMethod.Post, $"{OllamaBaseUrl}/api/chat")
