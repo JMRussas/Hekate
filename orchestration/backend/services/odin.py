@@ -1,16 +1,20 @@
 #  Orchestration Engine - Odin
 #
 #  LLM-driven system overseer. Replaces the rule-based sentinel system
-#  with the noz-ai pattern: present world state to a local LLM (qwen3.5),
-#  let it decide what tools to call, execute them, feed results back.
+#  with the noz-ai pattern: present world state to an LLM, let it decide
+#  what tools to call, execute them, feed results back.
 #
 #  Architecture:
 #    - Ticks every 30s (configurable)
 #    - Builds world state from DB (projects, tasks, resources)
-#    - Calls qwen3.5 via Ollama OpenAI-compatible endpoint
+#    - Calls LLM via configured provider (claude CLI or Ollama)
 #    - LLM can call 10 tools: 4 observation + 6 intervention
 #    - Up to 4 rounds per tick
 #    - Persists world model to DB for restart recovery
+#
+#  Providers:
+#    - "claude" — Claude CLI (sonnet by default, subscription billing)
+#    - "ollama" — Local Ollama via OpenAI-compatible endpoint
 #
 #  Depends on: odin_tools.py, odin_prompts.py, db/connection.py,
 #              sentinel/bus.py, sentinel/decision_logger.py
@@ -20,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import time
 import uuid
 
@@ -34,7 +39,8 @@ logger = logging.getLogger("orchestration.odin")
 MAX_ROUNDS = 4
 TICK_INTERVAL = int(cfg("odin.tick_interval", 30))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", cfg("ollama.url", "http://localhost:11434"))
-ODIN_MODEL = cfg("odin.model", "qwen3.5:4b")
+ODIN_PROVIDER = cfg("odin.provider", "claude")  # "claude" or "ollama"
+ODIN_MODEL = cfg("odin.model", "sonnet")  # claude: sonnet/haiku/opus, ollama: qwen3.5:latest etc
 STALENESS_THRESHOLD = int(cfg("odin.staleness_seconds", 300))
 
 
@@ -80,7 +86,7 @@ class Odin:
         self._running = True
         await self._load_state()
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("Odin started (model=%s, tick=%ds)", ODIN_MODEL, TICK_INTERVAL)
+        logger.info("Odin started (provider=%s, model=%s, tick=%ds)", ODIN_PROVIDER, ODIN_MODEL, TICK_INTERVAL)
 
     async def stop(self):
         """Stop the loop and persist state."""
@@ -345,18 +351,84 @@ class Odin:
         return decisions
 
     async def _call_llm(self, messages: list[dict], tools: list[dict]) -> tuple[str, list[dict]]:
-        """Call qwen3.5 via Ollama OpenAI-compatible endpoint. Non-streaming."""
-        url = f"{OLLAMA_URL}/v1/chat/completions"
+        """Route to configured provider. Returns (text, tool_calls)."""
+        if ODIN_PROVIDER == "claude":
+            return await self._call_claude(messages, tools)
+        return await self._call_ollama(messages, tools)
+
+    async def _call_claude(self, messages: list[dict], tools: list[dict]) -> tuple[str, list[dict]]:
+        """Call Claude via CLI. Sends messages + tool defs as structured prompt."""
+        # Build a prompt from messages
+        parts = []
+        for msg in messages:
+            role = msg["role"]
+            content = msg.get("content", "")
+            if role == "system":
+                parts.append(f"<system>\n{content}\n</system>")
+            elif role == "tool":
+                parts.append(f"<tool_result name=\"{msg.get('name', '')}\">\n{content}\n</tool_result>")
+            else:
+                parts.append(f"<{role}>\n{content}\n</{role}>")
+
+        if tools:
+            tool_desc = json.dumps([{
+                "name": t["function"]["name"],
+                "description": t["function"].get("description", ""),
+                "parameters": t["function"].get("parameters", {}),
+            } for t in tools], indent=2)
+            parts.append(f"\n<available_tools>\n{tool_desc}\n</available_tools>")
+            parts.append(
+                "\nIf you want to call a tool, respond with ONLY a JSON object: "
+                '{"tool_calls": [{"name": "tool_name", "arguments": {...}}]}\n'
+                "If no tool call needed, respond with plain text."
+            )
+
+        prompt = "\n\n".join(parts)
+
+        # Run claude CLI
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["claude", "--print", "-", "--output-format", "text", "--model", ODIN_MODEL],
+            input=prompt, capture_output=True, text=True, timeout=120,
+        )
+
+        if proc.returncode != 0:
+            logger.warning("Claude CLI failed (exit %d): %s", proc.returncode, proc.stderr[:200])
+            raise RuntimeError(f"Claude CLI exit {proc.returncode}")
+
+        raw = proc.stdout.strip()
+        logger.debug("Claude response: %s", raw[:300])
+
+        # Parse tool calls from response
+        tool_calls = []
+        text = raw
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "tool_calls" in parsed:
+                text = ""
+                for tc in parsed["tool_calls"]:
+                    tool_calls.append({
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "name": tc["name"],
+                        "arguments": tc.get("arguments", {}),
+                    })
+        except (json.JSONDecodeError, KeyError):
+            pass  # Plain text response, no tool calls
+
+        return text, tool_calls
+
+    async def _call_ollama(self, messages: list[dict], tools: list[dict]) -> tuple[str, list[dict]]:
+        """Call Ollama via OpenAI-compatible endpoint. Non-streaming."""
         payload = {
             "model": ODIN_MODEL,
             "messages": messages,
             "tools": tools,
             "stream": False,
             "max_tokens": 2048,
-            "temperature": 0.3,  # Low temperature for consistent reasoning
+            "temperature": 0.3,
         }
 
-        # Prefer Gungnir (4090, full VRAM), fall back to Sisyphus (3090, VRAM pressure)
+        # Prefer Gungnir (4090, full VRAM), fall back to Sisyphus (3090)
         ollama_hosts = ["http://192.168.1.164:11434", OLLAMA_URL]
         resp = None
         async with httpx.AsyncClient(timeout=180) as client:
