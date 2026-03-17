@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,7 +43,7 @@ TIER_FALLBACK: dict[str, str] = {
 class InterventionExecutor:
     """Executes concrete intervention actions against the orchestration API.
 
-    Handles: retry_task, release_claim, skip_task, reorder_wave, reassign_tier.
+    Handles: retry_task, release_claim, skip_task, reorder_wave, reassign_tier, modify_prompt.
     Uses a shared httpx.AsyncClient with lazy initialisation.
     """
 
@@ -279,6 +280,103 @@ class InterventionExecutor:
         )
 
 
+    async def modify_prompt(self, obs: SentinelObservation) -> InterventionResult:
+        """Append diagnostic guidance to a task's system_prompt and re-queue it.
+
+        Reads prompt_additions from obs.details, appends to the existing
+        system_prompt in the database, and resets the task to pending.
+        """
+        if not self._db:
+            return InterventionResult(
+                action="modify_prompt",
+                success=False,
+                detail="no database connection available",
+            )
+
+        task_id = _extract_task_id(obs)
+        if not task_id:
+            return InterventionResult(
+                action="modify_prompt",
+                success=False,
+                detail="no task_id available on observation",
+            )
+
+        details = obs.details or {}
+        prompt_additions = details.get("prompt_additions")
+        if not prompt_additions:
+            return InterventionResult(
+                action="modify_prompt",
+                success=False,
+                detail="no prompt_additions in observation details",
+                task_id=task_id,
+            )
+
+        # Fetch current system_prompt
+        try:
+            row = await self._db.fetchone(
+                "SELECT system_prompt FROM tasks WHERE id = ?",
+                (task_id,),
+            )
+        except Exception as exc:
+            logger.warning("modify_prompt read failed for %s: %s", task_id[:8], exc)
+            return InterventionResult(
+                action="modify_prompt",
+                success=False,
+                detail=f"db read error: {exc}",
+                task_id=task_id,
+            )
+
+        if not row:
+            return InterventionResult(
+                action="modify_prompt",
+                success=False,
+                detail="task not found",
+                task_id=task_id,
+            )
+
+        current_prompt = row["system_prompt"] or ""
+        updated_prompt = f"{current_prompt}\n\n# Retry Guidance\n{prompt_additions}".strip()
+
+        now = time.time()
+
+        try:
+            await self._db.execute_write(
+                "UPDATE tasks SET system_prompt = ?, status = 'pending', "
+                "error = NULL, updated_at = ? "
+                "WHERE id = ?",
+                (updated_prompt, now, task_id),
+            )
+        except Exception as exc:
+            logger.warning("modify_prompt update failed for %s: %s", task_id[:8], exc)
+            return InterventionResult(
+                action="modify_prompt",
+                success=False,
+                detail=f"db write error: {exc}",
+                task_id=task_id,
+            )
+
+        logger.info(
+            "Modified prompt and re-queued task %s", task_id[:8],
+        )
+        await self._bus.publish(SentinelMessage(
+            topic="stall_notification",
+            source="intervention_executor",
+            payload={
+                "type": "prompt_modified",
+                "task_id": task_id,
+                "observation_id": obs.observation_id,
+                "project_id": obs.project_id,
+            },
+        ))
+
+        return InterventionResult(
+            action="modify_prompt",
+            success=True,
+            detail="system_prompt updated and task re-queued as pending",
+            task_id=task_id,
+            metadata={"prompt_additions": prompt_additions},
+        )
+
     async def reassign_tier(self, obs: SentinelObservation) -> InterventionResult:
         """Reassign failed tasks from one model tier to a fallback tier.
 
@@ -312,7 +410,6 @@ class InterventionExecutor:
                 detail=f"no fallback tier defined for {old_tier}",
             )
 
-        import time
         now = time.time()
         reassigned = 0
 

@@ -39,6 +39,8 @@ VALID_TOPICS: frozenset[str] = frozenset({
     "decision_made",
     "state_change",
     "dispatch_advisory",
+    # Athena Loop (wave reassessment)
+    "replan_required",
 })
 
 # Type alias for async subscriber callbacks
