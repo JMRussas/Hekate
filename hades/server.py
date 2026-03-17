@@ -151,6 +151,12 @@ class TailRequest(BaseModel):
 class ClearCacheRequest(BaseModel):
     path: Optional[str] = None  # defaults to HEKATE_ROOT/orchestration
 
+class ExecRequest(BaseModel):
+    command: str
+    cwd: Optional[str] = None  # defaults to SOURCE_ROOT
+    timeout: int = 120  # seconds, max 600
+    shell: str = "bash"  # "bash", "cmd", "powershell"
+
 
 # ---------------------------------------------------------------------------
 # Routes — Health
@@ -295,6 +301,46 @@ async def deploy(req: DeployRequest = DeployRequest()):
         "returncode": result["returncode"],
         "stdout": result["stdout"][-3000:],  # Trim to last 3k chars
         "stderr": result["stderr"][-1000:] if result["stderr"] else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes — Command Execution
+# ---------------------------------------------------------------------------
+
+@app.post("/exec")
+async def exec_command(req: ExecRequest):
+    """Execute a shell command. Supports bash, cmd, powershell.
+
+    This is the general-purpose execution endpoint — covers bash, npm,
+    python, git, dotnet, and anything else on PATH.
+    """
+    timeout = min(req.timeout, 600)
+    cwd = req.cwd or str(SOURCE_ROOT)
+
+    if not Path(cwd).exists():
+        raise HTTPException(400, f"Working directory not found: {cwd}")
+
+    shell_map = {
+        "bash": ["bash", "-c", req.command],
+        "cmd": ["cmd", "/c", req.command],
+        "powershell": ["powershell", "-NoProfile", "-Command", req.command],
+    }
+    cmd = shell_map.get(req.shell)
+    if cmd is None:
+        raise HTTPException(400, f"Unknown shell '{req.shell}'. Valid: bash, cmd, powershell")
+
+    log.info("Exec [%s] cwd=%s timeout=%d: %s", req.shell, cwd, timeout, req.command[:200])
+    result = _run(cmd, timeout=timeout, cwd=cwd)
+    log.info("Exec finished with returncode %d", result["returncode"])
+
+    return {
+        "command": req.command,
+        "shell": req.shell,
+        "cwd": cwd,
+        "returncode": result["returncode"],
+        "stdout": result["stdout"][-10000:],
+        "stderr": result["stderr"][-3000:] if result["stderr"] else None,
     }
 
 

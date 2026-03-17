@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "agent-context": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["context-store/tools/agent-context-mcp/server.py"],
+      "env": {}
+    },
+    "comfyui-mcp": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["context-store/tools/comfyui-mcp/server.py"],
+      "env": {
+        "COMFYUI_URL": "http://127.0.0.1:8188"
+      }
+    },
+    "hades": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["hades/mcp_bridge.py"],
+      "env": {
+        "HADES_URL": "http://localhost:5201"
+      }
+    }
+  }
+}
