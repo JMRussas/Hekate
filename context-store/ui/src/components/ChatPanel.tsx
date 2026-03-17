@@ -44,8 +44,8 @@ const MODEL_OPTIONS = [
   { mention: '@pro', label: 'Pro', desc: 'Gemini 2.5 Pro', color: 'bg-blue-700' },
   { mention: '@codex', label: 'Codex', desc: 'GPT-4.1', color: 'bg-green-600' },
   { mention: '@gpt', label: 'GPT', desc: 'GPT-4.1', color: 'bg-green-600' },
-  { mention: '@ollama', label: 'Ollama', desc: 'qwen2.5-coder:14b (local)', color: 'bg-orange-600' },
-  { mention: '@qwen', label: 'Qwen', desc: 'qwen2.5-coder:14b (local)', color: 'bg-orange-600' },
+  { mention: '@ollama', label: 'Ollama', desc: 'qwen3.5:4b (local)', color: 'bg-orange-600' },
+  { mention: '@qwen', label: 'Qwen', desc: 'qwen3.5:4b (local)', color: 'bg-orange-600' },
 ];
 
 type StreamPhase = 'parsing' | 'interpreting' | 'assembling' | 'generating' | 'calling_tool' | 'extracting';
