@@ -545,3 +545,202 @@ class TestExtractKnowledge:
             "ORDER BY created_at", ("proj1",)
         )
         assert [r["confidence"] for r in rows] == ["high", "medium", "low"]
+
+    @pytest.mark.asyncio
+    async def test_rationale_in_return_value(self, tmp_db):
+        """Return value includes all three new fields."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        findings = [
+            {
+                "category": "gotcha",
+                "content": "Timeout is 30s not 60s",
+                "rationale": "Docs say 60s but testing shows 30s",
+                "alternatives_considered": "Tried increasing to 60s, got rejected",
+                "confidence": "high",
+            },
+        ]
+        client = _make_mock_client(findings)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="Timeout Test",
+            task_description="Test timeouts",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert len(result) == 1
+        assert "rationale" in result[0]
+        assert "alternatives_considered" in result[0]
+        assert "confidence" in result[0]
+        assert result[0]["rationale"] == "Docs say 60s but testing shows 30s"
+        assert result[0]["alternatives_considered"] == "Tried increasing to 60s, got rejected"
+        assert result[0]["confidence"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_null_rationale_in_response(self, tmp_db):
+        """Null rationale from LLM normalizes to empty string."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        findings = [
+            {
+                "category": "discovery",
+                "content": "API supports batch mode",
+                "rationale": None,
+                "alternatives_considered": None,
+                "confidence": None,
+            },
+        ]
+        client = _make_mock_client(findings)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="API Test",
+            task_description="Test API",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert len(result) == 1
+        assert result[0]["rationale"] == ""
+        assert result[0]["alternatives_considered"] == ""
+        assert result[0]["confidence"] == "medium"
+
+
+class TestBuildPromptKnowledge:
+    """Tests for knowledge injection into CLI prompts via build_prompt."""
+
+    def _make_task_row(self, context_json=None, description="Do the task", system_prompt=""):
+        return {
+            "system_prompt": system_prompt,
+            "context_json": json.dumps(context_json or []),
+            "description": description,
+        }
+
+    def test_knowledge_formatted_as_xml(self):
+        """Project knowledge is rendered as <historical_rationale> XML block."""
+        from backend.services.cli_common import build_prompt
+
+        context = [{
+            "type": "project_knowledge",
+            "content": [
+                {
+                    "category": "constraint",
+                    "finding": "API rate limit is 100/min",
+                    "rationale": "Exceeded limit during load test",
+                    "alternatives_considered": "Batch API considered but not available",
+                    "confidence": "high",
+                },
+            ],
+        }]
+        row = self._make_task_row(context_json=context)
+        prompt = build_prompt(row)
+
+        assert "<historical_rationale>" in prompt
+        assert "</historical_rationale>" in prompt
+        assert '<finding category="constraint" confidence="high">' in prompt
+        assert "<statement>API rate limit is 100/min</statement>" in prompt
+        assert "<why>Exceeded limit during load test</why>" in prompt
+        assert "<alternatives_considered>Batch API considered but not available</alternatives_considered>" in prompt
+
+    def test_knowledge_without_rationale(self):
+        """Findings without rationale omit the <why> tag."""
+        from backend.services.cli_common import build_prompt
+
+        context = [{
+            "type": "project_knowledge",
+            "content": [
+                {
+                    "category": "discovery",
+                    "finding": "Returns XML not JSON",
+                    "confidence": "medium",
+                },
+            ],
+        }]
+        row = self._make_task_row(context_json=context)
+        prompt = build_prompt(row)
+
+        assert "<statement>Returns XML not JSON</statement>" in prompt
+        assert "<why>" not in prompt
+        assert "<alternatives_considered>" not in prompt
+
+    def test_knowledge_without_confidence(self):
+        """Findings without confidence omit the confidence attribute."""
+        from backend.services.cli_common import build_prompt
+
+        context = [{
+            "type": "project_knowledge",
+            "content": [
+                {
+                    "category": "gotcha",
+                    "finding": "Module X leaks memory",
+                },
+            ],
+        }]
+        row = self._make_task_row(context_json=context)
+        prompt = build_prompt(row)
+
+        assert '<finding category="gotcha">' in prompt
+        assert 'confidence=' not in prompt.split('<finding')[1].split('>')[0]
+
+    def test_multiple_findings_in_single_block(self):
+        """Multiple findings render within one <historical_rationale> block."""
+        from backend.services.cli_common import build_prompt
+
+        context = [{
+            "type": "project_knowledge",
+            "content": [
+                {"category": "constraint", "finding": "Finding A", "confidence": "high"},
+                {"category": "gotcha", "finding": "Finding B", "confidence": "low"},
+            ],
+        }]
+        row = self._make_task_row(context_json=context)
+        prompt = build_prompt(row)
+
+        assert prompt.count("<historical_rationale>") == 1
+        assert prompt.count("<finding") == 2
+        assert "Finding A" in prompt
+        assert "Finding B" in prompt
+
+    def test_empty_knowledge_list_no_block(self):
+        """Empty knowledge list produces no <historical_rationale> block."""
+        from backend.services.cli_common import build_prompt
+
+        context = [{
+            "type": "project_knowledge",
+            "content": [],
+        }]
+        row = self._make_task_row(context_json=context)
+        prompt = build_prompt(row)
+
+        assert "<historical_rationale>" not in prompt
+
+    def test_old_format_string_fallback(self):
+        """Old string-format knowledge still renders as <project_knowledge>."""
+        from backend.services.cli_common import build_prompt
+
+        context = [{
+            "type": "project_knowledge",
+            "content": "API has rate limits",
+        }]
+        row = self._make_task_row(context_json=context)
+        prompt = build_prompt(row)
+
+        assert "<project_knowledge>" in prompt
+        assert "API has rate limits" in prompt
+        assert "<historical_rationale>" not in prompt

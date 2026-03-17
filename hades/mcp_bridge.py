@@ -102,9 +102,62 @@ def restart_core() -> str:
 
 @mcp.tool()
 def restart_all() -> str:
-    """Restart all Hekate services (excluding Ollama, ComfyUI, and HekateAdmin)."""
+    """Restart all managed Hekate services (those with managed=true in config)."""
     with _client() as c:
         resp = c.post("/restart-all")
+        resp.raise_for_status()
+        return json.dumps(resp.json(), indent=2)
+
+
+@mcp.tool()
+def create_service(name: str, app: str, app_args: str = "", app_dir: str = "",
+                   port: int = 0, health: str = "", group: str = "custom",
+                   managed: bool = True) -> str:
+    """Provision a new NSSM service and register it in the config.
+
+    Args:
+        name: Service name (must start with 'Hekate')
+        app: Path to the executable
+        app_args: Command-line arguments for the executable
+        app_dir: Working directory (defaults to exe's parent dir)
+        port: Port the service listens on (0 = none)
+        health: Health check URL (empty = none)
+        group: Service group tag (core, mcp, custom, external)
+        managed: Whether deploy should manage this service
+    """
+    payload = {
+        "name": name, "app": app, "app_args": app_args,
+        "app_dir": app_dir, "group": group, "managed": managed,
+    }
+    if port:
+        payload["port"] = port
+    if health:
+        payload["health"] = health
+
+    with _client() as c:
+        resp = c.post("/services", json=payload)
+        resp.raise_for_status()
+        return json.dumps(resp.json(), indent=2)
+
+
+@mcp.tool()
+def remove_service(name: str) -> str:
+    """Remove an NSSM service and unregister it from the config.
+
+    Args:
+        name: Service name to remove (will stop it first if running)
+    """
+    with _client() as c:
+        resp = c.delete(f"/services/{name}", params={"confirm": "true"})
+        resp.raise_for_status()
+        return json.dumps(resp.json(), indent=2)
+
+
+@mcp.tool()
+def sync_check() -> str:
+    """Compare the service config against actual NSSM state. Reports drift."""
+    with _client() as c:
+        resp = c.get("/services/sync-check")
         resp.raise_for_status()
         return json.dumps(resp.json(), indent=2)
 

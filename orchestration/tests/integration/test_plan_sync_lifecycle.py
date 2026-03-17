@@ -106,10 +106,10 @@ class TestSyncPlanMapping:
         await svc.sync_plan("proj1", plan_id)
 
         row = await tmp_db.fetchone(
-            "SELECT node_mapping FROM plans WHERE id = ?", (plan_id,)
+            "SELECT node_mapping_json FROM plans WHERE id = ?", (plan_id,)
         )
         assert row is not None
-        stored = json.loads(row["node_mapping"])
+        stored = json.loads(row["node_mapping_json"])
         assert len(stored) == 2
         for tid in task_ids:
             assert tid in stored
@@ -189,10 +189,10 @@ class TestSyncPlanContextStoreDown:
         await svc.sync_plan("proj1", plan_id)
 
         row = await tmp_db.fetchone(
-            "SELECT node_mapping FROM plans WHERE id = ?", (plan_id,)
+            "SELECT node_mapping_json FROM plans WHERE id = ?", (plan_id,)
         )
         # node_mapping should be NULL (never written)
-        assert row["node_mapping"] is None
+        assert row["node_mapping_json"] is None
 
 
 # ---------------------------------------------------------------------------

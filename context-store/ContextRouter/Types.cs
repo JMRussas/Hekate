@@ -396,6 +396,9 @@ public record SubjectState
     /// <summary>Available skills.</summary>
     public List<string> AvailableSkills { get; init; } = new();
 
+    /// <summary>Recent conversation turns — last few messages for short-reply context.</summary>
+    public List<ContextItem> RecentTurns { get; init; } = new();
+
     /// <summary>Response formatting guidance.</summary>
     public ResponseGuidance? ResponseGuidance { get; init; }
 

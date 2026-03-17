@@ -1,26 +1,44 @@
+import time
 import os
 
 def complex_analysis(data):
-    # Simulate some complex analysis
+    """
+    A placeholder for complex analysis.
+    In a real scenario, this could be NLP, data processing, etc.
+    """
+    print(f"Analyzing {len(data)} bytes of data...")
+    # Simulate work
+    time.sleep(2)
     word_count = len(data.split())
-    char_count = len(data)
-    # More complex simulation
-    for i in range(1000):
-        for j in range(1000):
-            _ = i * j
-    return word_count, char_count
+    print(f"Analysis complete. Word count: {word_count}")
+    return word_count
 
-file_path = '/tmp/nonexistent_huge_file.txt'
+def main():
+    # According to the user's instructions, this path should not exist.
+    # On Windows, /tmp often doesn't exist, so this will fail.
+    # If /tmp does exist, the file itself should not.
+    file_path = '/tmp/nonexistent_huge_file.txt'
+    
+    print(f"Attempting to read and analyze {file_path}")
 
-print(f"Task D: Attempting complex analysis of {file_path}")
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            # In a real scenario where the file might exist,
+            # we would read it line-by-line for memory efficiency.
+            # for line in f:
+            #   process(line)
+            # But here we expect it to fail on open().
+            content = f.read()
+            complex_analysis(content)
+        print("Task D: Successfully analyzed the file.")
 
-try:
-    with open(file_path, 'r') as f:
-        content = f.read()
-        word_count, char_count = complex_analysis(content)
-        print(f"Analysis successful: {word_count} words, {char_count} characters.")
-except FileNotFoundError:
-    print(f"Error: File not found at {file_path}. This is an expected failure.")
-except Exception as e:
-    print(f"An unexpected error occurred: {e}")
+    except FileNotFoundError:
+        print(f"Error: The file {file_path} was not found, as expected.")
+        # Exit with a non-zero code to indicate failure to the orchestrator.
+        exit(1)
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        exit(1)
 
+if __name__ == "__main__":
+    main()

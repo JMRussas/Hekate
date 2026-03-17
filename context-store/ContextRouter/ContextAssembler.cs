@@ -51,7 +51,7 @@ public class ContextAssembler
             .Select(e => e.NodeId!.Value)
             .ToList();
 
-        // Parallel: stats, coverage, node states, graph neighbors, semantic search
+        // Parallel: stats, coverage, node states, graph neighbors, semantic search, recent turns
         var statsTask = GetConversationStats(conversationId);
         var coverageTask = GetSearchCoverage();
         var nodeStatesTask = resolvedNodeIds.Count > 0
@@ -59,6 +59,7 @@ public class ContextAssembler
             : Task.FromResult(new List<SubjectNodeState>());
         var semanticTask = SemanticSearchOrFallback(
             subject.CleanedMessage, conversationId, nodeTypes: null, limit: 5);
+        var recentTurnsTask = GetRecentTurns(conversationId, limit: 4);
 
         // Graph neighbors: adapt hops and edge filters based on subject types
         var graphTask = resolvedNodeIds.Count > 0 && _ageLayer != null
@@ -69,7 +70,7 @@ public class ContextAssembler
         // Open items: blockers, open questions relevant to the subject
         var openItemsTask = GetOpenItems(conversationId, subject.SubjectTypes);
 
-        await Task.WhenAll(statsTask, coverageTask, nodeStatesTask, graphTask, semanticTask, openItemsTask);
+        await Task.WhenAll(statsTask, coverageTask, nodeStatesTask, graphTask, semanticTask, openItemsTask, recentTurnsTask);
 
         var stats = statsTask.Result;
         var graphResults = graphTask.Result;
@@ -91,6 +92,7 @@ public class ContextAssembler
             ConnectedNodes = graphResults,
             RelatedNodes = uniqueSemanticResults,
             OpenItems = openItemsTask.Result,
+            RecentTurns = recentTurnsTask.Result,
             TotalIdeas = stats.TotalIdeas,
             OpenQuestions = stats.OpenQuestions,
             ParkedIdeas = stats.ParkedIdeas,

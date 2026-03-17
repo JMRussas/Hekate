@@ -224,3 +224,87 @@ class TestKnowledgeAPI:
         assert "knowledge" in data
         assert len(data["knowledge"]) == 1
         assert data["knowledge"][0]["content"] == "Uses event-driven pattern"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_knowledge_across_tasks(self, authed_client):
+        """Same content from different tasks produces only one row."""
+        resp = await authed_client.post("/api/projects", json={
+            "name": "Dedup Test",
+            "requirements": "Build something",
+        })
+        project_id = resp.json()["id"]
+
+        await _seed_knowledge_via_db(project_id, [
+            {"category": "constraint", "content": "API rate limit is 100/min"},
+        ])
+
+        # Try to seed the same content again (different finding_id prefix)
+        from backend.app import container
+        db = container.db()
+        content_hash = hashlib.sha256("api rate limit is 100/min".encode()).hexdigest()[:32]
+        try:
+            await db.execute_write(
+                "INSERT INTO project_knowledge "
+                "(id, project_id, task_id, category, content, content_hash, "
+                "rationale, alternatives_considered, confidence, "
+                "source_task_title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("dup_finding", project_id, None, "constraint", "API rate limit is 100/min",
+                 content_hash, "", "", "medium", "Task 2", time.time()),
+            )
+        except Exception:
+            pass  # Expected: unique constraint
+
+        resp = await authed_client.get(f"/api/projects/{project_id}/knowledge")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+    @pytest.mark.asyncio
+    async def test_knowledge_confidence_filter_values(self, authed_client):
+        """All confidence levels are returned correctly via API."""
+        resp = await authed_client.post("/api/projects", json={
+            "name": "Confidence Test",
+            "requirements": "Build something",
+        })
+        project_id = resp.json()["id"]
+
+        await _seed_knowledge_via_db(project_id, [
+            {"content": "High confidence finding", "confidence": "high"},
+            {"content": "Medium confidence finding", "confidence": "medium"},
+            {"content": "Low confidence finding", "confidence": "low"},
+        ])
+
+        resp = await authed_client.get(f"/api/projects/{project_id}/knowledge")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 3
+        confidence_set = {f["confidence"] for f in data}
+        assert confidence_set == {"high", "medium", "low"}
+
+    @pytest.mark.asyncio
+    async def test_knowledge_rationale_roundtrip(self, authed_client):
+        """Rationale and alternatives survive the full write-read cycle via API."""
+        resp = await authed_client.post("/api/projects", json={
+            "name": "Roundtrip Test",
+            "requirements": "Build something",
+        })
+        project_id = resp.json()["id"]
+
+        await _seed_knowledge_via_db(project_id, [
+            {
+                "category": "decision",
+                "content": "Chose FastAPI over Flask",
+                "rationale": "Async support out of the box, Pydantic integration",
+                "alternatives_considered": "Flask, Django, Starlette",
+                "confidence": "high",
+            },
+        ])
+
+        resp = await authed_client.get(f"/api/projects/{project_id}/knowledge")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        finding = data[0]
+        assert finding["content"] == "Chose FastAPI over Flask"
+        assert finding["rationale"] == "Async support out of the box, Pydantic integration"
+        assert finding["alternatives_considered"] == "Flask, Django, Starlette"
+        assert finding["confidence"] == "high"
