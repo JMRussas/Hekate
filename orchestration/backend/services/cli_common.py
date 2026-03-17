@@ -64,18 +64,26 @@ def build_prompt(task_row) -> str:
                     confidence = item.get("confidence")
                     category = item.get("category", "unknown")
 
-                    knowledge_block += f'  <finding category="{category}">\n'
+                    knowledge_block += f'  <finding category="{category}"'
+                    if confidence:
+                        knowledge_block += f' confidence="{confidence}"'
+                    knowledge_block += ">\n"
                     knowledge_block += f"    <statement>{finding}</statement>\n"
                     if rationale:
-                        knowledge_block += f"    <rationale>{rationale}</rationale>\n"
+                        knowledge_block += f"    <why>{rationale}</why>\n"
                     if alternatives:
                         knowledge_block += f"    <alternatives_considered>{alternatives}</alternatives_considered>\n"
-                    if confidence:
-                        knowledge_block += f"    <confidence>{confidence}</confidence>\n"
                     knowledge_block += "  </finding>\n"
 
                 if knowledge_block:
-                    parts.append(f"<project_knowledge>\n{knowledge_block}</project_knowledge>")
+                    parts.append(
+                        "<historical_rationale>\n"
+                        "The following findings capture WHY previous decisions were made.\n"
+                        "Use this rationale to inform your approach — avoid repeating "
+                        "failed strategies and build on what worked.\n\n"
+                        f"{knowledge_block}"
+                        "</historical_rationale>"
+                    )
             elif isinstance(content, str) and content:  # Fallback for old format
                 parts.append(f"<project_knowledge>\n{content}\n</project_knowledge>")
 

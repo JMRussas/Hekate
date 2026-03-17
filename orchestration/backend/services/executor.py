@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 
 import anthropic
 
@@ -58,6 +59,7 @@ class Executor:
         self._diagnostic_ingester = diagnostic_ingester
         self._quota_manager = quota_manager  # Optional; skips quota check when None
         self._system_sentinel = system_sentinel  # Optional; manages Plan Sentinel lifecycle
+        self._max_concurrent = MAX_CONCURRENT_TASKS
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
         self._task: asyncio.Task | None = None
         self._running = False
@@ -262,8 +264,52 @@ class Executor:
             logger.warning("SWEEP: task %s zombie → %s (retry %d)",
                            task_id[:8], new_status, row["retry_count"] + 1)
 
+    async def _adjust_concurrency(self):
+        """Scale max concurrent tasks based on provider quota utilization.
+
+        Linearly scales from max_concurrent (at 0% usage) down to 1 (at 100%).
+        This prevents hitting rate limits by gradually throttling dispatch
+        rather than slamming into an 80% cliff.
+        """
+        if self._quota_manager is None:
+            return
+
+        try:
+            statuses = await self._quota_manager.get_quota_status()
+        except Exception:
+            return  # Don't block dispatch on quota query failure
+
+        # Find the highest utilization across all providers with limits
+        max_util = 0.0
+        for ps in statuses.values():
+            if not ps.has_limits:
+                continue
+            for ws in ps.windows:
+                if ws.utilization_pct > max_util:
+                    max_util = ws.utilization_pct
+
+        # Scale: 0% usage → full concurrency, 100% → 1 task
+        # Linear ramp-down starting at 50% utilization
+        if max_util < 50.0:
+            target = self._max_concurrent
+        else:
+            # 50% → max, 100% → 1
+            scale = 1.0 - (max_util - 50.0) / 50.0
+            target = max(1, int(self._max_concurrent * scale))
+
+        current = self._semaphore._value + len(self._dispatched)
+        if target != current:
+            logger.info(
+                "THROTTLE: provider utilization %.0f%% — concurrency %d → %d",
+                max_util, current, target,
+            )
+            self._semaphore = asyncio.Semaphore(max(1, target - len(self._dispatched)))
+
     async def _tick(self):
         """One executor tick: find ready tasks and dispatch them."""
+        # Adjust concurrency based on quota utilization
+        await self._adjust_concurrency()
+
         # Sweep for zombie tasks before dispatching new ones
         await self._sweep_stale_tasks()
 
@@ -385,6 +431,12 @@ class Executor:
                     provider = _TIER_TO_PROVIDER.get(tier)
                     if provider and not await self._quota_manager.is_provider_available(provider):
                         logger.debug("TICK: task %s skipped (provider %s over quota)", task_id[:8], provider)
+                        continue
+
+                    # Check per-model-family quota (e.g., Opus vs Sonnet independent limits)
+                    model_id = get_model_id(tier)
+                    if not await self._quota_manager.is_model_available(model_id):
+                        logger.info("TICK: task %s skipped (model %s over quota)", task_id[:8], model_id)
                         continue
 
                 # Check per-project budget using reserve_spend (prevents TOCTOU race).

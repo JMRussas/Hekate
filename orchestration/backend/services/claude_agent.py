@@ -119,7 +119,8 @@ async def run_claude_task(
     if db is not None:
         try:
             knowledge_rows = await db.fetchall(
-                "SELECT category, content, source_task_title FROM project_knowledge "
+                "SELECT category, content, source_task_title, rationale, "
+                "alternatives_considered, confidence FROM project_knowledge "
                 "WHERE project_id = ? ORDER BY created_at DESC",
                 (project_id,),
             )
@@ -128,20 +129,26 @@ async def run_claude_task(
                 total_chars = 0
                 for kr in knowledge_rows:
                     entry = f"[{kr['category']}] {kr['content']}"
-                    if kr["source_task_title"]:
-                        entry += f" (from: {kr['source_task_title']})"
+                    if kr.get("rationale"):
+                        entry += f"\n  WHY: {kr['rationale']}"
+                    if kr.get("alternatives_considered"):
+                        entry += f"\n  ALTERNATIVES: {kr['alternatives_considered']}"
+                    if kr.get("confidence"):
+                        entry += f" (confidence: {kr['confidence']})"
+                    if kr.get("source_task_title"):
+                        entry += f"\n  (from: {kr['source_task_title']})"
                     if total_chars + len(entry) > KNOWLEDGE_INJECTION_MAX_CHARS:
                         break
                     knowledge_parts.append(entry)
                     total_chars += len(entry)
                 if knowledge_parts:
                     system_parts.append(
-                        "\n<project_knowledge>\n"
-                        "The following findings were discovered by earlier tasks "
-                        "in this project. Use them to avoid repeating mistakes "
-                        "and to maintain consistency:\n"
+                        "\n<historical_rationale>\n"
+                        "The following findings capture WHY previous decisions were "
+                        "made. Use this rationale to inform your approach — avoid "
+                        "repeating failed strategies and build on what worked:\n"
                         + "\n".join(f"- {p}" for p in knowledge_parts)
-                        + "\n</project_knowledge>"
+                        + "\n</historical_rationale>"
                     )
         except Exception as e:
             logger.debug("Failed to inject project knowledge: %s", e)
