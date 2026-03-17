@@ -197,6 +197,47 @@ TOOLS: list[dict] = [
             },
         },
     },
+    # --- Learning & iteration tools ---
+    {
+        "type": "function",
+        "function": {
+            "name": "review_completed_project",
+            "description": "Review a completed project: what was built, what failed, what was learned. Use this to decide what to improve next.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "The completed project ID to review."},
+                },
+                "required": ["project_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project_knowledge",
+            "description": "Get accumulated knowledge and learnings from a project — decisions, gotchas, patterns discovered during execution.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "Project ID to get knowledge for."},
+                },
+                "required": ["project_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_recent_completions",
+            "description": "List recently completed projects that haven't been reviewed yet. Use this to find what to iterate on.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
     # --- Project lifecycle tools ---
     {
         "type": "function",
@@ -666,6 +707,134 @@ async def _log_observation(db: Database, bus: SentinelBus, args: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Learning & iteration executors
+# ---------------------------------------------------------------------------
+
+async def _review_completed_project(db: Database, bus: SentinelBus, args: dict) -> str:
+    project_id = args.get("project_id")
+    if not project_id:
+        return "Error: project_id is required."
+
+    project = await db.fetchone(
+        "SELECT id, name, status, requirements, completed_at, created_at FROM projects WHERE id = $1",
+        (project_id,),
+    )
+    if not project:
+        return f"Error: project {project_id} not found."
+
+    # Task outcomes
+    tasks = await db.fetchall(
+        "SELECT id, title, status, model_tier, error, retry_count, verification_status, verification_notes "
+        "FROM tasks WHERE project_id = $1 ORDER BY wave, title",
+        (project_id,),
+    )
+
+    completed = [t for t in tasks if t["status"] == "completed"]
+    failed = [t for t in tasks if t["status"] in ("failed", "cancelled")]
+    total = len(tasks)
+
+    lines = [
+        f"Project: {project['name']}",
+        f"Status: {project['status']}",
+        f"Requirements: {project['requirements'][:300]}",
+        f"Tasks: {len(completed)}/{total} completed, {len(failed)} failed/cancelled",
+    ]
+
+    if project["completed_at"] and project["created_at"]:
+        duration = project["completed_at"] - project["created_at"]
+        hours = duration / 3600
+        lines.append(f"Duration: {hours:.1f} hours")
+
+    # Failed tasks — what went wrong
+    if failed:
+        lines.append("\nFailed/Cancelled tasks:")
+        for t in failed:
+            err = (t["error"] or "no error recorded")[:150]
+            lines.append(f"  - {t['title']} [{t['status']}] tier={t['model_tier']} retries={t['retry_count']}")
+            lines.append(f"    Error: {err}")
+
+    # Verification results
+    verified = [t for t in tasks if t["verification_status"]]
+    if verified:
+        lines.append("\nVerification results:")
+        for t in verified:
+            lines.append(f"  - {t['title']}: {t['verification_status']}")
+            if t["verification_notes"]:
+                lines.append(f"    Notes: {t['verification_notes'][:150]}")
+
+    # Knowledge captured
+    knowledge = await db.fetchall(
+        "SELECT category, content, confidence FROM project_knowledge WHERE project_id = $1",
+        (project_id,),
+    )
+    if knowledge:
+        lines.append(f"\nKnowledge captured ({len(knowledge)} items):")
+        for k in knowledge[:10]:
+            lines.append(f"  [{k['category']}] {k['content'][:100]}")
+
+    lines.append("\nBased on this review, consider: What should be improved? What follow-up project would make the most impact?")
+    return "\n".join(lines)
+
+
+async def _get_project_knowledge(db: Database, bus: SentinelBus, args: dict) -> str:
+    project_id = args.get("project_id")
+    if not project_id:
+        return "Error: project_id is required."
+
+    knowledge = await db.fetchall(
+        "SELECT category, content, rationale, confidence, source_task_title "
+        "FROM project_knowledge WHERE project_id = $1 ORDER BY created_at DESC",
+        (project_id,),
+    )
+    if not knowledge:
+        return f"No knowledge captured for project {project_id}."
+
+    lines = [f"Knowledge for project {project_id} ({len(knowledge)} items):"]
+    for k in knowledge:
+        lines.append(f"\n[{k['category']}] (confidence: {k['confidence']})")
+        lines.append(f"  {k['content'][:200]}")
+        if k["rationale"]:
+            lines.append(f"  Rationale: {k['rationale'][:150]}")
+        if k["source_task_title"]:
+            lines.append(f"  From task: {k['source_task_title']}")
+
+    return "\n".join(lines)
+
+
+async def _get_recent_completions(db: Database, bus: SentinelBus, args: dict) -> str:
+    # Projects completed in the last 7 days
+    cutoff = time.time() - (7 * 86400)
+    projects = await db.fetchall(
+        "SELECT id, name, status, completed_at, requirements FROM projects "
+        "WHERE status IN ($1, $2) AND completed_at > $3 "
+        "ORDER BY completed_at DESC",
+        ("completed", "failed", cutoff),
+    )
+    if not projects:
+        return "No recently completed projects in the last 7 days."
+
+    lines = ["Recently completed projects:"]
+    for p in projects:
+        ago = time.time() - (p["completed_at"] or 0)
+        hours = ago / 3600
+        task_row = await db.fetchone(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as done "
+            "FROM tasks WHERE project_id = $1",
+            (p["id"],),
+        )
+        total = task_row["total"] if task_row else 0
+        done = task_row["done"] if task_row else 0
+        lines.append(
+            f"  - {p['name']} [{p['status']}] {done}/{total} tasks, {hours:.0f}h ago"
+        )
+        lines.append(f"    Requirements: {p['requirements'][:100]}")
+
+    lines.append("\nUse review_completed_project to deep-dive into any of these.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Project lifecycle executors (call orchestration API — need DI context)
 # ---------------------------------------------------------------------------
 
@@ -761,6 +930,9 @@ _EXECUTORS: dict[str, callable] = {
     "reassign_tier": _reassign_tier,
     "modify_prompt": _modify_prompt,
     "log_observation": _log_observation,
+    "review_completed_project": _review_completed_project,
+    "get_project_knowledge": _get_project_knowledge,
+    "get_recent_completions": _get_recent_completions,
     "create_project": _create_project,
     "plan_project": _plan_project,
     "start_project": _start_project,

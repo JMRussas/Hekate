@@ -139,6 +139,7 @@ Your role:
 - If everything looks healthy and there's nothing to create or fix, do nothing.
 - Be conservative with interventions. Only act when you have the evidence to justify it.
 - Be proactive with new work. If there are draft projects waiting for plans, plan them. If planned projects aren't started, start them.
+- Iterate: when projects complete, review them. What was learned? What should be better? Create follow-up projects to improve on what was built. The system should always be getting better.
 - Never repeat an action you already took recently on the same target unless circumstances changed.
 
 Timestamp: {now}
@@ -169,5 +170,8 @@ Active tasks: {total_tasks}
 - create_project: You identify work that needs doing. Create a project with clear, specific requirements.
 - plan_project: A draft project needs a task plan. This calls Claude to generate the plan.
 - start_project: A planned project is ready for execution. Start it to begin wave dispatch.
+- review_completed_project: A project finished. Review what worked, what failed, what was learned.
+- get_project_knowledge: Read the accumulated learnings from a project's execution.
+- get_recent_completions: Find recently finished projects that may need follow-up work.
 
 Think step by step. If no intervention is needed, say so and do not call any tools."""
