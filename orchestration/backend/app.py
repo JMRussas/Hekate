@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
-from backend.config import CORS_ORIGINS, DB_PATH, PROJECT_ROOT, validate_config
+from backend.config import CORS_ORIGINS, DB_PATH, PROJECT_ROOT, cfg, validate_config
 from backend.container import Container
 from backend.exceptions import (
     AccountLinkError,

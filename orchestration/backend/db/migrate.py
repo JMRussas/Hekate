@@ -52,28 +52,24 @@ def _get_current_revision_sqlite(db_path: Path) -> str | None:
 
 
 def _get_current_revision_postgres(dsn: str) -> str | None:
-    """Get the current DB revision from Postgres."""
-    import asyncio
-
-    async def _check():
-        import asyncpg
-        try:
-            conn = await asyncpg.connect(dsn)
-            try:
-                row = await conn.fetchrow(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-                    "WHERE table_name = 'alembic_version')"
-                )
-                if not row or not row[0]:
-                    return None
-                row = await conn.fetchrow("SELECT version_num FROM alembic_version")
-                return row[0] if row else None
-            finally:
-                await conn.close()
-        except Exception:
-            return None
-
-    return asyncio.run(_check())
+    """Get the current DB revision from Postgres using synchronous connection."""
+    try:
+        # Use synchronous SQLAlchemy to avoid asyncio.run() issues in to_thread()
+        from sqlalchemy import create_engine, text
+        url = dsn.replace("postgresql://", "postgresql+psycopg2://", 1)
+        engine = create_engine(url)
+        with engine.connect() as conn:
+            result = conn.execute(text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'alembic_version')"
+            ))
+            if not result.scalar():
+                return None
+            result = conn.execute(text("SELECT version_num FROM alembic_version"))
+            row = result.fetchone()
+            return row[0] if row else None
+    except Exception:
+        return None
 
 
 def _has_schema_sqlite(db_path: Path) -> bool:
@@ -90,24 +86,18 @@ def _has_schema_sqlite(db_path: Path) -> bool:
 
 
 def _has_schema_postgres(dsn: str) -> bool:
-    import asyncio
-
-    async def _check():
-        import asyncpg
-        try:
-            conn = await asyncpg.connect(dsn)
-            try:
-                row = await conn.fetchrow(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-                    "WHERE table_name = 'projects')"
-                )
-                return row and row[0]
-            finally:
-                await conn.close()
-        except Exception:
-            return False
-
-    return asyncio.run(_check())
+    try:
+        from sqlalchemy import create_engine, text
+        url = dsn.replace("postgresql://", "postgresql+psycopg2://", 1)
+        engine = create_engine(url)
+        with engine.connect() as conn:
+            result = conn.execute(text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'projects')"
+            ))
+            return result.scalar() or False
+    except Exception:
+        return False
 
 
 def run_migrations(target) -> None:
