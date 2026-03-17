@@ -207,11 +207,24 @@ class SystemSentinel:
             db=self._db,
         )
 
+        # Create reasoner + interrogator for intelligent decision-making
+        from backend.config import INTERROGATION_ENABLED, INTERROGATION_MODEL
+        from backend.services.sentinel.interrogator import SelfInterrogator
+        from backend.services.sentinel.reasoner import SentinelReasoner
+
+        reasoner = SentinelReasoner(enabled=True)
+        interrogator = SelfInterrogator(
+            enabled=INTERROGATION_ENABLED,
+            model=INTERROGATION_MODEL,
+        )
+
         sentinel = PlanSentinel(
             project_id=project_id,
             bus=self._bus,
             progress_manager=self._progress_manager,
             db=self._db,
+            reasoner=reasoner,
+            interrogator=interrogator,
             intervention_executor=executor,
         )
         await sentinel.start()

@@ -145,6 +145,10 @@ TELEMETRY_FEEDBACK_ENABLED = cfg("telemetry_feedback.enabled", True)
 TELEMETRY_FEEDBACK_URL = cfg("telemetry_feedback.context_store_url", "http://localhost:5102")
 TELEMETRY_FEEDBACK_EMBED_OUTCOMES = cfg("telemetry_feedback.embed_outcomes", True)
 
+# Self-Interrogation — structured 6-question quality gate at decision points
+INTERROGATION_ENABLED = cfg("interrogation.enabled", False)
+INTERROGATION_MODEL = cfg("interrogation.model", None)
+
 # Review Cycle — execute → review → iterate → commit → PR
 REVIEW_CYCLE_ENABLED = cfg("review_cycle.enabled", False)
 REVIEW_MAX_ITERATIONS = cfg("review_cycle.max_iterations", 2)

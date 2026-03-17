@@ -32,6 +32,8 @@ from backend.config import (
     CONTEXT_ENRICHMENT_ENABLED,
     CONTEXT_FORWARD_MAX_CHARS,
     DIAGNOSTIC_RAG_ENABLED,
+    INTERROGATION_ENABLED,
+    INTERROGATION_MODEL,
     KNOWLEDGE_EXTRACTION_ENABLED,
     REVIEW_AUTO_COMMIT,
     REVIEW_CYCLE_ENABLED,
@@ -409,6 +411,19 @@ async def _run_review_cycle(
     )
 
     if verdict == "approved":
+        # Self-interrogation: advisory second opinion on APPROVED verdict.
+        # Logs concerns but never blocks.
+        if INTERROGATION_ENABLED:
+            await _interrogate_review_verdict(
+                task_row=task_row,
+                review_result=review,
+                diff_text=diff_text,
+                project_id=project_id,
+                task_id=task_id,
+                db=db,
+                progress=progress,
+            )
+
         # Auto-commit if enabled and there are changes
         if REVIEW_AUTO_COMMIT and diff_text:
             try:
@@ -795,7 +810,315 @@ async def verify_task_output(
         )
         return True
 
+    # Self-interrogation: when verification says PASSED, run the 6 questions
+    # as an advisory second opinion. Logs concerns but never blocks.
+    if v_result == VerificationResult.PASSED and INTERROGATION_ENABLED:
+        await _interrogate_verification_verdict(
+            task_row=task_row,
+            output_text=output_text,
+            v_notes=v_notes,
+            project_id=project_id,
+            task_id=task_id,
+            db=db,
+            progress=progress,
+        )
+
     return False
+
+
+async def _gather_interrogation_context(*, db, project_id: str, task_id: str) -> dict:
+    """Gather rich context for self-interrogation from the DB.
+
+    Returns a dict with keys: project_summary, requirements, decision_history,
+    sibling_outcomes, affected_files, dependency_info, knowledge_findings.
+    All are strings, truncated to reasonable lengths. Best-effort — returns
+    empty strings on failure so interrogation can still run.
+    """
+    ctx: dict[str, str] = {}
+
+    try:
+        # Project summary + requirements
+        proj = await db.fetchone(
+            "SELECT title, requirements, status FROM projects WHERE id = ?",
+            (project_id,),
+        )
+        if proj:
+            ctx["project_summary"] = (
+                f"Project: {proj['title']} (status: {proj['status']})"
+            )
+            ctx["requirements"] = (proj["requirements"] or "")[:1500]
+    except Exception:
+        pass
+
+    try:
+        # Sibling tasks in the same wave — what else is running/completed/failed
+        task_wave = await db.fetchone(
+            "SELECT wave FROM tasks WHERE id = ?", (task_id,),
+        )
+        if task_wave and task_wave["wave"] is not None:
+            siblings = await db.fetchall(
+                "SELECT title, status, task_type, error FROM tasks "
+                "WHERE project_id = ? AND wave = ? AND id != ? "
+                "ORDER BY status",
+                (project_id, task_wave["wave"], task_id),
+            )
+            if siblings:
+                lines = []
+                for s in siblings[:10]:
+                    line = f"- {s['title']} [{s['status']}]"
+                    if s["error"]:
+                        line += f" error: {s['error'][:100]}"
+                    lines.append(line)
+                ctx["sibling_outcomes"] = (
+                    f"Wave {task_wave['wave']} siblings:\n" + "\n".join(lines)
+                )
+    except Exception:
+        pass
+
+    try:
+        # Downstream dependents — what breaks if this task is wrong
+        deps = await db.fetchall(
+            "SELECT t.title, t.status FROM task_deps td "
+            "JOIN tasks t ON t.id = td.task_id "
+            "WHERE td.depends_on = ?",
+            (task_id,),
+        )
+        if deps:
+            dep_lines = [f"- {d['title']} [{d['status']}]" for d in deps[:8]]
+            ctx["dependency_info"] = (
+                f"{len(deps)} downstream task(s) depend on this:\n"
+                + "\n".join(dep_lines)
+            )
+    except Exception:
+        pass
+
+    try:
+        # Affected files from task context
+        task_ctx = await db.fetchone(
+            "SELECT context_json FROM tasks WHERE id = ?", (task_id,),
+        )
+        if task_ctx and task_ctx["context_json"]:
+            entries = json.loads(task_ctx["context_json"])
+            for entry in entries:
+                if entry.get("type") == "affected_files":
+                    ctx["affected_files"] = f"Affected files: {entry.get('content', '')}"
+                    break
+    except Exception:
+        pass
+
+    try:
+        # Recent sentinel decisions for this project — real precedent
+        decisions = await db.fetchall(
+            "SELECT message, details_json FROM sentinel_observations "
+            "WHERE project_id = ? AND category IN "
+            "('intervention_result', 'intervention_proposal', 'interrogation_concern', 'wave_reassessment') "
+            "ORDER BY created_at DESC LIMIT 5",
+            (project_id,),
+        )
+        if decisions:
+            lines = [d["message"][:150] for d in decisions]
+            ctx["decision_history"] = (
+                "Recent sentinel decisions:\n" + "\n".join(f"- {l}" for l in lines)
+            )
+    except Exception:
+        pass
+
+    try:
+        # Project knowledge findings — what the system has learned
+        findings = await db.fetchall(
+            "SELECT content, rationale FROM project_knowledge "
+            "WHERE project_id = ? ORDER BY created_at DESC LIMIT 5",
+            (project_id,),
+        )
+        if findings:
+            lines = []
+            for f in findings:
+                line = f["content"][:200]
+                if f.get("rationale"):
+                    line += f" (why: {f['rationale'][:100]})"
+                lines.append(line)
+            ctx["knowledge_findings"] = (
+                "Known project findings:\n" + "\n".join(f"- {l}" for l in lines)
+            )
+    except Exception:
+        pass
+
+    return ctx
+
+
+async def _interrogate_verification_verdict(
+    *, task_row, output_text, v_notes, project_id, task_id, db, progress,
+) -> None:
+    """Run self-interrogation on a PASSED verification verdict.
+
+    Advisory only — logs concerns as a sentinel observation and appends
+    to verification_notes, but does NOT block the task. The verifier
+    already said PASSED; the interrogation is a second opinion that
+    gets recorded for audit, not a gate that creates stuck tasks.
+    """
+    from backend.services.sentinel.interrogator import (
+        DecisionContext,
+        InterrogationInput,
+        SelfInterrogator,
+    )
+
+    try:
+        is_coding = task_row["task_type"] in ("code", "game_code", "game_build_verify")
+        ctx = await _gather_interrogation_context(
+            db=db, project_id=project_id, task_id=task_id,
+        )
+        interrogator = SelfInterrogator(enabled=True, model=INTERROGATION_MODEL)
+        inp = InterrogationInput(
+            decision_context=DecisionContext.VERIFICATION_VERDICT,
+            proposed_action="Accept verification PASSED verdict and mark task complete",
+            reasoning=f"Verifier notes: {v_notes}",
+            is_coding_task=is_coding,
+            task_description=task_row["description"][:2000],
+            task_output=(output_text or "")[:2000],
+            project_summary=ctx.get("project_summary", ""),
+            error_text=ctx.get("affected_files", ""),
+            decision_history=ctx.get("decision_history", ""),
+            world_state="\n".join(filter(None, [
+                ctx.get("sibling_outcomes", ""),
+                ctx.get("dependency_info", ""),
+                ctx.get("knowledge_findings", ""),
+                ctx.get("requirements", ""),
+            ])),
+        )
+        result = await interrogator.interrogate(inp)
+
+        if result is not None and not result.proceed:
+            concern = (
+                f"Self-interrogation concern (advisory): {result.escalation_trigger} "
+                f"(confidence={result.overall_confidence:.2f})"
+            )
+            logger.info(
+                "Self-interrogation flagged verification for task %s (trigger=%s) — "
+                "advisory only, proceeding",
+                task_id, result.escalation_trigger,
+            )
+            # Append concern to verification_notes for audit trail
+            updated_notes = f"{v_notes} | {concern}" if v_notes else concern
+            await db.execute_write(
+                "UPDATE tasks SET verification_notes = ?, updated_at = ? WHERE id = ?",
+                (updated_notes, time.time(), task_id),
+            )
+            # Log as sentinel observation so it's visible in the dashboard
+            await _log_interrogation_observation(
+                db=db, project_id=project_id, task_id=task_id,
+                context="verification_verdict", result=result,
+            )
+            await progress.push_event(
+                project_id, "task_output",
+                f"{task_row['title']}: interrogation concern (advisory): "
+                f"{result.escalation_trigger}",
+                task_id=task_id,
+            )
+    except Exception:
+        logger.debug("Self-interrogation failed for verification of task %s, proceeding", task_id)
+
+
+async def _interrogate_review_verdict(
+    *, task_row, review_result, diff_text, project_id, task_id, db, progress,
+) -> None:
+    """Run self-interrogation on a code review APPROVED verdict.
+
+    Advisory only — logs concerns but does NOT block the task. The code
+    reviewer already approved; the interrogation records concerns for
+    audit without creating stuck tasks.
+    """
+    from backend.services.sentinel.interrogator import (
+        DecisionContext,
+        InterrogationInput,
+        SelfInterrogator,
+    )
+
+    try:
+        ctx = await _gather_interrogation_context(
+            db=db, project_id=project_id, task_id=task_id,
+        )
+        # Include review issues in reasoning so the LLM knows what was checked
+        issues_text = ""
+        for issue in review_result.get("issues", []):
+            sev = issue.get("severity", "info")
+            desc = issue.get("description", "")
+            issues_text += f"\n- [{sev}] {issue.get('file', '')}: {desc}"
+
+        interrogator = SelfInterrogator(enabled=True, model=INTERROGATION_MODEL)
+        inp = InterrogationInput(
+            decision_context=DecisionContext.CODE_REVIEW_VERDICT,
+            proposed_action="Accept code review APPROVED verdict, auto-commit, and mark complete",
+            reasoning=(
+                f"Review summary: {review_result.get('summary', '')}"
+                + (f"\nReview issues (all warnings, no blockers):{issues_text}" if issues_text else "")
+            ),
+            is_coding_task=True,
+            task_description=task_row["description"][:2000],
+            task_output=(diff_text or "")[:3000],
+            project_summary=ctx.get("project_summary", ""),
+            error_text=ctx.get("affected_files", ""),
+            decision_history=ctx.get("decision_history", ""),
+            world_state="\n".join(filter(None, [
+                ctx.get("sibling_outcomes", ""),
+                ctx.get("dependency_info", ""),
+                ctx.get("knowledge_findings", ""),
+                ctx.get("requirements", ""),
+            ])),
+        )
+        result = await interrogator.interrogate(inp)
+
+        if result is not None and not result.proceed:
+            logger.info(
+                "Self-interrogation flagged review for task %s (trigger=%s) — "
+                "advisory only, proceeding",
+                task_id, result.escalation_trigger,
+            )
+            await _log_interrogation_observation(
+                db=db, project_id=project_id, task_id=task_id,
+                context="code_review_verdict", result=result,
+            )
+            await progress.push_event(
+                project_id, "task_output",
+                f"{task_row['title']}: review interrogation concern (advisory): "
+                f"{result.escalation_trigger}",
+                task_id=task_id,
+            )
+    except Exception:
+        logger.debug("Self-interrogation failed for review of task %s, proceeding", task_id)
+
+
+async def _log_interrogation_observation(
+    *, db, project_id: str, task_id: str, context: str, result,
+) -> None:
+    """Persist an interrogation concern as a sentinel observation for dashboard visibility."""
+    try:
+        answers_summary = "; ".join(
+            f"{a.question}: {'OK' if a.confident else 'GAP — ' + a.answer}"
+            for a in result.answers
+            if not a.confident
+        )
+        await db.execute_write(
+            "INSERT OR IGNORE INTO sentinel_observations "
+            "(id, project_id, task_id, category, severity, message, details_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                project_id,
+                task_id,
+                "interrogation_concern",
+                "info",
+                f"Self-interrogation concern during {context}: {result.escalation_trigger}",
+                json.dumps({
+                    "context": context,
+                    "escalation_trigger": result.escalation_trigger,
+                    "overall_confidence": result.overall_confidence,
+                    "knowledge_gaps": answers_summary,
+                }),
+                time.time(),
+            ),
+        )
+    except Exception:
+        logger.debug("Failed to persist interrogation observation for task %s", task_id)
 
 
 async def forward_context(*, completed_task, output_text, db):

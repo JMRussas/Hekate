@@ -13,6 +13,7 @@
     "log_format": "json",
     "log_level": "INFO"
   },
+  "routing_strategy": "best",
   "anthropic": {
     "planning_model": "claude-sonnet-4-6",
     "models": {
@@ -152,6 +153,10 @@
     "enabled": true,
     "context_store_url": "http://localhost:5102",
     "embed_outcomes": true
+  },
+  "interrogation": {
+    "enabled": false,
+    "model": null
   },
   "review_cycle": {
     "enabled": false,

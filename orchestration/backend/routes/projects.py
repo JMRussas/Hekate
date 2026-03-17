@@ -464,13 +464,78 @@ async def approve_plan(
     decomposer: DecomposerService = Depends(Provide[Container.decomposer]),
 ):
     """Approve a plan and decompose it into executable tasks."""
-    await _get_owned_project(db, project_id, current_user)
+    project_row = await _get_owned_project(db, project_id, current_user)
 
     row = await db.fetchone("SELECT * FROM plans WHERE id = ? AND project_id = ?", (plan_id, project_id))
     if not row:
         raise HTTPException(404, f"Plan {plan_id} not found")
     if row["status"] != PlanStatus.DRAFT:
         raise HTTPException(400, f"Plan is already {row['status']}")
+
+    # Advisory self-interrogation: challenge the plan before decomposing
+    interrogation_concerns = None
+    from backend.config import INTERROGATION_ENABLED, INTERROGATION_MODEL
+    if INTERROGATION_ENABLED:
+        try:
+            from backend.services.sentinel.interrogator import (
+                DecisionContext,
+                InterrogationInput,
+                SelfInterrogator,
+            )
+            plan_data = json.loads(row["plan_json"])
+            task_titles = [t.get("title", "") for t in plan_data.get("tasks", [])]
+            plan_summary = (
+                f"{len(task_titles)} tasks: {', '.join(task_titles[:10])}"
+                + (f" (and {len(task_titles) - 10} more)" if len(task_titles) > 10 else "")
+            )
+
+            requirements = project_row["requirements"] or ""
+
+            interrogator = SelfInterrogator(enabled=True, model=INTERROGATION_MODEL)
+            inp = InterrogationInput(
+                decision_context=DecisionContext.PLAN_APPROVAL,
+                proposed_action="Approve plan and decompose into executable tasks",
+                reasoning=plan_summary,
+                is_coding_task=False,
+                task_description=requirements[:1000] if requirements else "",
+                task_output=json.dumps(plan_data, default=str)[:2000],
+            )
+            interrogation_result = await interrogator.interrogate(inp)
+
+            if interrogation_result is not None and not interrogation_result.proceed:
+                interrogation_concerns = {
+                    "escalation_trigger": interrogation_result.escalation_trigger,
+                    "overall_confidence": interrogation_result.overall_confidence,
+                    "answers": [
+                        {
+                            "question": a.question,
+                            "answer": a.answer,
+                            "confident": a.confident,
+                        }
+                        for a in interrogation_result.answers
+                    ],
+                }
+                # Log as sentinel observation for dashboard visibility
+                await db.execute_write(
+                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "(id, project_id, task_id, category, severity, message, details_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(uuid.uuid4()), project_id, None,
+                        "interrogation_concern", "info",
+                        f"Plan approval concern: {interrogation_result.escalation_trigger}",
+                        json.dumps(interrogation_concerns),
+                        time.time(),
+                    ),
+                )
+                _log.info(
+                    "Plan approval interrogation flagged concern for project %s: %s (advisory, proceeding)",
+                    project_id, interrogation_result.escalation_trigger,
+                )
+        except Exception:
+            _log.debug(
+                "Plan approval interrogation failed for project %s, proceeding", project_id,
+            )
 
     try:
         result = await decomposer.decompose(project_id, plan_id)
@@ -480,6 +545,10 @@ async def approve_plan(
         raise HTTPException(422, str(e))
     except OrchestrationError as e:
         raise HTTPException(400, str(e))
+
+    # Include interrogation concerns in response if any were found
+    if interrogation_concerns is not None:
+        result["interrogation_concerns"] = interrogation_concerns
 
     return result
 
@@ -623,14 +692,14 @@ async def clone_project(
             await db.execute_write(
                 "INSERT INTO tasks (id, project_id, plan_id, title, description, task_type, "
                 "priority, status, model_tier, context_json, tools_json, system_prompt, "
-                "max_tokens, wave, phase, requirement_ids_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "max_tokens, wave, phase, requirement_ids_json, rationale, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (new_task_id, new_project_id, new_plan_id or old_task["plan_id"],
                  old_task["title"], old_task["description"], old_task["task_type"],
                  old_task["priority"], TaskStatus.PENDING, old_task["model_tier"],
                  old_task["context_json"], old_task["tools_json"], old_task["system_prompt"],
                  old_task["max_tokens"], old_task["wave"], old_task["phase"],
-                 old_task["requirement_ids_json"], now, now),
+                 old_task["requirement_ids_json"], old_task["rationale"], now, now),
             )
 
         # 4. Remap task dependencies
@@ -846,6 +915,9 @@ async def list_knowledge(
             task_id=r["task_id"],
             category=r["category"],
             content=r["content"],
+            rationale=r["rationale"],
+            alternatives_considered=r["alternatives_considered"],
+            confidence=r["confidence"],
             source_task_title=r["source_task_title"],
             created_at=r["created_at"],
         )

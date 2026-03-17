@@ -317,3 +317,25 @@ class ReasoningResult:
     # Retry diagnosis fields — populated when error text is analyzed
     fix_type: str = "retry_as_is"  # reassign_tier | modify_prompt | skip | retry_as_is
     fix_params: dict[str, Any] = field(default_factory=dict)  # new_tier, prompt_additions
+
+
+@dataclass
+class InterrogationAnswer:
+    """Answer to one of the 6 self-interrogation questions."""
+    question: str
+    answer: str
+    confident: bool  # True = answered with confidence, False = knowledge gap
+
+
+@dataclass
+class InterrogationResult:
+    """Result of the structured self-interrogation gate.
+
+    The sentinel asks itself 6 questions before every decision.
+    If ALL are answered with confidence → proceed autonomously.
+    If ANY answer reveals a knowledge gap → escalate.
+    """
+    answers: list[InterrogationAnswer] = field(default_factory=list)
+    proceed: bool = False  # True = all questions answered confidently
+    escalation_trigger: str | None = None  # which question caused the gap
+    overall_confidence: float = 0.0  # aggregate confidence across answers

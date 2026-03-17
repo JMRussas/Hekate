@@ -33,6 +33,11 @@ from backend.services.sentinel.models import (
     TaskWorldState,
 )
 
+from backend.services.sentinel.interrogator import (
+    DecisionContext,
+    InterrogationInput,
+    SelfInterrogator,
+)
 from backend.services.sentinel.intervention_executor import InterventionExecutor
 from backend.services.sentinel.reasoner import SentinelReasoner
 from backend.services.sentinel.rules import (
@@ -95,6 +100,7 @@ class InterventionAction(str, Enum):
     SKIP_TASK = "skip_task"
     REORDER_WAVE = "reorder_wave"
     REASSIGN_TIER = "reassign_tier"
+    MODIFY_PROMPT = "modify_prompt"
 
 
 # Map observation categories to the intervention they trigger
@@ -179,6 +185,7 @@ class PlanSentinel:
         base_url: str = DEFAULT_BASE_URL,
         auth_token: str | None = None,
         reasoner: SentinelReasoner | None = None,
+        interrogator: SelfInterrogator | None = None,
         intervention_executor: InterventionExecutor | None = None,
         decision_logger: DecisionLogger | None = None,
     ) -> None:
@@ -195,6 +202,7 @@ class PlanSentinel:
         self._world_model = ProjectWorldModel(project_id=project_id)
         self._http_client: httpx.AsyncClient | None = None
         self._reasoner = reasoner
+        self._interrogator = interrogator
         self._executor = intervention_executor
         self._decision_logger = decision_logger
         # Recent observations for reasoner context
@@ -767,6 +775,300 @@ class PlanSentinel:
     # Phase 2: State detection (world-model rules)
     # ------------------------------------------------------------------
 
+    async def _trigger_wave_reassessment(self, obs: SentinelObservation):
+        """Collects context, evaluates via LLM, and routes the Athena Loop outcome.
+
+        Flow:
+            1. Collect wave context (task outcomes, knowledge, sentinel observations)
+            2. Call planner.evaluate_wave_reassessment() → ReassessmentResult
+            3. Route on outcome:
+               - continue_as_planned → log and resume normal dispatch
+               - replan_remaining   → publish replan event for executor
+               - escalate_to_human  → publish supervised intervention proposal
+        """
+        try:
+            from backend.models.enums import ReassessmentOutcome
+            from backend.services.task_lifecycle import collect_wave_reassessment_context
+            from backend.services.planner import PlannerService
+            from backend.services.budget import BudgetManager
+
+            if not self._db:
+                logger.warning("No DB connection available, cannot trigger wave reassessment.")
+                return
+
+            details = obs.details or {}
+            wave_number = details.get("wave")
+            project_id = obs.project_id
+
+            if wave_number is None:
+                logger.warning("wave_complete observation missing 'wave' number in details.")
+                return
+
+            logger.info(
+                "Wave %d for project %s is complete. Collecting context for reassessment.",
+                wave_number, project_id,
+            )
+
+            # --- Step 1: Collect wave context ---
+            context = await collect_wave_reassessment_context(
+                db=self._db,
+                project_id=project_id,
+                wave_number=wave_number,
+            )
+
+            if not context:
+                logger.warning(
+                    "Failed to collect wave reassessment context for project %s, wave %d.",
+                    project_id, wave_number,
+                )
+                return
+
+            logger.info(
+                "Collected wave reassessment context for project %s, wave %d.",
+                project_id, wave_number,
+            )
+
+            # --- Step 2: Evaluate via LLM ---
+            # Obtain budget from DI container (if available), else create a no-op instance
+            try:
+                from backend.container import Container
+                budget = Container.budget()
+            except Exception:
+                budget = BudgetManager(db=self._db)
+
+            planner = PlannerService(db=self._db, budget=budget)
+            result = await planner.evaluate_wave_reassessment(context)
+
+            logger.info(
+                "Wave reassessment for project %s, wave %d → %s: %s",
+                project_id, wave_number, result.outcome.value, result.rationale,
+            )
+
+            # --- Step 3: Persist reassessment decision ---
+            reassessment_details = {
+                "wave_number": wave_number,
+                "outcome": result.outcome.value,
+                "rationale": result.rationale,
+                "suggested_changes": result.suggested_changes,
+                "task_outcome_count": len(context.task_outcomes),
+                "knowledge_finding_count": len(context.knowledge_findings),
+            }
+
+            if self._db:
+                await self._db.execute_write(
+                    "INSERT OR IGNORE INTO sentinel_observations "
+                    "(id, project_id, task_id, category, severity, message, details_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(uuid.uuid4()),
+                        project_id,
+                        None,
+                        "wave_reassessment",
+                        obs.severity.value,
+                        f"Wave {wave_number} reassessment: {result.outcome.value}",
+                        json.dumps(reassessment_details),
+                        time.time(),
+                    ),
+                )
+
+            if self._decision_logger:
+                try:
+                    await self._decision_logger.log_decision(
+                        project_id=project_id,
+                        command=f"wave_reassessment:{result.outcome.value}",
+                        reasoning=result.rationale,
+                        confidence=0.8 if result.outcome == ReassessmentOutcome.CONTINUE_AS_PLANNED else 0.6,
+                        outcome=result.outcome.value,
+                        details=reassessment_details,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to log reassessment decision for project %s",
+                        project_id, exc_info=True,
+                    )
+
+            # --- Step 3b: Self-interrogation on non-trivial outcomes ---
+            if (
+                self._interrogator
+                and result.outcome != ReassessmentOutcome.CONTINUE_AS_PLANNED
+            ):
+                try:
+                    # Build rich context for the wave reassessment interrogation
+                    wave_project_summary = f"Project {project_id}, wave {wave_number} complete"
+                    wave_task_outcomes = ""
+                    if self._db:
+                        try:
+                            proj = await self._db.fetchone(
+                                "SELECT title, requirements FROM projects WHERE id = ?",
+                                (project_id,),
+                            )
+                            if proj:
+                                wave_project_summary = (
+                                    f"Project: {proj['title']}\n"
+                                    f"Requirements: {(proj['requirements'] or '')[:1000]}"
+                                )
+                            wave_tasks = await self._db.fetchall(
+                                "SELECT title, status, error, output_text FROM tasks "
+                                "WHERE project_id = ? AND wave = ?",
+                                (project_id, wave_number),
+                            )
+                            if wave_tasks:
+                                lines = []
+                                for wt in wave_tasks:
+                                    line = f"- {wt['title']} [{wt['status']}]"
+                                    if wt["error"]:
+                                        line += f" error: {wt['error'][:150]}"
+                                    elif wt["output_text"]:
+                                        line += f" output: {wt['output_text'][:150]}"
+                                    lines.append(line)
+                                wave_task_outcomes = (
+                                    f"Wave {wave_number} task outcomes:\n" + "\n".join(lines)
+                                )
+                        except Exception:
+                            pass
+
+                    inp = InterrogationInput(
+                        decision_context=DecisionContext.WAVE_REASSESSMENT,
+                        proposed_action=f"Wave {wave_number} reassessment: {result.outcome.value}",
+                        reasoning=result.rationale,
+                        is_coding_task=False,
+                        project_summary=wave_project_summary,
+                        world_state="\n".join(filter(None, [
+                            self._format_state_for_interrogation(),
+                            wave_task_outcomes,
+                        ])),
+                        decision_history=await self._format_decision_history_for_interrogation(),
+                    )
+                    interrogation = await self._interrogator.interrogate(inp)
+                    if interrogation is not None and not interrogation.proceed:
+                        logger.info(
+                            "Self-interrogation overrode reassessment %s for project %s "
+                            "(trigger=%s), escalating to human",
+                            result.outcome.value, project_id,
+                            interrogation.escalation_trigger,
+                        )
+                        original_outcome = result.outcome.value
+                        result.outcome = ReassessmentOutcome.ESCALATE_TO_HUMAN
+                        result.rationale = (
+                            f"Original outcome was {original_outcome} but "
+                            f"self-interrogation flagged knowledge gap: "
+                            f"{interrogation.escalation_trigger}. "
+                            f"Original rationale: {result.rationale}"
+                        )
+                except Exception:
+                    logger.debug(
+                        "Self-interrogation failed for wave reassessment, proceeding",
+                    )
+
+            # --- Step 4: Route based on outcome ---
+            if result.outcome == ReassessmentOutcome.CONTINUE_AS_PLANNED:
+                logger.info(
+                    "Wave %d reassessment: continuing as planned for project %s.",
+                    wave_number, project_id,
+                )
+                # Normal dispatch continues — no action needed.
+
+            elif result.outcome == ReassessmentOutcome.REPLAN_REMAINING:
+                logger.info(
+                    "Wave %d reassessment: replanning remaining waves for project %s.",
+                    wave_number, project_id,
+                )
+                # Execute the replan directly: cancel future tasks, regenerate plan, decompose
+                from backend.services.task_lifecycle import execute_replan
+                from backend.services.plan_sync import PlanSyncService
+                from backend.services.context_store_client import ContextStoreClient
+
+                plan_sync = None
+                try:
+                    ctx_client = ContextStoreClient()
+                    plan_sync = PlanSyncService(ctx_client, self._db)
+                except Exception:
+                    logger.debug("Could not create PlanSyncService for revision tracking")
+
+                replan_result = await execute_replan(
+                    db=self._db,
+                    budget=budget,
+                    plan_sync=plan_sync,
+                    project_id=project_id,
+                    completed_wave=wave_number,
+                    rationale=result.rationale,
+                    suggested_changes=result.suggested_changes,
+                    wave_context_json=context.model_dump_json(),
+                )
+
+                # Notify the bus so the executor and other listeners know about the replan
+                await self._bus.publish(SentinelMessage(
+                    topic="replan_required",
+                    source=f"plan_sentinel:{project_id}",
+                    payload={
+                        "type": "replan_completed",
+                        "project_id": project_id,
+                        "completed_wave": wave_number,
+                        "new_plan_id": replan_result.get("new_plan_id"),
+                        "new_tasks_created": replan_result.get("new_tasks_created"),
+                        "cancelled_count": replan_result.get("cancelled_count"),
+                        "revision_node_id": replan_result.get("revision_node_id"),
+                    },
+                ))
+
+            elif result.outcome == ReassessmentOutcome.ESCALATE_TO_HUMAN:
+                logger.warning(
+                    "Wave %d reassessment: escalating to human for project %s. Reason: %s",
+                    wave_number, project_id, result.rationale,
+                )
+
+                # Build the typed intervention proposal
+                from backend.models.schemas import HumanInterventionProposal
+                proposal = HumanInterventionProposal(
+                    project_id=project_id,
+                    wave_number=wave_number,
+                    rationale=result.rationale,
+                    reassessment_context=context,
+                    suggested_actions=result.suggested_changes,
+                )
+                proposal_dict = proposal.model_dump(mode="json")
+
+                # Build a synthetic observation for the intervention proposal
+                escalation_obs = SentinelObservation(
+                    project_id=project_id,
+                    task_id=None,
+                    category="wave_reassessment_escalation",
+                    severity=Severity.HIGH,
+                    message=(
+                        f"Wave {wave_number} reassessment requires human review: "
+                        f"{result.rationale}"
+                    ),
+                    details={
+                        "wave": wave_number,
+                        "outcome": result.outcome.value,
+                        "rationale": result.rationale,
+                        "suggested_changes": result.suggested_changes,
+                        "intervention_proposal": proposal_dict,
+                    },
+                )
+                await self._publish_intervention_proposal(
+                    InterventionAction.REORDER_WAVE,
+                    escalation_obs,
+                )
+
+                # Emit SSE event so the frontend can surface the proposal
+                if self._progress_manager:
+                    await self._progress_manager.push_event(
+                        project_id=project_id,
+                        event_type="escalation_proposal",
+                        message=(
+                            f"Wave {wave_number} requires human intervention: "
+                            f"{result.rationale}"
+                        ),
+                        **proposal_dict,
+                    )
+
+        except Exception:
+            logger.exception(
+                "Error during wave reassessment for project %s.", self._project_id,
+            )
+
+
     # Map state detection categories to bus topics
     _STATE_CATEGORY_TO_TOPIC: dict[str, str] = {
         "wave_complete": "state_change",
@@ -795,6 +1097,11 @@ class PlanSentinel:
             if dedup_key in self._state.emitted_observations:
                 continue
             self._state.emitted_observations.add(dedup_key)
+
+            # --- Athena Loop: Trigger Wave Reassessment ---
+            if obs.category == "wave_complete":
+                asyncio.ensure_future(self._trigger_wave_reassessment(obs))
+            # ----------------------------------------------
 
             # Publish to bus with the appropriate topic
             await self._publish_state_observation(obs)
@@ -993,10 +1300,13 @@ class PlanSentinel:
     # Map reasoner recommended_action strings to InterventionAction enum
     _REASONER_ACTION_MAP: dict[str, InterventionAction] = {
         "retry_task": InterventionAction.RETRY_TASK,
+        "retry_as_is": InterventionAction.RETRY_TASK,
         "release_claim": InterventionAction.RELEASE_CLAIM,
         "skip_task": InterventionAction.SKIP_TASK,
+        "skip": InterventionAction.SKIP_TASK,
         "reorder_wave": InterventionAction.REORDER_WAVE,
         "reassign_tier": InterventionAction.REASSIGN_TIER,
+        "modify_prompt": InterventionAction.MODIFY_PROMPT,
     }
 
     async def _handle_intervention(self, obs: SentinelObservation) -> None:
@@ -1042,6 +1352,26 @@ class PlanSentinel:
             return
         self._state.handled_interventions.add(dedup_key)
 
+        # --- Inject task error text for diagnosis ---
+        # For cascade_failure and task_stuck, enrich observation details
+        # with error text from PlanState so the reasoner can diagnose.
+        if obs.category in ("cascade_failure", "task_stuck"):
+            error_context: dict[str, str] = {}
+            if obs.category == "task_stuck" and obs.task_id:
+                # Single task — grab its error if available
+                err = self._state.task_errors.get(obs.task_id, "")
+                if err:
+                    error_context[obs.task_id] = err
+            elif obs.category == "cascade_failure":
+                # Multiple failed tasks — collect all their errors
+                failed_ids = (obs.details or {}).get("failed_task_ids", [])
+                for tid in failed_ids:
+                    err = self._state.task_errors.get(tid, "")
+                    if err:
+                        error_context[tid] = err
+            if error_context:
+                obs.details = {**(obs.details or {}), "task_errors": error_context}
+
         # --- Run iterative 5-Whys reasoner ---
         reasoning_result = None
         if self._reasoner:
@@ -1075,6 +1405,7 @@ class PlanSentinel:
             elif reasoner_action is not None:
                 # Confident with a concrete action → use it
                 action = reasoner_action
+                tier = InterventionTier.AUTO
                 logger.info(
                     "Reasoner recommends %s for %s (confidence=%.2f, root_cause=%s)",
                     action.value, obs.observation_id[:8],
@@ -1082,16 +1413,100 @@ class PlanSentinel:
                     reasoning_result.root_cause[:80],
                 )
 
+                # Merge fix_params from the reasoner into obs.details so the
+                # executor can access them (e.g. prompt_additions, new_tier).
+                fix_params = getattr(reasoning_result, "fix_params", None) or {}
+                if fix_params:
+                    obs.details = {**(obs.details or {}), **fix_params}
+
             # Log the full reasoning chain to sentinel_decisions
             await self._log_reasoning_decision(obs, reasoning_result, action)
 
+        # --- Self-interrogation gate: 6 questions before every action ---
+        interrogation_result = None
+        if self._interrogator and tier == InterventionTier.AUTO:
+            try:
+                # Determine if this is a coding-related intervention
+                is_coding = obs.category in (
+                    "task_stuck", "cascade_failure", "resource_unavailable",
+                )
+
+                # Gather task context from DB if available
+                task_desc = ""
+                project_summary = ""
+                if self._db and obs.task_id:
+                    try:
+                        task_row = await self._db.fetchone(
+                            "SELECT title, description, task_type FROM tasks WHERE id = ?",
+                            (obs.task_id,),
+                        )
+                        if task_row:
+                            task_desc = (
+                                f"Task: {task_row['title']} ({task_row['task_type']})\n"
+                                f"{task_row['description'][:1500]}"
+                            )
+                    except Exception:
+                        pass
+                if self._db:
+                    try:
+                        proj = await self._db.fetchone(
+                            "SELECT title, requirements FROM projects WHERE id = ?",
+                            (obs.project_id,),
+                        )
+                        if proj:
+                            project_summary = (
+                                f"Project: {proj['title']}\n"
+                                f"Requirements: {(proj['requirements'] or '')[:1000]}"
+                            )
+                    except Exception:
+                        pass
+
+                inp = InterrogationInput(
+                    decision_context=DecisionContext.SENTINEL_INTERVENTION,
+                    proposed_action=f"{action.value} on task {obs.task_id or 'unknown'}",
+                    reasoning=(
+                        reasoning_result.root_cause if reasoning_result
+                        else f"Rule-based: {obs.category}"
+                    ),
+                    is_coding_task=is_coding,
+                    task_description=task_desc,
+                    project_summary=project_summary,
+                    error_text=(obs.details or {}).get("task_errors", {}).get(
+                        obs.task_id or "", ""
+                    )[:1000] if obs.details else "",
+                    world_state=self._format_state_for_interrogation(),
+                    decision_history=await self._format_decision_history_for_interrogation(),
+                )
+                interrogation_result = await self._interrogator.interrogate(inp)
+            except Exception:
+                logger.debug(
+                    "Self-interrogation failed for %s, proceeding with original tier",
+                    obs.observation_id,
+                )
+
+            if interrogation_result is not None and not interrogation_result.proceed:
+                # Knowledge gap detected — escalate instead of auto-acting
+                logger.info(
+                    "Self-interrogation BLOCKED auto intervention %s for %s "
+                    "(trigger=%s, confidence=%.2f)",
+                    action.value,
+                    obs.observation_id[:8],
+                    interrogation_result.escalation_trigger,
+                    interrogation_result.overall_confidence,
+                )
+                tier = InterventionTier.SUPERVISED
+
         if tier == InterventionTier.AUTO:
             await self._execute_auto_intervention(
-                action, obs, reasoning_result=reasoning_result,
+                action, obs,
+                reasoning_result=reasoning_result,
+                interrogation_result=interrogation_result,
             )
         else:
             await self._publish_intervention_proposal(
-                action, obs, reasoning_result=reasoning_result,
+                action, obs,
+                reasoning_result=reasoning_result,
+                interrogation_result=interrogation_result,
             )
 
     async def _log_reasoning_decision(
@@ -1152,11 +1567,63 @@ class PlanSentinel:
                 "Failed to log reasoning decision for %s", obs.observation_id,
             )
 
+    # --- Self-interrogation helpers ---
+
+    def _format_state_for_interrogation(self) -> str:
+        """Summarize current plan state for the interrogator."""
+        lines = [f"Wave: {self._state.current_wave}"]
+        status_counts: dict[str, int] = {}
+        for s in self._state.task_statuses.values():
+            status_counts[s.value] = status_counts.get(s.value, 0) + 1
+        if status_counts:
+            lines.append(f"Tasks: {json.dumps(status_counts)}")
+        failing = {t: c for t, c in self._state.failure_counts.items() if c > 0}
+        if failing:
+            lines.append(f"Failures: {len(failing)} tasks with failures")
+        if self._state.budget_limit > 0:
+            pct = self._state.budget_spent / self._state.budget_limit * 100
+            lines.append(f"Budget: {pct:.0f}% spent")
+        return "\n".join(lines)
+
+    async def _format_decision_history_for_interrogation(self) -> str:
+        """Gather real decision history from DB + in-memory state."""
+        parts = []
+
+        # DB-backed history: sentinel observations for this project
+        if self._db:
+            try:
+                rows = await self._db.fetchall(
+                    "SELECT message, category, details_json FROM sentinel_observations "
+                    "WHERE project_id = ? AND category IN "
+                    "('intervention_result', 'intervention_proposal', "
+                    "'interrogation_concern', 'wave_reassessment') "
+                    "ORDER BY created_at DESC LIMIT 8",
+                    (self._project_id,),
+                )
+                if rows:
+                    lines = [r["message"][:150] for r in rows]
+                    parts.append(
+                        "Recent decisions (from DB):\n"
+                        + "\n".join(f"- {l}" for l in lines)
+                    )
+            except Exception:
+                pass
+
+        # In-memory session history (supplement, not primary)
+        if self._state.handled_interventions:
+            items = list(self._state.handled_interventions)[-5:]
+            parts.append(
+                "This session's interventions: "
+                + ", ".join(f"{a} on {t}" for a, t in items)
+            )
+
+        return "\n".join(parts) if parts else "No prior decisions found."
+
     # --- Auto-tier interventions ---
 
     async def _execute_auto_intervention(
         self, action: InterventionAction, obs: SentinelObservation,
-        *, reasoning_result=None,
+        *, reasoning_result=None, interrogation_result=None,
     ) -> None:
         """Execute an auto-tier intervention via the InterventionExecutor
         (or legacy inline calls) and publish the outcome."""
@@ -1183,6 +1650,10 @@ class PlanSentinel:
                     for tid in (obs.details or {}).get("failed_task_ids", []):
                         self._state.task_statuses[tid] = TaskState.PENDING
                         self._state.failure_counts[tid] = 0
+                if success and action == InterventionAction.MODIFY_PROMPT:
+                    task_id_mp = ir.task_id or obs.task_id
+                    if task_id_mp:
+                        self._state.task_statuses[task_id_mp] = TaskState.PENDING
             else:
                 # Legacy fallback — inline HTTP calls
                 if action == InterventionAction.RETRY_TASK:
@@ -1305,6 +1776,8 @@ class PlanSentinel:
             return await self._executor.reorder_wave(obs)
         elif action == InterventionAction.REASSIGN_TIER:
             return await self._executor.reassign_tier(obs)
+        elif action == InterventionAction.MODIFY_PROMPT:
+            return await self._executor.modify_prompt(obs)
         return InterventionResult(
             action=action.value, success=False, detail="unknown action",
         )
@@ -1394,6 +1867,7 @@ class PlanSentinel:
         obs: SentinelObservation,
         *,
         reasoning_result=None,
+        interrogation_result=None,
     ) -> None:
         """Publish a supervised intervention proposal for user approval.
 
@@ -1429,6 +1903,22 @@ class PlanSentinel:
                 f"Wave {wave} is fully stalled ({len(task_ids)} tasks). "
                 "Consider reordering remaining work or manual intervention."
             )
+
+        # Include self-interrogation results when they caused the escalation
+        if interrogation_result is not None:
+            payload["self_interrogation"] = {
+                "proceed": interrogation_result.proceed,
+                "escalation_trigger": interrogation_result.escalation_trigger,
+                "overall_confidence": interrogation_result.overall_confidence,
+                "answers": [
+                    {
+                        "question": a.question,
+                        "answer": a.answer,
+                        "confident": a.confident,
+                    }
+                    for a in interrogation_result.answers
+                ],
+            }
 
         # Include full reasoning chain when available
         if reasoning_result is not None:
