@@ -210,6 +210,15 @@ async def get_service(name: str):
 async def restart_service(name: str):
     """Restart an NSSM service."""
     _validate_service(name)
+
+    # Self-restart: exit the process and let NSSM bring us back
+    if name == "HekateAdmin":
+        log.info("Self-restart requested — exiting for NSSM to restart")
+        # Respond first, then exit after a short delay
+        import threading
+        threading.Timer(1.0, lambda: os._exit(0)).start()
+        return {"service": name, "action": "self_restart", "detail": "Exiting for NSSM restart"}
+
     log.info("Restarting service: %s", name)
 
     stop_result = _run(["nssm", "stop", name], timeout=15)

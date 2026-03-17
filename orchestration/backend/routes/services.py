@@ -1,10 +1,12 @@
 #  Orchestration Engine - Service Health Routes
 #
-#  Resource health check endpoints, model discovery state.
+#  Resource health check endpoints, model discovery state, NSSM service control.
 #
 #  Depends on: container.py, models/schemas.py, services/model_discovery.py
 #  Used by:    app.py
 
+import logging
+import subprocess
 import time
 
 from dependency_injector.wiring import inject, Provide
@@ -30,10 +32,59 @@ router = APIRouter(prefix="/services", tags=["services"])
 health_router = APIRouter(tags=["health"])
 
 
+_log = logging.getLogger("orchestration.services")
+
+# NSSM services that can be managed via the /nssm endpoint
+_ALLOWED_NSSM_SERVICES = {
+    "HekateOrchestration", "HekateContextStore", "HekateServer",
+    "HekatePythonWorker", "HekateTypeScriptWorker", "HekateCppWorker",
+    "HekateAdmin", "Ollama", "ComfyUI",
+}
+
+
 @health_router.get("/health")
 async def health_check():
     """Lightweight liveness probe. Returns 200 if the app is running."""
     return {"status": "ok"}
+
+
+@health_router.post("/nssm/{service}/{action}")
+async def nssm_control(service: str, action: str):
+    """Start/stop/restart any NSSM service. Unauthenticated — for cross-service use.
+
+    All Hekate services run as LocalSystem and can manage each other via NSSM.
+    This lets any service start Hades when it's down, or restart any peer.
+    """
+    if service not in _ALLOWED_NSSM_SERVICES:
+        raise HTTPException(404, f"Unknown service '{service}'")
+    if action not in ("start", "stop", "restart"):
+        raise HTTPException(400, f"Unknown action '{action}'. Valid: start, stop, restart")
+
+    # Don't let Orchestration stop itself
+    if service == "HekateOrchestration" and action in ("stop", "restart"):
+        raise HTTPException(400, "Cannot stop/restart self — use Hades or another service")
+
+    _log.info("NSSM %s %s", action, service)
+
+    if action == "restart":
+        subprocess.run(["nssm", "stop", service], capture_output=True, timeout=15)
+        import asyncio
+        await asyncio.sleep(2)
+        result = subprocess.run(["nssm", "start", service], capture_output=True, text=True, timeout=15)
+    else:
+        result = subprocess.run(["nssm", action, service], capture_output=True, text=True, timeout=15)
+
+    # Check new status
+    status_result = subprocess.run(["nssm", "status", service], capture_output=True, text=True, timeout=5)
+    nssm_status = status_result.stdout.strip() if status_result.returncode == 0 else "UNKNOWN"
+
+    return {
+        "service": service,
+        "action": action,
+        "returncode": result.returncode,
+        "status": nssm_status,
+        "detail": result.stdout.strip() if result.stdout else result.stderr.strip() if result.stderr else "",
+    }
 
 
 # ---------------------------------------------------------------------------
