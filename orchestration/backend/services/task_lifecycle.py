@@ -1164,6 +1164,25 @@ async def execute_task(
                         task_id, exc_info=True,
                     )
 
+                # --- Python syntax check on affected files ---
+                # Catch broken string literals and other syntax errors before commit
+                try:
+                    if _ft_cwd and _ft_affected:
+                        for _sc_file in _ft_affected:
+                            if _sc_file.endswith(".py"):
+                                _sc_path = os.path.join(_ft_cwd, _sc_file)
+                                if os.path.isfile(_sc_path):
+                                    try:
+                                        with open(_sc_path, "r", encoding="utf-8") as _sc_f:
+                                            compile(_sc_f.read(), _sc_file, "exec")
+                                    except SyntaxError as _sc_err:
+                                        logger.error(
+                                            "Syntax error in executor output %s line %s: %s",
+                                            _sc_file, _sc_err.lineno, _sc_err.msg,
+                                        )
+                except Exception:
+                    logger.debug("Python syntax check failed (non-blocking)", exc_info=True)
+
                 # --- Code review cycle (post-verification) ---
                 # Reviews the git diff like a senior dev, iterates if needed,
                 # then commits approved changes.
@@ -1511,11 +1530,8 @@ async def verify_csharp_build(csproj_path: str) -> tuple[bool, str]:
         if "error CS" in line or "error :" in line
     ]
     if error_lines:
-        return False, "Build errors:
-" + "
-".join(error_lines[:20])
-    return False, f"Build failed:
-{output[:2000]}"
+        return False, "Build errors:\n" + "\n".join(error_lines[:20])
+    return False, f"Build failed:\n{output[:2000]}"
 
 
 # ---------------------------------------------------------------------------
