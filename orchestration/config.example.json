@@ -70,13 +70,13 @@
           "name": "sliding_5h",
           "duration_hours": 5,
           "metric": "tokens",
-          "limit": 88000
+          "limit": 220000
         },
         {
           "name": "weekly",
           "duration_hours": 168,
           "metric": "tokens",
-          "limit": 500000
+          "limit": 5800000
         }
       ]
     },

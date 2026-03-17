@@ -5,6 +5,14 @@
       "command": "python",
       "args": ["tools/agent-context-mcp/server.py"],
       "env": {}
+    },
+    "comfyui-mcp": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["tools/comfyui-mcp/server.py"],
+      "env": {
+        "COMFYUI_URL": "http://127.0.0.1:8188"
+      }
     }
   }
 }
