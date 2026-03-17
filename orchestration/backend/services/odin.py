@@ -263,7 +263,7 @@ class Odin:
         system_prompt = build_system_prompt(world, self._recent_decisions)
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "What needs attention? If everything looks healthy, say so and don't call any tools."},
+            {"role": "user", "content": "/no_think\nWhat needs attention? If everything looks healthy, say so and don't call any tools."},
         ]
 
         decisions = []
