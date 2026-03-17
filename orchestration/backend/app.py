@@ -102,8 +102,17 @@ async def lifespan(app: FastAPI):
         stack.push_async_callback(model_discovery.close)
         logger.info("Model discovery completed")
 
-        await system_sentinel.start()
-        stack.push_async_callback(system_sentinel.stop)
+        # Sentinel engine: "odin" (LLM-driven) or "legacy" (rule-based)
+        sentinel_engine = cfg("sentinel.engine", "odin")
+        if sentinel_engine == "odin":
+            odin = container.odin()
+            await odin.start()
+            stack.push_async_callback(odin.stop)
+            logger.info("Odin overseer started (model=%s)", cfg("odin.model", "qwen3.5:latest"))
+        else:
+            await system_sentinel.start()
+            stack.push_async_callback(system_sentinel.stop)
+            logger.info("Legacy sentinel started")
 
         await executor.start()
         stack.push_async_callback(executor.stop)

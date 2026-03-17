@@ -41,6 +41,9 @@ VALID_TOPICS: frozenset[str] = frozenset({
     "dispatch_advisory",
     # Athena Loop (wave reassessment)
     "replan_required",
+    # Odin (LLM-driven overseer)
+    "odin_observation",
+    "odin_decision",
 })
 
 # Type alias for async subscriber callbacks
@@ -96,6 +99,11 @@ class SentinelBus:
                 )
 
         return delivered
+
+    async def publish_dict(self, topic: str, payload: dict, source: str = "odin") -> int:
+        """Convenience: publish a dict payload without constructing SentinelMessage."""
+        msg = SentinelMessage(topic=topic, source=source, payload=payload)
+        return await self.publish(msg)
 
     def subscribe(
         self, *topics: SentinelTopic,

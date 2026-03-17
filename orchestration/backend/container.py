@@ -23,6 +23,8 @@ from backend.services.progress import ProgressManager
 from backend.services.provider_quota import ProviderQuotaManager
 from backend.services.resource_monitor import ResourceMonitor
 from backend.services.sentinel.system_sentinel import SystemSentinel
+from backend.services.sentinel.bus import SentinelBus
+from backend.services.odin import Odin
 from backend.services.context_store_client import ContextStoreClient
 from backend.services.diagnostic_ingest import DiagnosticIngester
 from backend.services.plan_sync import PlanSyncService
@@ -81,8 +83,12 @@ class Container(containers.DeclarativeContainer):
     progress = providers.Singleton(ProgressManager, db=db)
     provider_quota = providers.Singleton(ProviderQuotaManager, db=db)
     resource_monitor = providers.Singleton(ResourceMonitor)
+    sentinel_bus = providers.Singleton(SentinelBus)
     system_sentinel = providers.Singleton(
         SystemSentinel, resource_monitor=resource_monitor, progress_manager=progress, db=db,
+    )
+    odin = providers.Singleton(
+        Odin, db=db, resource_monitor=resource_monitor, bus=sentinel_bus, progress_manager=progress,
     )
     diagnostic_ingester = providers.Singleton(DiagnosticIngester)
     model_discovery = providers.Singleton(ModelDiscoveryService)
