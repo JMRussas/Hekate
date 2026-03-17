@@ -31,6 +31,7 @@ import uuid
 import httpx
 
 from backend.config import cfg
+from backend.services.llm_router import _resolve_cmd
 from backend.services.sentinel.bus import SentinelBus
 from backend.services.sentinel.decision_logger import DecisionLogger
 
@@ -385,10 +386,13 @@ class Odin:
 
         prompt = "\n\n".join(parts)
 
-        # Run claude CLI
+        # Run claude CLI — resolve full path to handle missing PATH in NSSM context
+        claude_bin = _resolve_cmd("claude")
+        if not claude_bin:
+            raise FileNotFoundError("claude CLI not found on PATH or in npm global bin")
         proc = await asyncio.to_thread(
             subprocess.run,
-            ["claude", "--print", "-", "--output-format", "text", "--model", ODIN_MODEL],
+            [claude_bin, "--print", "-", "--output-format", "text", "--model", ODIN_MODEL],
             input=prompt, capture_output=True, text=True, timeout=120,
         )
 

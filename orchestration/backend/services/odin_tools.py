@@ -249,7 +249,7 @@ TOOLS: list[dict] = [
                 "properties": {
                     "name": {"type": "string", "description": "Short project name."},
                     "requirements": {"type": "string", "description": "What the project should accomplish. Be specific."},
-                    "repo_path": {"type": "string", "description": "Git repo path for the project. Use C:/Users/jruss/Documents/GitHub/Hekate for Hekate work."},
+                    "repo_path": {"type": "string", "description": "Git repo path for the project. Use C:/Users/jruss/Documents/GitHub/Hekate for Hekate work, or omit to use the default workspace D:/Conversations/Odin/."},
                 },
                 "required": ["name", "requirements"],
             },
@@ -841,7 +841,7 @@ async def _get_recent_completions(db: Database, bus: SentinelBus, args: dict) ->
 async def _create_project(db: Database, bus: SentinelBus, args: dict) -> str:
     name = args.get("name")
     requirements = args.get("requirements")
-    repo_path = args.get("repo_path", "C:/Users/jruss/Documents/GitHub/Hekate")
+    repo_path = args.get("repo_path", "D:/Conversations/Odin")
     if not name or not requirements:
         return "Error: name and requirements are required."
 
