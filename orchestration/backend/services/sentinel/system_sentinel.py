@@ -37,6 +37,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+
+
 # How often the sentinel polls resource health (seconds)
 DEFAULT_POLL_INTERVAL = 30.0
 
@@ -204,33 +207,11 @@ class SystemSentinel:
             )
             return existing
 
-        # Create InterventionExecutor with DB access for tier reassignment
-        from backend.services.sentinel.intervention_executor import InterventionExecutor
-        executor = InterventionExecutor(
-            base_url="http://localhost:5200",
-            bus=self._bus,
-            db=self._db,
-        )
-
-        # Create reasoner + interrogator for intelligent decision-making
-        from backend.config import INTERROGATION_ENABLED, INTERROGATION_MODEL
-        from backend.services.sentinel.interrogator import SelfInterrogator
-        from backend.services.sentinel.reasoner import SentinelReasoner
-
-        reasoner = SentinelReasoner(enabled=True)
-        interrogator = SelfInterrogator(
-            enabled=INTERROGATION_ENABLED,
-            model=INTERROGATION_MODEL,
-        )
-
         sentinel = PlanSentinel(
             project_id=project_id,
             bus=self._bus,
             progress_manager=self._progress_manager,
             db=self._db,
-            reasoner=reasoner,
-            interrogator=interrogator,
-            intervention_executor=executor,
         )
         await sentinel.start()
         self._plan_sentinels[project_id] = sentinel
@@ -485,77 +466,20 @@ class SystemSentinel:
 
         self._stale_code_proposed = True
 
-        if running_count == 0:
-            # AUTO — no tasks running, restart immediately
-            logger.info("Stale code detected, no tasks running — auto-restarting: %s", reason)
-            await self._bus.publish(SentinelMessage(
-                topic="intervention_proposal",
-                source="system_sentinel",
-                payload={
-                    "type": "restart_server",
-                    "action": "restart_server",
-                    "tier": "auto",
-                    "reason": reason,
-                    "flag_file": flag_exists,
-                    "stale_files": stale_files[:20],
-                },
-            ))
-
-            # Execute restart directly
-            from backend.services.sentinel.intervention_executor import InterventionExecutor
-            executor = InterventionExecutor(
-                base_url="http://localhost:5200",
-                bus=self._bus,
-                db=self._db,
-            )
-            result = await executor.restart_server(reason)
-            if result.success:
-                logger.info("Auto-restart completed successfully")
-                # Clean up the flag file after successful restart
-                await asyncio.to_thread(self._remove_restart_flag)
-            else:
-                logger.warning("Auto-restart failed: %s", result.detail)
-            await executor.close()
-        else:
-            # SUPERVISED — tasks are running, propose for human approval
-            # Fetch details about running tasks for the proposal
-            try:
-                task_rows = await self._db.fetchall(
-                    "SELECT id, title, status, model_tier, project_id FROM tasks "
-                    "WHERE status IN ('running', 'queued') LIMIT 20",
-                    (),
-                )
-                running_tasks = [
-                    {"id": r["id"], "title": r["title"], "status": r["status"],
-                     "model_tier": r["model_tier"], "project_id": r["project_id"]}
-                    for r in task_rows
-                ]
-            except Exception:
-                running_tasks = []
-
-            logger.info(
-                "Stale code detected but %d task(s) running — proposing supervised restart: %s",
-                running_count, reason,
-            )
-            await self._bus.publish(SentinelMessage(
-                topic="intervention_proposal",
-                source="system_sentinel",
-                payload={
-                    "type": "restart_server_proposal",
-                    "action": "restart_server",
-                    "tier": "supervised",
-                    "reason": reason,
-                    "flag_file": flag_exists,
-                    "stale_files": stale_files[:20],
-                    "running_count": running_count,
-                    "running_tasks": running_tasks,
-                    "recommendation": (
-                        f"Server code is stale ({reason}) but {running_count} task(s) "
-                        "are currently running. Approve to restart after tasks complete, "
-                        "or reject to defer."
-                    ),
-                },
-            ))
+        # Publish observation for Odin to handle reasoning and intervention
+        logger.info("Stale code detected — forwarding to Odin: %s", reason)
+        await self._bus.publish(SentinelMessage(
+            topic="odin_anomaly",
+            source="system_sentinel",
+            payload={
+                "type": "stale_code_detected",
+                "severity": severity.value,
+                "summary": f"Stale code detected: {reason}",
+                "flag_file": flag_exists,
+                "stale_files": stale_files[:20],
+                "running_count": running_count,
+            },
+        ))
 
     def _scan_stale_code(self) -> tuple[bool, list[str]]:
         """Synchronous filesystem scan for stale code indicators.

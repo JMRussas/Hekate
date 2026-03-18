@@ -17,14 +17,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        'odin_state',
-        sa.Column('id', sa.Text(), primary_key=True, server_default='singleton'),
-        sa.Column('world_model_json', sa.Text(), nullable=False),
-        sa.Column('last_tick_at', sa.Float(), nullable=False),
-        sa.Column('decisions_count', sa.Integer(), server_default='0'),
-        sa.Column('updated_at', sa.Float(), nullable=False),
-    )
+    # Idempotent: table may already exist if created by application code
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    if 'odin_state' not in inspector.get_table_names():
+        op.create_table(
+            'odin_state',
+            sa.Column('id', sa.Text(), primary_key=True, server_default='singleton'),
+            sa.Column('world_model_json', sa.Text(), nullable=False),
+            sa.Column('last_tick_at', sa.Float(), nullable=False),
+            sa.Column('decisions_count', sa.Integer(), server_default='0'),
+            sa.Column('updated_at', sa.Float(), nullable=False),
+        )
 
 
 def downgrade() -> None:

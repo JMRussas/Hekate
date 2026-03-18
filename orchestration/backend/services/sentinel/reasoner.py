@@ -19,6 +19,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from backend.services.llm_router import call_llm
+from backend.services.prompt_renderer import PromptSpec
 from backend.utils.json_utils import extract_json_object
 
 if TYPE_CHECKING:
@@ -288,9 +289,17 @@ class SentinelReasoner:
                     self._context, observation, sources_to_query
                 )
 
-            # Call LLM
+            # Call LLM via PromptSpec — re-rendered per provider in fallback chain
             user_message = _build_step_message(
                 observation, state, why_chain, evidence, step_num
+            )
+
+            spec = PromptSpec(
+                role="reasoner",
+                identity=_SYSTEM_PROMPT,
+                task_description=user_message,
+                output_format="json",
+                suppressions=["Do not include markdown fences."],
             )
 
             try:
@@ -299,7 +308,7 @@ class SentinelReasoner:
                     llm_kwargs["model"] = self._model
 
                 response = await call_llm(
-                    _SYSTEM_PROMPT, user_message, **llm_kwargs
+                    spec=spec, **llm_kwargs
                 )
             except Exception as exc:
                 logger.warning("Reasoner LLM call failed at step %d: %s", step_num, exc)

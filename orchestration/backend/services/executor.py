@@ -28,7 +28,12 @@ from backend.config import (
     STALENESS_TIMEOUT,
     TICK_INTERVAL,
     WAVE_CHECKPOINTS,
+    cfg,
 )
+
+# Feature flag: when True, the executor skips self-dispatch and waits for
+# Odin to publish dispatch_command events via the sentinel bus.
+ODIN_DISPATCH = cfg("odin.dispatch_enabled", False)
 from backend.models.enums import ExecutionMode, ModelTier, ProjectStatus, TaskStatus
 from backend.db.connection import parse_rowcount
 from backend.services.model_router import calculate_cost, get_model_id
@@ -49,7 +54,7 @@ class Executor:
 
     def __init__(self, db, budget, progress, resource_monitor, tool_registry,
                  http_client=None, rag_cache=None, diagnostic_ingester=None,
-                 quota_manager=None, system_sentinel=None):
+                 quota_manager=None, system_sentinel=None, bus=None):
         self._db = db
         self._budget = budget
         self._progress = progress
@@ -60,6 +65,7 @@ class Executor:
         self._diagnostic_ingester = diagnostic_ingester
         self._quota_manager = quota_manager  # Optional; skips quota check when None
         self._system_sentinel = system_sentinel  # Optional; manages Plan Sentinel lifecycle
+        self._bus = bus  # SentinelBus for dispatch_command subscription (Odin mode)
         self._max_concurrent = MAX_CONCURRENT_TASKS
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
         self._task: asyncio.Task | None = None
@@ -72,16 +78,152 @@ class Executor:
         self._git = GitService(db=db)
         self._branch_confirmed: set[str] = set()  # project IDs with branch already verified
         self._worktrees: dict[str, str] = {}  # project_id → worktree path
+        self._bus_unsub: callable | None = None  # Unsubscribe handle for dispatch_command
 
     async def start(self):
-        """Start the executor loop. Recovers stale tasks from prior crashes."""
+        """Start the executor loop. Recovers stale tasks from prior crashes.
+
+        When ODIN_DISPATCH is enabled and a bus is available, subscribes to
+        ``dispatch_command`` events so Odin controls which tasks run.
+        """
         if self._running:
             return
         self._running = True
         self._client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
         await self._recover_stale_tasks()
+
+        # Subscribe to Odin dispatch commands when the feature flag is on
+        if ODIN_DISPATCH and self._bus is not None:
+            self._bus_unsub = self._bus.on("dispatch_command", self._handle_dispatch_command)
+            logger.info("Executor subscribed to dispatch_command (Odin mode)")
+        elif ODIN_DISPATCH and self._bus is None:
+            logger.warning(
+                "ODIN_DISPATCH enabled but no bus available — "
+                "falling back to self-dispatch"
+            )
+
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Executor started")
+
+    async def dispatch_task(self, task_id: str) -> bool:
+        """Dispatch a specific task by ID.
+
+        Called via bus ``dispatch_command`` in Odin mode, or directly by Odin
+        tools.  Publishes ``worker_event`` messages back to the bus so Odin
+        can track task lifecycle.
+        """
+        row = await self._db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
+        if not row:
+            logger.warning("dispatch_task: task %s not found", task_id[:8])
+            return False
+        if row["status"] not in (TaskStatus.PENDING, TaskStatus.BLOCKED):
+            logger.warning("dispatch_task: task %s in %s state, skipping", task_id[:8], row["status"])
+            return False
+
+        # Transition to queued and execute
+        claim_status = await self._db.execute_write(
+            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4",
+            (TaskStatus.QUEUED, time.time(), task_id, row["status"]),
+        )
+        if parse_rowcount(claim_status) == 0:
+            return False
+
+        # Notify Odin the task is starting
+        await self._publish_worker_event(task_id, row["project_id"], "started", row["title"])
+
+        self._dispatched.add(task_id)
+        handle = asyncio.create_task(
+            self._execute_and_report(
+                task_row=row,
+                task_id=task_id,
+            )
+        )
+        self._in_flight.add(handle)
+        handle.add_done_callback(self._in_flight.discard)
+        logger.info("dispatch_task: dispatched %s (%s)", task_id[:8], row["title"])
+        return True
+
+    async def _execute_and_report(self, task_row, task_id: str) -> None:
+        """Run execute_task and publish a worker_event on completion or failure."""
+        project_id = task_row["project_id"]
+        title = task_row["title"]
+        try:
+            await execute_task(
+                task_row=task_row,
+                est_cost=0.0,  # CLI tiers are subscription-billed
+                db=self._db,
+                budget=self._budget,
+                progress=self._progress,
+                tool_registry=self._tool_registry,
+                http_client=self._http,
+                client=self._client,
+                semaphore=self._semaphore,
+                dispatched=self._dispatched,
+                retry_after=self._retry_after,
+                rag_cache=self._rag_cache,
+                diagnostic_ingester=self._diagnostic_ingester,
+            )
+            # Check final status from DB to report accurately
+            final = await self._db.fetchone(
+                "SELECT status, error FROM tasks WHERE id = $1", (task_id,)
+            )
+            if final and final["status"] in (TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW):
+                await self._publish_worker_event(task_id, project_id, "completed", title)
+            elif final:
+                await self._publish_worker_event(
+                    task_id, project_id, "failed", title,
+                    error=final.get("error", ""),
+                )
+        except Exception as exc:
+            logger.error("execute_and_report: task %s raised: %s", task_id[:8], exc)
+            await self._publish_worker_event(
+                task_id, project_id, "failed", title, error=str(exc),
+            )
+
+    async def _handle_dispatch_command(self, message) -> None:
+        """Handle a dispatch_command from Odin via the sentinel bus.
+
+        Expected payload::
+
+            {
+                "task_id": "abc123",
+                "provider": "claude_code",   # optional
+                "model": "...",              # optional
+                "priority": 1,              # optional
+                "timeout": 600,             # optional
+            }
+        """
+        payload = message.payload or {}
+        task_id = payload.get("task_id")
+        if not task_id:
+            logger.warning("dispatch_command missing task_id: %s", payload)
+            return
+
+        logger.info(
+            "dispatch_command received: task=%s provider=%s",
+            task_id[:8], payload.get("provider", "default"),
+        )
+        ok = await self.dispatch_task(task_id)
+        if not ok:
+            logger.warning("dispatch_command: could not dispatch task %s", task_id[:8])
+
+    async def _publish_worker_event(
+        self, task_id: str, project_id: str, event: str, title: str = "",
+        error: str = "",
+    ) -> None:
+        """Publish a worker_event to the bus (best-effort, never raises)."""
+        if self._bus is None:
+            return
+        try:
+            await self._bus.publish_dict("worker_event", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "event": event,  # started | completed | failed
+                "title": title,
+                "error": error,
+            }, source="executor")
+        except Exception:
+            logger.debug("Failed to publish worker_event for %s", task_id[:8])
 
     async def stop(self, grace_seconds: float | None = None):
         """Stop the executor loop, waiting for in-flight tasks to finish.
@@ -126,6 +268,11 @@ class Executor:
         reset_count = parse_rowcount(reset_status)
         if reset_count > 0:
             logger.info("Reset %d running/queued task(s) to pending on shutdown", reset_count)
+
+        # Unsubscribe from bus before clearing state
+        if self._bus_unsub is not None:
+            self._bus_unsub()
+            self._bus_unsub = None
 
         # Close the shared Anthropic client and clear state
         if self._client:
@@ -387,116 +534,123 @@ class Executor:
             current_wave = wave_row["w"] if wave_row and wave_row["w"] is not None else 0
             logger.debug("TICK: project %s wave=%s", pid[:8], current_wave)
 
-            # Find ready tasks: pending with all deps resolved, filtered to current wave.
-            # A dep is "resolved" when completed, or needs_review WITH non-empty output.
-            # needs_review with empty output is a hollow completion — not resolved.
-            ready = await self._db.fetchall(
-                "SELECT t.* FROM tasks t "
-                "LEFT JOIN task_deps d ON d.task_id = t.id "
-                "LEFT JOIN tasks dep ON dep.id = d.depends_on "
-                "  AND (dep.status NOT IN ($1, $2) "
-                "       OR (dep.status = $3 AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))) "
-                "WHERE t.project_id = $4 AND t.status = $5 AND t.wave = $6 "
-                "GROUP BY t.id HAVING COUNT(dep.id) = 0 "
-                "ORDER BY t.priority ASC",
-                (TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
-                 TaskStatus.NEEDS_REVIEW,
-                 pid, TaskStatus.PENDING, current_wave),
-            )
-            logger.info("TICK: found %d ready tasks in wave %s for project %s", len(ready), current_wave, pid[:8])
-
-            for task_row in ready:
-                task_id = task_row["id"]
-                logger.info("TICK: evaluating task %s tier=%s title=%s", task_id[:8], task_row["model_tier"], task_row["title"])
-
-                # Execution mode gate: skip tasks the executor shouldn't dispatch
-                if execution_mode == ExecutionMode.EXTERNAL:
-                    continue  # External executors handle all tasks
-                tier = ModelTier(task_row["model_tier"])
-                if execution_mode == ExecutionMode.HYBRID and tier != ModelTier.OLLAMA:
-                    continue  # Hybrid: executor only handles Ollama tasks
-
-                # Skip tasks still in retry backoff
-                if task_id in self._retry_after and time.time() < self._retry_after[task_id]:
-                    logger.info("TICK: task %s skipped (retry backoff)", task_id[:8])
-                    continue
-
-                # Check resource availability for this task
-                if not self._resources_available(task_row):
-                    logger.info("TICK: task %s skipped (resources unavailable for tier %s)", task_id[:8], task_row["model_tier"])
-                    continue
-
-                tier = ModelTier(task_row["model_tier"])
-
-                # Check provider quota before reserving budget
-                if self._quota_manager is not None:
-                    provider = _TIER_TO_PROVIDER.get(tier)
-                    if provider and not await self._quota_manager.is_provider_available(provider):
-                        logger.debug("TICK: task %s skipped (provider %s over quota)", task_id[:8], provider)
-                        continue
-
-                    # Check per-model-family quota (e.g., Opus vs Sonnet independent limits)
-                    model_id = get_model_id(tier)
-                    if not await self._quota_manager.is_model_available(model_id):
-                        logger.info("TICK: task %s skipped (model %s over quota)", task_id[:8], model_id)
-                        continue
-
-                # Check per-project budget using reserve_spend (prevents TOCTOU race).
-                # CLI tiers are subscription-billed ($0/call) — skip budget reservation.
-                # When no API key is set, haiku/sonnet/opus route through CLI too.
-                est_cost = 0.0
-                _FREE_EXECUTION = (
-                    ModelTier.OLLAMA, ModelTier.CLAUDE_CODE,
-                    ModelTier.GEMINI_CLI, ModelTier.CODEX_CLI,
+            # When Odin dispatch is enabled AND the bus subscription is active,
+            # skip self-dispatch — Odin publishes dispatch_command events via
+            # the bus.  If the bus is unavailable (graceful degradation), fall
+            # back to self-dispatch so the system keeps running without Odin.
+            if ODIN_DISPATCH and self._bus_unsub is not None:
+                logger.debug("TICK: Odin dispatch enabled, skipping self-dispatch for project %s", pid[:8])
+            else:
+                # Find ready tasks: pending with all deps resolved, filtered to current wave.
+                # A dep is "resolved" when completed, or needs_review WITH non-empty output.
+                # needs_review with empty output is a hollow completion — not resolved.
+                ready = await self._db.fetchall(
+                    "SELECT t.* FROM tasks t "
+                    "LEFT JOIN task_deps d ON d.task_id = t.id "
+                    "LEFT JOIN tasks dep ON dep.id = d.depends_on "
+                    "  AND (dep.status NOT IN ($1, $2) "
+                    "       OR (dep.status = $3 AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))) "
+                    "WHERE t.project_id = $4 AND t.status = $5 AND t.wave = $6 "
+                    "GROUP BY t.id HAVING COUNT(dep.id) = 0 "
+                    "ORDER BY t.priority ASC",
+                    (TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
+                     TaskStatus.NEEDS_REVIEW,
+                     pid, TaskStatus.PENDING, current_wave),
                 )
-                api_tier_via_cli = (
-                    tier not in _FREE_EXECUTION and self._client is None
-                )
-                if tier not in _FREE_EXECUTION and not api_tier_via_cli:
-                    est_cost = calculate_cost(get_model_id(tier), _EST_TASK_INPUT_TOKENS, task_row["max_tokens"])
-                    if not await self._budget.reserve_spend(est_cost):
-                        continue
-                    if not await self._budget.reserve_spend_project(pid, est_cost):
-                        await self._budget.release_reservation(est_cost)
+                logger.info("TICK: found %d ready tasks in wave %s for project %s", len(ready), current_wave, pid[:8])
+
+                for task_row in ready:
+                    task_id = task_row["id"]
+                    logger.info("TICK: evaluating task %s tier=%s title=%s", task_id[:8], task_row["model_tier"], task_row["title"])
+
+                    # Execution mode gate: skip tasks the executor shouldn't dispatch
+                    if execution_mode == ExecutionMode.EXTERNAL:
+                        continue  # External executors handle all tasks
+                    tier = ModelTier(task_row["model_tier"])
+                    if execution_mode == ExecutionMode.HYBRID and tier != ModelTier.OLLAMA:
+                        continue  # Hybrid: executor only handles Ollama tasks
+
+                    # Skip tasks still in retry backoff
+                    if task_id in self._retry_after and time.time() < self._retry_after[task_id]:
+                        logger.info("TICK: task %s skipped (retry backoff)", task_id[:8])
                         continue
 
-                # Atomic claim: pre-add to _dispatched to prevent duplicate dispatch,
-                # then verify via atomic DB update. Remove on contention.
-                if task_row["id"] in self._dispatched:
-                    if est_cost > 0:
-                        await self._budget.release_reservation(est_cost)
-                        await self._budget.release_reservation_project(pid, est_cost)
-                    continue
-                self._dispatched.add(task_row["id"])
-                claim_status = await self._db.execute_write(
-                    "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4",
-                    (TaskStatus.QUEUED, time.time(), task_row["id"], TaskStatus.PENDING),
-                )
-                if parse_rowcount(claim_status) == 0:
-                    self._dispatched.discard(task_row["id"])
-                    if est_cost > 0:
-                        await self._budget.release_reservation(est_cost)
-                        await self._budget.release_reservation_project(pid, est_cost)
-                    continue  # Another tick already claimed it
-                handle = asyncio.create_task(
-                    execute_task(
-                        task_row=task_row,
-                        est_cost=est_cost,
-                        db=self._db,
-                        budget=self._budget,
-                        progress=self._progress,
-                        tool_registry=self._tool_registry,
-                        http_client=self._http,
-                        client=self._client,
-                        semaphore=self._semaphore,
-                        dispatched=self._dispatched,
-                        retry_after=self._retry_after,
-                        rag_cache=self._rag_cache,
-                        diagnostic_ingester=self._diagnostic_ingester,
+                    # Check resource availability for this task
+                    if not self._resources_available(task_row):
+                        logger.info("TICK: task %s skipped (resources unavailable for tier %s)", task_id[:8], task_row["model_tier"])
+                        continue
+
+                    tier = ModelTier(task_row["model_tier"])
+
+                    # Check provider quota before reserving budget
+                    if self._quota_manager is not None:
+                        provider = _TIER_TO_PROVIDER.get(tier)
+                        if provider and not await self._quota_manager.is_provider_available(provider):
+                            logger.debug("TICK: task %s skipped (provider %s over quota)", task_id[:8], provider)
+                            continue
+
+                        # Check per-model-family quota (e.g., Opus vs Sonnet independent limits)
+                        model_id = get_model_id(tier)
+                        if not await self._quota_manager.is_model_available(model_id):
+                            logger.info("TICK: task %s skipped (model %s over quota)", task_id[:8], model_id)
+                            continue
+
+                    # Check per-project budget using reserve_spend (prevents TOCTOU race).
+                    # CLI tiers are subscription-billed ($0/call) — skip budget reservation.
+                    # When no API key is set, haiku/sonnet/opus route through CLI too.
+                    est_cost = 0.0
+                    _FREE_EXECUTION = (
+                        ModelTier.OLLAMA, ModelTier.CLAUDE_CODE,
+                        ModelTier.GEMINI_CLI, ModelTier.CODEX_CLI,
                     )
-                )
-                self._in_flight.add(handle)
-                handle.add_done_callback(self._in_flight.discard)
+                    api_tier_via_cli = (
+                        tier not in _FREE_EXECUTION and self._client is None
+                    )
+                    if tier not in _FREE_EXECUTION and not api_tier_via_cli:
+                        est_cost = calculate_cost(get_model_id(tier), _EST_TASK_INPUT_TOKENS, task_row["max_tokens"])
+                        if not await self._budget.reserve_spend(est_cost):
+                            continue
+                        if not await self._budget.reserve_spend_project(pid, est_cost):
+                            await self._budget.release_reservation(est_cost)
+                            continue
+
+                    # Atomic claim: pre-add to _dispatched to prevent duplicate dispatch,
+                    # then verify via atomic DB update. Remove on contention.
+                    if task_row["id"] in self._dispatched:
+                        if est_cost > 0:
+                            await self._budget.release_reservation(est_cost)
+                            await self._budget.release_reservation_project(pid, est_cost)
+                        continue
+                    self._dispatched.add(task_row["id"])
+                    claim_status = await self._db.execute_write(
+                        "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4",
+                        (TaskStatus.QUEUED, time.time(), task_row["id"], TaskStatus.PENDING),
+                    )
+                    if parse_rowcount(claim_status) == 0:
+                        self._dispatched.discard(task_row["id"])
+                        if est_cost > 0:
+                            await self._budget.release_reservation(est_cost)
+                            await self._budget.release_reservation_project(pid, est_cost)
+                        continue  # Another tick already claimed it
+                    handle = asyncio.create_task(
+                        execute_task(
+                            task_row=task_row,
+                            est_cost=est_cost,
+                            db=self._db,
+                            budget=self._budget,
+                            progress=self._progress,
+                            tool_registry=self._tool_registry,
+                            http_client=self._http,
+                            client=self._client,
+                            semaphore=self._semaphore,
+                            dispatched=self._dispatched,
+                            retry_after=self._retry_after,
+                            rag_cache=self._rag_cache,
+                            diagnostic_ingester=self._diagnostic_ingester,
+                        )
+                    )
+                    self._in_flight.add(handle)
+                    handle.add_done_callback(self._in_flight.discard)
 
             # Check for wave completion → PR creation + optional checkpoint pause
             from backend.config import REVIEW_CYCLE_ENABLED, REVIEW_PR_ON_WAVE

@@ -40,6 +40,7 @@ logger = logging.getLogger("orchestration.odin")
 MAX_ROUNDS = 4
 TICK_INTERVAL = int(cfg("odin.tick_interval", 30))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", cfg("ollama.url", "http://localhost:11434"))
+LLM_GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", cfg("llm_gateway.url", "http://localhost:5210"))
 ODIN_PROVIDER = cfg("odin.provider", "claude")  # "claude" or "ollama"
 ODIN_MODEL = cfg("odin.model", "sonnet")  # claude: sonnet/haiku/opus, ollama: qwen3.5:latest etc
 STALENESS_THRESHOLD = int(cfg("odin.staleness_seconds", 300))
@@ -71,6 +72,8 @@ class Odin:
         self._last_tick_at: float = 0
         self._decisions_count: int = 0
         self._recent_decisions: list[dict] = []
+        self._priority_queue: list[str] = []
+        self._unsub_hooks: list = []
 
     @property
     def running(self) -> bool:
@@ -87,11 +90,24 @@ class Odin:
         self._running = True
         await self._load_state()
         self._task = asyncio.create_task(self._run_loop())
+
+        # Subscribe to lifecycle events for reactive scheduling
+        self._unsub_hooks = [
+            self._bus.on("project_created", self._on_project_event),
+            self._bus.on("project_planned", self._on_project_event),
+            self._bus.on("project_started", self._on_project_event),
+            self._bus.on("odin_anomaly", self._on_anomaly),
+        ]
+
         logger.info("Odin started (provider=%s, model=%s, tick=%ds)", ODIN_PROVIDER, ODIN_MODEL, TICK_INTERVAL)
 
     async def stop(self):
         """Stop the loop and persist state."""
         self._running = False
+        # Unsubscribe from lifecycle events
+        for unsub in self._unsub_hooks:
+            unsub()
+        self._unsub_hooks.clear()
         if self._task:
             self._task.cancel()
             try:
@@ -113,6 +129,23 @@ class Odin:
             # Brief pause between ticks — just enough to not spin
             await asyncio.sleep(2)
 
+    async def _on_project_event(self, msg):
+        """Handle lifecycle events -- trigger immediate tick for the affected project."""
+        payload = msg.payload if hasattr(msg, "payload") else msg
+        project_id = payload.get("project_id") if isinstance(payload, dict) else None
+        if project_id:
+            logger.info("Odin: lifecycle event for project %s, scheduling immediate tick", project_id[:8])
+            self._priority_queue.append(project_id)
+
+    async def _on_anomaly(self, msg):
+        """Handle sentinel anomaly observations -- schedule focused attention."""
+        payload = msg.payload if hasattr(msg, "payload") else msg
+        project_id = payload.get("project_id") if isinstance(payload, dict) else None
+        if project_id:
+            severity = payload.get("severity", "info")
+            logger.info("Odin: anomaly for project %s [%s], scheduling attention", project_id[:8], severity)
+            self._priority_queue.append(project_id)
+
     async def _tick(self):
         """One observation-reasoning-intervention cycle for a SINGLE project."""
         t0 = time.monotonic()
@@ -129,23 +162,39 @@ class Odin:
             ("completed", "cancelled"),
         )
         if not rows:
-            return
+            # Even with no active projects, check priority queue for newly created ones
+            if not self._priority_queue:
+                return
 
-        # 2. Round-robin — pick one project
-        idx = self._project_cursor % len(rows)
-        self._project_cursor = idx + 1
-        target = rows[idx]
+        # 2. Priority queue -- handle lifecycle events before round-robin
+        target = None
+        if self._priority_queue:
+            target_id = self._priority_queue.pop(0)
+            target_row = await self._db.fetchone(
+                "SELECT id, name, status FROM projects WHERE id = $1", (target_id,)
+            )
+            if target_row:
+                target = target_row
+            # else: project not found, fall through to round-robin
 
-        # 3. Build focused world state for just this project
+        # 3. Round-robin fallback
+        if target is None:
+            if not rows:
+                return
+            idx = self._project_cursor % len(rows)
+            self._project_cursor = idx + 1
+            target = rows[idx]
+
+        # 4. Build focused world state for just this project
         world = await self._build_world_state(target_project_id=target["id"])
         self._world_model = world
 
-        # 4. Reason via LLM
+        # 5. Reason via LLM
         focus_name = world["projects"][0]["name"] if world["projects"] else "none"
         logger.info("Odin tick: focusing on '%s' (%s)", focus_name, target["status"])
         decisions = await self._reason(world)
 
-        # 4. Persist
+        # 6. Persist
         self._decisions_count += len(decisions)
         await self._persist_state()
 
@@ -250,6 +299,65 @@ class Odin:
         )
         project_summary = {r["status"]: r["cnt"] for r in summary_rows}
 
+        # God heartbeats from god_events table
+        gods: dict[str, dict] = {}
+        try:
+            heartbeat_cutoff = now - 300  # 5 minutes
+            god_rows = await self._db.fetchall(
+                "SELECT god_name, event_type, payload, created_at "
+                "FROM god_events WHERE event_type = $1 "
+                "AND created_at > $2 "
+                "ORDER BY created_at DESC",
+                ("heartbeat", heartbeat_cutoff),
+            )
+            for gr in god_rows:
+                name = gr["god_name"]
+                if name not in gods:  # Most recent heartbeat per god
+                    payload = gr["payload"]
+                    if isinstance(payload, str):
+                        payload = json.loads(payload) if payload else {}
+                    elif payload is None:
+                        payload = {}
+                    gods[name] = {
+                        "last_heartbeat": str(gr["created_at"]),
+                        "uptime_s": payload.get("uptime_s", 0),
+                        "dependencies": payload.get("dependencies", {}),
+                    }
+        except Exception as exc:
+            logger.debug("Could not query god_events: %s", exc)
+
+        # Provider availability via LLM Gateway /providers endpoint
+        provider_status: dict = {}
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{LLM_GATEWAY_URL}/providers")
+                if resp.status_code == 200:
+                    provider_status = resp.json()
+        except Exception:
+            pass  # Gateway down — not critical
+
+        # Recent decisions from odin_decisions table (for dedup & context)
+        recent_decisions_db: list[dict] = []
+        try:
+            dec_rows = await self._db.fetchall(
+                "SELECT decision_id, project_id, task_id, decision_type, "
+                "confidence, action_taken, created_at "
+                "FROM odin_decisions ORDER BY created_at DESC LIMIT 20",
+                (),
+            )
+            for dr in dec_rows:
+                recent_decisions_db.append({
+                    "decision_id": dr["decision_id"],
+                    "project_id": dr["project_id"],
+                    "task_id": dr.get("task_id"),
+                    "decision_type": dr["decision_type"],
+                    "confidence": dr["confidence"],
+                    "action_taken": dr.get("action_taken"),
+                    "created_at": dr["created_at"],
+                })
+        except Exception as exc:
+            logger.debug("Could not query odin_decisions: %s", exc)
+
         return {
             "projects": projects,
             "resources": resources,
@@ -260,17 +368,22 @@ class Odin:
                 sum(p["task_counts"].values()) - p["task_counts"].get("completed", 0) - p["task_counts"].get("cancelled", 0)
                 for p in projects
             ),
+            "god_health": gods,
+            "provider_status": provider_status,
+            "recent_decisions": recent_decisions_db,
         }
 
     async def _reason(self, world: dict) -> list[dict]:
         """Multi-round LLM loop — the noz-ai pattern."""
-        from backend.services.odin_prompts import build_system_prompt
+        from backend.services.odin_prompts import build_odin_spec
         from backend.services.odin_tools import TOOLS, INTERVENTION_TOOLS, execute_tool
+        from backend.services.prompt_renderer import render_prompt
 
-        system_prompt = build_system_prompt(world, self._recent_decisions)
+        spec = build_odin_spec(world, self._recent_decisions)
+        rendered = render_prompt(spec, ODIN_PROVIDER)
         messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "/no_think\nWhat needs attention? If everything looks healthy, say so and don't call any tools."},
+            {"role": "system", "content": rendered.system_prompt},
+            {"role": "user", "content": "/no_think\n" + rendered.user_message},
         ]
 
         decisions = []
@@ -323,19 +436,22 @@ class Odin:
                     }
                     decisions.append(decision)
 
-                    # Persist to DB
+                    # Persist to odin_decisions (renamed from sentinel_decisions in migration 024)
                     await self._db.execute_write(
-                        "INSERT INTO sentinel_decisions (id, project_id, command, params_json, "
-                        "confidence, reasoning, details_json, timestamp) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                        "INSERT INTO odin_decisions (decision_id, project_id, task_id, "
+                        "decision_type, params_json, confidence, reasoning, "
+                        "action_taken, details_json, created_at) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                         (
                             decision["id"],
                             tc["arguments"].get("project_id", ""),
+                            tc["arguments"].get("task_id"),
                             tc["name"],
                             json.dumps(tc["arguments"]),
                             0.8,  # Odin acts with high confidence
                             text or "",
-                            json.dumps({"result": result[:500], "round": round_num}),
+                            result[:500],
+                            json.dumps({"round": round_num}),
                             time.time(),
                         ),
                     )

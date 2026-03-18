@@ -30,7 +30,16 @@ from backend.exceptions import (
 from backend.rate_limit import limiter
 from backend.middleware.auth import get_current_user
 from backend.models.enums import PlanStatus, ProjectStatus, TaskStatus
-from backend.models.schemas import FindingOut, PlanOut, ProjectCreate, ProjectOut, ProjectUpdate
+from backend.models.schemas import (
+    FindingOut,
+    PlanCommentCreate,
+    PlanCommentOut,
+    PlanOut,
+    PlanReviewRequest,
+    ProjectCreate,
+    ProjectOut,
+    ProjectUpdate,
+)
 from backend.services.decomposer import DecomposerService
 from backend.services.git_service import GitService
 from backend.services.plan_sync import PlanSyncService
@@ -551,6 +560,125 @@ async def approve_plan(
     # Include interrogation concerns in response if any were found
     if interrogation_concerns is not None:
         result["interrogation_concerns"] = interrogation_concerns
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Plan Comments + Review / Deepen
+# ---------------------------------------------------------------------------
+
+@router.get("/{project_id}/plans/{plan_id}/comments")
+@inject
+async def list_plan_comments(
+    project_id: str,
+    plan_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(Provide[Container.db]),
+) -> list[PlanCommentOut]:
+    """List comments on a plan."""
+    await _get_owned_project(db, project_id, current_user)
+    rows = await db.fetchall(
+        "SELECT * FROM plan_comments WHERE plan_id = $1 AND project_id = $2 ORDER BY created_at ASC",
+        (plan_id, project_id),
+    )
+    return [
+        PlanCommentOut(
+            id=r["id"], plan_id=r["plan_id"], project_id=r["project_id"],
+            author=r["author"], content=r["content"], created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+
+@router.post("/{project_id}/plans/{plan_id}/comments")
+@inject
+async def add_plan_comment(
+    project_id: str,
+    plan_id: str,
+    body: PlanCommentCreate,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(Provide[Container.db]),
+) -> PlanCommentOut:
+    """Add a comment to a plan for the planner to consider on re-review."""
+    await _get_owned_project(db, project_id, current_user)
+    row = await db.fetchone("SELECT id FROM plans WHERE id = $1 AND project_id = $2", (plan_id, project_id))
+    if not row:
+        raise HTTPException(404, f"Plan {plan_id} not found")
+
+    comment_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    author = current_user.get("display_name") or current_user.get("email", "user")
+    await db.execute_write(
+        "INSERT INTO plan_comments (id, plan_id, project_id, author, content, created_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6)",
+        (comment_id, plan_id, project_id, author, body.content, now),
+    )
+    return PlanCommentOut(
+        id=comment_id, plan_id=plan_id, project_id=project_id,
+        author=author, content=body.content, created_at=now,
+    )
+
+
+@router.post("/{project_id}/plans/{plan_id}/review")
+@limiter.limit("5/minute")
+@inject
+async def review_plan(
+    request: Request,
+    project_id: str,
+    plan_id: str,
+    body: PlanReviewRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(Provide[Container.db]),
+    planner: PlannerService = Depends(Provide[Container.planner]),
+    plan_sync: PlanSyncService = Depends(Provide[Container.plan_sync]),
+):
+    """Re-plan with human comments folded in. Optionally change rigor level (deepen)."""
+    project_row = await _get_owned_project(db, project_id, current_user)
+
+    if project_row["status"] in (ProjectStatus.EXECUTING, ProjectStatus.COMPLETED, ProjectStatus.CANCELLED):
+        raise HTTPException(400, f"Cannot re-plan a project in '{project_row['status']}' state")
+
+    plan_row = await db.fetchone("SELECT * FROM plans WHERE id = $1 AND project_id = $2", (plan_id, project_id))
+    if not plan_row:
+        raise HTTPException(404, f"Plan {plan_id} not found")
+
+    # Gather all comments on this plan
+    comment_rows = await db.fetchall(
+        "SELECT author, content, created_at FROM plan_comments WHERE plan_id = $1 ORDER BY created_at ASC",
+        (plan_id,),
+    )
+    comments = [{"author": r["author"], "content": r["content"]} for r in comment_rows]
+
+    # Get the previous plan data
+    previous_plan = json.loads(plan_row["plan_json"])
+
+    # Update rigor if deepening
+    if body.target_rigor:
+        config = json.loads(project_row["config_json"]) if project_row["config_json"] else {}
+        config["planning_rigor"] = body.target_rigor
+        await db.execute_write(
+            "UPDATE projects SET config_json = $1, updated_at = $2 WHERE id = $3",
+            (json.dumps(config), time.time(), project_id),
+        )
+
+    # Generate new plan with comments + previous plan context
+    result = await planner.generate(
+        project_id,
+        comments=comments,
+        previous_plan=previous_plan,
+    )
+
+    # Sync to context store
+    asyncio.ensure_future(
+        plan_sync.sync_plan(
+            project_name=project_row["name"],
+            repo_path=project_row["repo_path"],
+            plan_data=result["plan"],
+            plan_id=result["plan_id"],
+            project_id=project_id,
+        )
+    )
 
     return result
 

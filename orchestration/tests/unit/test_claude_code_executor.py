@@ -13,10 +13,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.services.cli_common import build_prompt as _build_prompt, resolve_cwd as _resolve_cwd
 from backend.services.claude_code_executor import (
-    _build_prompt,
     _handle_stream_event,
-    _resolve_cwd,
     run_claude_code_task,
 )
 

@@ -191,6 +191,14 @@
     "allowed_tools": "Edit,Write,Read,Glob,Grep,Bash(git *),Bash(dotnet build *),Bash(dotnet test *),Bash(dotnet publish *),Bash(dotnet run *),Bash(npm *),Bash(python *),Bash(curl *),Bash(ls *),Bash(find *),mcp__hekate__*,mcp__ollama__*"
   },
   "resource_check_interval_sec": 30,
+  "odin": {
+    "enabled": false,
+    "dispatch_enabled": false,
+    "provider": "claude",
+    "model": "sonnet",
+    "tick_interval": 30,
+    "staleness_seconds": 300
+  },
   "auth": {
     "secret_key": "CHANGE-ME-generate-a-random-64-char-string-here",
     "algorithm": "HS256",

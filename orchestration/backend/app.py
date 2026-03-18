@@ -46,6 +46,7 @@ from backend.routes.chat import router as chat_router
 from backend.routes.internal import router as internal_router
 from backend.routes.projects import router as projects_router
 from backend.routes.rag import router as rag_router
+from backend.routes.odin import router as odin_router
 from backend.routes.sentinel import router as sentinel_router
 from backend.routes.services import health_router, router as services_router
 from backend.routes.tasks import router as tasks_router
@@ -338,6 +339,9 @@ app.include_router(events_router, prefix="/api")
 
 # Sentinel routes — SSE endpoint uses query-param token auth, REST endpoints use per-route auth
 app.include_router(sentinel_router, prefix="/api")
+
+# Odin routes — system overseer status and audit trail
+app.include_router(odin_router, prefix="/api", dependencies=_auth_dep)
 
 # Serve frontend build if available (SPA catch-all for client-side routing)
 frontend_dist = PROJECT_ROOT / "frontend" / "dist"

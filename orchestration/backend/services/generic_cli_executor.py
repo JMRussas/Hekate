@@ -15,7 +15,7 @@ import logging
 
 from backend.config import cfg
 from backend.models.enums import ModelTier
-from backend.services.cli_common import build_prompt, is_process_crash, resolve_cwd
+from backend.services.cli_common import build_prompt_for_provider, is_process_crash, resolve_cwd
 from backend.services.llm_router import _resolve_cmd
 from backend.services.model_router import get_model_id
 
@@ -112,7 +112,7 @@ async def _run_cli_task(
     task_id = task_row["id"]
     project_id = task_row["project_id"]
 
-    prompt = build_prompt(task_row)
+    prompt = build_prompt_for_provider(task_row, provider)
     cwd = await resolve_cwd(db, project_id)
     cmd_args, model_used = _build_cmd_args(provider)
 

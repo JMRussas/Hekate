@@ -16,7 +16,7 @@ import os
 import time
 
 from backend.config import cfg
-from backend.services.cli_common import build_prompt, resolve_cwd
+from backend.services.cli_common import build_prompt_for_provider, resolve_cwd
 from backend.services.llm_router import _resolve_cmd
 
 logger = logging.getLogger("orchestration.executor")
@@ -64,8 +64,8 @@ async def run_claude_code_task(
     task_id = task_row["id"]
     project_id = task_row["project_id"]
 
-    # Build the prompt from task description + context
-    prompt = build_prompt(task_row)
+    # Build the prompt from task description + context (rendered for Claude)
+    prompt = build_prompt_for_provider(task_row, "claude")
 
     # Resolve working directory from project repo_path
     cwd = await resolve_cwd(db, project_id)

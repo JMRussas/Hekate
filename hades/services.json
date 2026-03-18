@@ -70,6 +70,15 @@
       "group": "admin",
       "managed": false
     },
+    "HekateLLMGateway": {
+      "port": 5210,
+      "health": "http://localhost:5210/health",
+      "app": "C:\\Users\\jruss\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "app_args": "C:\\Hekate\\llm-gateway\\server.py",
+      "app_dir": "C:\\Hekate\\llm-gateway",
+      "group": "core",
+      "managed": true
+    },
     "Ollama": {
       "port": 11434,
       "health": "http://localhost:11434/",

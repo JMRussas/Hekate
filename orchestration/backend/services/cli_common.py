@@ -4,12 +4,21 @@
 #  Single source of truth for prompt building, cwd resolution, and process
 #  crash detection.
 #
-#  Depends on: (none — pure utilities, DB passed as arg)
-#  Used by:    services/claude_code_executor.py, services/generic_cli_executor.py
+#  Depends on: services/prompt_renderer.py
+#  Used by:    services/claude_code_executor.py, services/generic_cli_executor.py,
+#              services/claude_agent.py, services/ollama_agent.py
 
 import json
 import logging
 import re
+
+from backend.services.prompt_renderer import (
+    ContextEntry,
+    ContextType,
+    FewShotExample,
+    PromptSpec,
+    render_prompt,
+)
 
 logger = logging.getLogger("orchestration.executor")
 
@@ -32,68 +41,180 @@ def is_process_crash(returncode: int) -> bool:
     return unsigned in _WINDOWS_CRASH_CODES
 
 
-def build_prompt(task_row) -> str:
-    """Build the full prompt from task description and context.
+_CODE_TASK_TYPES = ("code", "integration", "game_code", "game_ui")
 
-    Used by all CLI executors. Context entries are wrapped in XML tags
-    for structured prompt sections.
+_EXECUTION_RULES = (
+    "CRITICAL REQUIREMENT — READ THIS BEFORE DOING ANYTHING ELSE:\n\n"
+    "This is a CODE task. You MUST use the Write tool or Edit tool to create or "
+    "modify files. Your job is to produce working code ON DISK, not to describe "
+    "what code should look like.\n\n"
+    "FORBIDDEN: Writing a text description, plan, report, or summary of what "
+    "the code should do. This will be rejected.\n\n"
+    "REQUIRED: Call the Write or Edit tool at least once to create or modify "
+    "a source file. If you finish without having written or edited any file, "
+    "you have failed the task.\n\n"
+    "Example of WRONG output: 'Here is the migration that renames the table...'\n"
+    "Example of RIGHT output: Use the Write tool to create the .py file with "
+    "the actual code."
+)
+
+_CODE_TASK_FEW_SHOT = FewShotExample(
+    user_input="Create an Alembic migration that adds a status column to the tasks table",
+    expected_output=(
+        "I'll create the migration file using the Write tool.\n"
+        "[Calls Write tool to create orchestration/backend/migrations/versions/025_add_status_column.py "
+        "with proper revision chain, upgrade(), and downgrade()]"
+    ),
+    label="code task",
+)
+
+
+def _format_knowledge_block(content: list) -> str:
+    """Format a project_knowledge content list into structured text."""
+    lines: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        finding = item.get("finding", "")
+        rationale = item.get("rationale")
+        alternatives = item.get("alternatives_considered")
+        confidence = item.get("confidence")
+        category = item.get("category", "unknown")
+
+        lines.append(f'  <finding category="{category}"'
+                     + (f' confidence="{confidence}"' if confidence else "")
+                     + ">")
+        lines.append(f"    <statement>{finding}</statement>")
+        if rationale:
+            lines.append(f"    <why>{rationale}</why>")
+        if alternatives:
+            lines.append(f"    <alternatives_considered>{alternatives}</alternatives_considered>")
+        lines.append("  </finding>")
+    return "\n".join(lines)
+
+
+def _map_context_type(ctx_type: str) -> ContextType:
+    """Map a raw context type string to a ContextType enum."""
+    _TYPE_MAP = {
+        "project_knowledge": ContextType.PROJECT_KNOWLEDGE,
+        "historical_rationale": ContextType.HISTORICAL_RATIONALE,
+        "execution_rules": ContextType.EXECUTION_RULES,
+        "platform_context": ContextType.PLATFORM_CONTEXT,
+        "verification_criteria": ContextType.VERIFICATION_CRITERIA,
+        "sibling_tasks": ContextType.SIBLING_TASKS,
+        "task_description": ContextType.TASK_DESCRIPTION,
+        "meta_instructions": ContextType.META_INSTRUCTIONS,
+        "target_signature": ContextType.CSHARP_WORKER,
+        "available_methods": ContextType.CSHARP_WORKER,
+        "constructor_params": ContextType.CSHARP_WORKER,
+    }
+    return _TYPE_MAP.get(ctx_type, ContextType.GENERIC)
+
+
+def build_prompt_spec(task_row) -> PromptSpec:
+    """Build a model-agnostic PromptSpec from a task database row.
+
+    Converts the task_row's system_prompt, context_json, description,
+    task_type, and tools into typed ContextEntry objects with priority.
+
+    This is the shared spec builder used by all executors. Individual
+    executors may further enrich the spec (e.g., claude_agent adds
+    project knowledge from DB).
     """
-    parts = []
+    identity = task_row["system_prompt"] or "You are a focused task executor."
 
-    system_prompt = task_row["system_prompt"] or ""
-    if system_prompt:
-        parts.append(system_prompt)
-
+    # Parse context entries
     context_json = task_row["context_json"] or "[]"
-    context = json.loads(context_json) if isinstance(context_json, str) else context_json
-    for ctx in context:
-        # Sanitize tag name to prevent prompt injection via crafted context types
+    raw_context = json.loads(context_json) if isinstance(context_json, str) else context_json
+    context_entries: list[ContextEntry] = []
+
+    for ctx in raw_context:
         ctx_type = re.sub(r"[^a-zA-Z0-9_]", "_", ctx.get("type", "context"))
 
         if ctx_type == "project_knowledge":
             content = ctx.get("content")
             if isinstance(content, list):
-                knowledge_block = ""
-                for item in content:
-                    if not isinstance(item, dict):
-                        continue
-
-                    finding = item.get("finding", "")
-                    rationale = item.get("rationale")
-                    alternatives = item.get("alternatives_considered")
-                    confidence = item.get("confidence")
-                    category = item.get("category", "unknown")
-
-                    knowledge_block += f'  <finding category="{category}"'
-                    if confidence:
-                        knowledge_block += f' confidence="{confidence}"'
-                    knowledge_block += ">\n"
-                    knowledge_block += f"    <statement>{finding}</statement>\n"
-                    if rationale:
-                        knowledge_block += f"    <why>{rationale}</why>\n"
-                    if alternatives:
-                        knowledge_block += f"    <alternatives_considered>{alternatives}</alternatives_considered>\n"
-                    knowledge_block += "  </finding>\n"
-
-                if knowledge_block:
-                    parts.append(
-                        "<historical_rationale>\n"
-                        "The following findings capture WHY previous decisions were made.\n"
-                        "Use this rationale to inform your approach — avoid repeating "
-                        "failed strategies and build on what worked.\n\n"
-                        f"{knowledge_block}"
-                        "</historical_rationale>"
-                    )
-            elif isinstance(content, str) and content:  # Fallback for old format
-                parts.append(f"<project_knowledge>\n{content}\n</project_knowledge>")
-
+                block = _format_knowledge_block(content)
+                if block:
+                    context_entries.append(ContextEntry(
+                        type=ContextType.PROJECT_KNOWLEDGE,
+                        tag="historical_rationale",
+                        content=(
+                            "The following findings capture WHY previous decisions were made.\n"
+                            "Use this rationale to inform your approach — avoid repeating "
+                            "failed strategies and build on what worked.\n\n"
+                            + block
+                        ),
+                    ))
+            elif isinstance(content, str) and content:
+                context_entries.append(ContextEntry(
+                    type=ContextType.PROJECT_KNOWLEDGE,
+                    tag="project_knowledge",
+                    content=content,
+                ))
         else:
             content = ctx.get("content", "")
             if content:
-                parts.append(f"<{ctx_type}>\n{content}\n</{ctx_type}>")
+                context_entries.append(ContextEntry(
+                    type=_map_context_type(ctx_type),
+                    tag=ctx_type,
+                    content=content,
+                ))
 
-    parts.append(task_row["description"])
-    return "\n\n".join(parts)
+    # Detect code task and add execution rules + few-shot
+    task_type = task_row.get("task_type", "") or ""
+    tools_json = task_row.get("tools", "[]") or "[]"
+    tools = json.loads(tools_json) if isinstance(tools_json, str) else tools_json
+
+    constraints: list[str] = []
+    few_shot: list[FewShotExample] = []
+
+    is_code_task = task_type in _CODE_TASK_TYPES and "write_file" in tools
+    if is_code_task:
+        context_entries.append(ContextEntry(
+            type=ContextType.EXECUTION_RULES,
+            tag="execution_rules",
+            content=_EXECUTION_RULES,
+        ))
+        few_shot.append(_CODE_TASK_FEW_SHOT)
+        constraints.append("You MUST write files using Write/Edit tools — text descriptions will be rejected.")
+
+    return PromptSpec(
+        role="task_executor",
+        identity=identity,
+        task_description=task_row["description"],
+        context=context_entries,
+        constraints=constraints,
+        output_format="code" if is_code_task else "text",
+        few_shot_examples=few_shot,
+        assistant_prefill=(
+            "I'll start by reading the relevant files, then write the implementation."
+            if is_code_task else ""
+        ),
+        task_type=task_type,
+        tools_available=tools,
+    )
+
+
+def build_prompt_for_provider(task_row, provider: str) -> str:
+    """Build a prompt rendered for a specific provider. Returns flat_prompt string.
+
+    Args:
+        task_row: Task database row.
+        provider: Provider name ("claude", "gemini", "ollama").
+    """
+    spec = build_prompt_spec(task_row)
+    rendered = render_prompt(spec, provider)
+    return rendered.flat_prompt
+
+
+def build_prompt(task_row) -> str:
+    """Build the full prompt from task description and context.
+
+    Backward-compatible wrapper — renders with ClaudeRenderer (matching
+    the XML-tag format that all CLI executors have been using).
+    """
+    return build_prompt_for_provider(task_row, "claude")
 
 
 async def resolve_cwd(db, project_id: str) -> str | None:

@@ -127,9 +127,13 @@ class TestVerifyOutput:
             task_id="task1",
         )
 
-        # Check the user message sent to call_llm includes "(empty)"
-        user_msg = mock_call_llm.call_args[0][1]
-        assert "(empty)" in user_msg
+        # Check the spec's task_description sent to call_llm includes "(empty)"
+        spec = mock_call_llm.call_args[1].get("spec")
+        if spec is not None:
+            assert "(empty)" in spec.task_description
+        else:
+            user_msg = mock_call_llm.call_args[0][1]
+            assert "(empty)" in user_msg
 
     @patch("backend.services.verifier.call_llm", new_callable=AsyncMock)
     async def test_cost_recorded_to_budget(self, mock_call_llm):

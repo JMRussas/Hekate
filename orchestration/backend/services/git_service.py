@@ -46,7 +46,10 @@ class GitService:
         timeout: int | None = None,
     ) -> str:
         """Run a git command synchronously. Raises GitError on failure."""
-        cmd = ["git"] + list(args)
+        # -c safe.directory=<cwd> avoids dubious ownership errors when NSSM
+        # runs as LocalSystem but the repo is owned by the user account.
+        safe_dir = str(cwd).replace("\\", "/")
+        cmd = ["git", "-c", f"safe.directory={safe_dir}"] + list(args)
         timeout = timeout or GIT_COMMAND_TIMEOUT
         try:
             result = subprocess.run(
@@ -74,7 +77,8 @@ class GitService:
         timeout: int | None = None,
     ) -> tuple[bool, str]:
         """Run a git command, returning (success, output) without raising."""
-        cmd = ["git"] + list(args)
+        safe_dir = str(cwd).replace("\\", "/")
+        cmd = ["git", "-c", f"safe.directory={safe_dir}"] + list(args)
         timeout = timeout or GIT_COMMAND_TIMEOUT
         try:
             result = subprocess.run(
@@ -147,6 +151,94 @@ class GitService:
         )
         return ok
 
+    async def ensure_repo(self, cwd: str | Path) -> bool:
+        """Ensure a directory is a git repository. Initializes if not.
+
+        Handles:
+        - Directory doesn't exist → creates it + git init
+        - Directory exists but not a repo → git init
+        - Dubious ownership (NSSM LocalSystem) → adds safe.directory
+
+        Returns True if a new repo was created, False if it already existed.
+        """
+        cwd = Path(cwd)
+        cwd.mkdir(parents=True, exist_ok=True)
+
+        # Add safe.directory to avoid dubious ownership errors when NSSM
+        # runs as LocalSystem but the repo is owned by the user account.
+        await self._ensure_safe_directory(cwd)
+
+        ok, _ = await asyncio.to_thread(
+            self._run_git_ok_sync, "rev-parse", "--git-dir", cwd=cwd,
+        )
+        if ok:
+            return False
+
+        # Not a git repo — initialize with an empty commit
+        await asyncio.to_thread(self._run_git_sync, "init", cwd=cwd)
+        await asyncio.to_thread(
+            self._run_git_sync,
+            "commit", "--allow-empty", "-m", "Initial commit",
+            cwd=cwd,
+        )
+        logger.info("Initialized new git repo at %s", cwd)
+        return True
+
+    @staticmethod
+    async def _ensure_safe_directory(cwd: Path) -> None:
+        """Add cwd to git's global safe.directory if not already present."""
+        # Normalize to forward slashes for git config
+        normalized = str(cwd).replace("\\", "/")
+        try:
+            result = subprocess.run(
+                ["git", "config", "--global", "--get-all", "safe.directory"],
+                capture_output=True, text=True, timeout=5,
+            )
+            existing = result.stdout.strip().splitlines()
+            if normalized in existing or "*" in existing:
+                return
+        except Exception:
+            pass  # If we can't read, just add it
+
+        try:
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", normalized],
+                capture_output=True, text=True, timeout=5,
+            )
+            logger.info("Added safe.directory: %s", normalized)
+        except Exception as e:
+            logger.warning("Failed to add safe.directory for %s: %s", cwd, e)
+
+    async def _is_dirty(self, cwd: str | Path) -> bool:
+        """Check if the working tree has uncommitted changes."""
+        ok, output = await asyncio.to_thread(
+            self._run_git_ok_sync, "status", "--porcelain", cwd=cwd,
+        )
+        return bool(output.strip())
+
+    async def _stash_and_checkout(self, cwd: str | Path, branch: str) -> None:
+        """Stash dirty changes, checkout branch, then pop stash."""
+        await asyncio.to_thread(
+            self._run_git_sync, "stash", "push", "-m",
+            f"auto-stash before checkout to {branch}",
+            cwd=cwd,
+        )
+        logger.info("Auto-stashed dirty changes in %s", cwd)
+        try:
+            await self.checkout(cwd, branch)
+        except GitError:
+            # Restore stash if checkout still fails
+            await asyncio.to_thread(
+                self._run_git_ok_sync, "stash", "pop", cwd=cwd,
+            )
+            raise
+
+    async def _get_repo_root(self, cwd: str | Path) -> str:
+        """Get the git repo root for a given path."""
+        return await asyncio.to_thread(
+            self._run_git_sync, "rev-parse", "--show-toplevel", cwd=cwd,
+        )
+
     async def ensure_feature_branch(
         self,
         cwd: str | None,
@@ -155,13 +247,65 @@ class GitService:
     ) -> bool:
         """Idempotent branch creation and checkout for project execution.
 
-        Creates branch_name from base_branch if it doesn't exist, then
-        checks it out. Skips silently if cwd is not set.
+        Self-healing:
+        - No git repo → auto git-init
+        - Dubious ownership → safe.directory
+        - Base branch missing → falls back to current branch
+        - Dirty working tree → auto-stash before checkout
+        - Subdirectory of another repo → uses worktree
 
         Returns True if the branch was checked out, False if skipped.
         """
         if not cwd:
             return False
+
+        # Self-healing: initialize git repo if needed
+        was_new = await self.ensure_repo(cwd)
+
+        # Detect if cwd is a subdirectory of a different repo (e.g.
+        # C:\Hekate\Odin inside the Hekate repo). If so, the project
+        # needs its own worktree to avoid switching branches on the parent.
+        repo_root = await self._get_repo_root(cwd)
+        repo_root_norm = Path(repo_root).resolve()
+        cwd_norm = Path(cwd).resolve()
+        if not was_new and repo_root_norm != cwd_norm:
+            # cwd is inside a parent repo — create a worktree
+            logger.info(
+                "Path %s is inside repo %s — creating worktree", cwd, repo_root,
+            )
+            worktree_path = repo_root_norm / ".worktrees" / branch_name.replace("/", "-")
+            if worktree_path.exists():
+                # Worktree already exists — use it
+                logger.info("Worktree already exists at %s", worktree_path)
+                return True
+
+            # Resolve base branch
+            if not await self.branch_exists(repo_root, base_branch):
+                base_branch = await self.get_current_branch(repo_root)
+
+            # Create branch if needed (on the parent repo)
+            if not await self.branch_exists(repo_root, branch_name):
+                await self.create_branch(repo_root, branch_name, base=base_branch)
+
+            # Create worktree
+            worktree_path.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                self._run_git_sync,
+                "worktree", "add", str(worktree_path), branch_name,
+                cwd=repo_root,
+            )
+            logger.info("Created worktree at %s on branch %s", worktree_path, branch_name)
+            return True
+
+        # Resolve base branch — if the requested base doesn't exist,
+        # fall back to whatever branch the repo is actually on.
+        if not await self.branch_exists(cwd, base_branch):
+            actual = await self.get_current_branch(cwd)
+            logger.info(
+                "Base branch '%s' not found in %s, using '%s' instead",
+                base_branch, cwd, actual,
+            )
+            base_branch = actual
 
         if not await self.branch_exists(cwd, branch_name):
             await self.create_branch(cwd, branch_name, base=base_branch)
@@ -169,7 +313,11 @@ class GitService:
 
         current = await self.get_current_branch(cwd)
         if current != branch_name:
-            await self.checkout(cwd, branch_name)
+            # Self-healing: stash dirty changes before checkout
+            if await self._is_dirty(cwd):
+                await self._stash_and_checkout(cwd, branch_name)
+            else:
+                await self.checkout(cwd, branch_name)
             logger.info("Checked out branch %s in %s", branch_name, cwd)
 
         return True

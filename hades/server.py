@@ -161,6 +161,7 @@ def _run(cmd: list[str], timeout: int = 30, cwd: str | None = None) -> dict:
             text=True,
             timeout=timeout,
             cwd=cwd,
+            shell=(os.name == "nt"),  # Windows needs shell=True for .cmd wrappers (npm, npx, etc.)
         )
         return {
             "returncode": result.returncode,

@@ -44,6 +44,11 @@ VALID_TOPICS: frozenset[str] = frozenset({
     # Odin (LLM-driven overseer)
     "odin_observation",
     "odin_decision",
+    "odin_anomaly",
+    # Project lifecycle (Odin coordination)
+    "project_created",
+    "project_planned",
+    "project_started",
     # Server lifecycle
     "restart_server",
 })

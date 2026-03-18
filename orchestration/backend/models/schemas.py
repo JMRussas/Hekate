@@ -103,6 +103,24 @@ class PlanOut(BaseModel):
     created_at: float
 
 
+class PlanCommentCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=10_000)
+
+
+class PlanCommentOut(BaseModel):
+    id: str
+    plan_id: str
+    project_id: str
+    author: str
+    content: str
+    created_at: float
+
+
+class PlanReviewRequest(BaseModel):
+    """Request to re-review or deepen a plan with optional guidance."""
+    target_rigor: PlanningRigor | None = None  # None = same rigor, set = deepen/change
+
+
 # ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------

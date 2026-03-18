@@ -2,9 +2,12 @@
 Odin system prompt builder for LLM reasoning loop.
 
 Odin uses qwen3.5 via Ollama to observe system state and decide interventions.
+Now uses PromptSpec for model-specific rendering.
 """
 
 from datetime import datetime, timezone
+
+from backend.services.prompt_renderer import ContextEntry, ContextType, PromptSpec, render_prompt
 
 
 def _format_project_summary(summary: dict) -> str:
@@ -116,63 +119,25 @@ def _format_recent_decisions(decisions: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(world_state: dict, recent_decisions: list[dict]) -> str:
-    """Build the system prompt for Odin's reasoning loop.
+_ODIN_IDENTITY = """\
+You are Odin, the system overseer for the Hekate orchestration engine."""
 
-    Args:
-        world_state: Current state of all projects, tasks, and resources.
-        recent_decisions: Last N decisions Odin made, with seconds_ago/action/target/reason.
+_ODIN_CONSTRAINTS = [
+    "CRITICAL: Do not guess. Get the information to know. Models fail when they assume, succeed when they gather evidence.",
+    "Before ANY intervention, use observation tools (get_project_detail, get_task_detail) to understand what actually happened.",
+    "Observe the state of all projects and tasks.",
+    "Investigate anomalies before acting — see the actual error, retry history, and context.",
+    "Fix problems: retry failed tasks, release stuck claims, skip blockers, reassign tiers, modify prompts.",
+    "Drive progress: create new projects, plan them, start execution. Keep the system moving forward.",
+    "If everything looks healthy and there's nothing to create or fix, do nothing.",
+    "Be conservative with interventions. Only act when you have evidence to justify it.",
+    "Be proactive with new work. Plan draft projects. Start planned projects.",
+    "Iterate: review completed projects. Create follow-up projects to improve on what was built.",
+    "Never repeat an action you already took recently on the same target unless circumstances changed.",
+    "Think step by step. If no intervention is needed, say so and do not call any tools.",
+]
 
-    Returns:
-        A system prompt string for the LLM.
-    """
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-    projects = world_state.get("projects", [])
-    resources = world_state.get("resources", {})
-    stale_tasks = world_state.get("stale_tasks", [])
-    total_projects = world_state.get("total_executing_projects", 0)
-    total_tasks = world_state.get("total_active_tasks", 0)
-
-    last_10 = recent_decisions[:10]
-
-    return f"""\
-You are Odin, the system overseer for the Hekate orchestration engine.
-
-CRITICAL PRINCIPLE: Do not guess. Get the information to know.
-Models fail when they assume. Models succeed when they gather evidence and reason from facts.
-Before ANY intervention, use observation tools (get_project_detail, get_task_detail) to understand what actually happened. Never act on the summary alone.
-
-Your role:
-- Observe the state of all projects and tasks.
-- Investigate anomalies before acting — call get_task_detail to see the actual error, retry history, and context.
-- Fix problems: retry failed tasks, release stuck claims, skip blockers, reassign tiers, modify prompts.
-- Drive progress: create new projects, plan them, start execution. Keep the system moving forward.
-- If everything looks healthy and there's nothing to create or fix, do nothing.
-- Be conservative with interventions. Only act when you have the evidence to justify it.
-- Be proactive with new work. If there are draft projects waiting for plans, plan them. If planned projects aren't started, start them.
-- Iterate: when projects complete, review them. What was learned? What should be better? Create follow-up projects to improve on what was built. The system should always be getting better.
-- Never repeat an action you already took recently on the same target unless circumstances changed.
-
-Timestamp: {now}
-
-== System Summary ==
-{_format_project_summary(world_state.get("project_summary", {}))}
-Active tasks in focus: {total_tasks}
-
-== Focus Project ==
-{_format_projects(projects)}
-
-== Resources ==
-{_format_resources(resources)}
-
-== Stale Tasks ==
-{_format_stale_tasks(stale_tasks)}
-
-== Recent Decisions (yours) ==
-{_format_recent_decisions(last_10)}
-
-== Intervention Guidelines ==
+_INTERVENTION_GUIDELINES = """\
 - retry_task: Task failed with a transient error (timeout, crash, CLI exit). Worth retrying.
 - release_task: Task stuck in "running" with no progress for 5+ minutes. Release it back to pending.
 - skip_task: Task failed 3+ times and is blocking dependent tasks. Skip it to unblock the wave.
@@ -185,5 +150,97 @@ Active tasks in focus: {total_tasks}
 - review_completed_project: A project finished. Review what worked, what failed, what was learned.
 - get_project_knowledge: Read the accumulated learnings from a project's execution.
 - get_recent_completions: Find recently finished projects that may need follow-up work.
+- wave_readiness: Check which tasks in a project are ready for dispatch.
+- dispatch_task: Queue a specific task for execution.
 
-Think step by step. If no intervention is needed, say so and do not call any tools."""
+Dispatch rules:
+- Use wave_readiness to see dispatchable tasks, dispatch_task to start them.
+- Consider model tier suitability — use reassign_tier if a task keeps failing on one tier.
+- Respect wave ordering — don't dispatch wave N+1 tasks until wave N is complete.
+- Check resource health and provider quotas before dispatching.
+- For retry strategies: analyze the error before retrying blindly.
+- Prefer parallel dispatch when multiple tasks are ready and resources are healthy."""
+
+
+def build_odin_spec(world_state: dict, recent_decisions: list[dict]) -> PromptSpec:
+    """Build a PromptSpec for Odin's reasoning loop.
+
+    Returns a PromptSpec that can be rendered per-provider.
+    """
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    projects = world_state.get("projects", [])
+    resources = world_state.get("resources", {})
+    stale_tasks = world_state.get("stale_tasks", [])
+    total_tasks = world_state.get("total_active_tasks", 0)
+    last_10 = recent_decisions[:10]
+
+    # Build context entries from world state sections
+    context_entries = [
+        ContextEntry(
+            type=ContextType.GENERIC,
+            tag="system_summary",
+            content=(
+                f"Timestamp: {now}\n"
+                f"{_format_project_summary(world_state.get('project_summary', {}))}\n"
+                f"Active tasks in focus: {total_tasks}"
+            ),
+            priority_override=0,  # Highest priority — always include
+        ),
+        ContextEntry(
+            type=ContextType.GENERIC,
+            tag="focus_project",
+            content=_format_projects(projects),
+            priority_override=1,
+        ),
+        ContextEntry(
+            type=ContextType.GENERIC,
+            tag="resources",
+            content=_format_resources(resources),
+            priority_override=2,
+        ),
+        ContextEntry(
+            type=ContextType.GENERIC,
+            tag="stale_tasks",
+            content=_format_stale_tasks(stale_tasks),
+            priority_override=3,
+        ),
+        ContextEntry(
+            type=ContextType.GENERIC,
+            tag="recent_decisions",
+            content=_format_recent_decisions(last_10),
+            priority_override=4,
+        ),
+        ContextEntry(
+            type=ContextType.GENERIC,
+            tag="intervention_guidelines",
+            content=_INTERVENTION_GUIDELINES,
+            priority_override=5,
+        ),
+    ]
+
+    return PromptSpec(
+        role="overseer",
+        identity=_ODIN_IDENTITY,
+        task_description="What needs attention? If everything looks healthy, say so and don't call any tools.",
+        context=context_entries,
+        constraints=_ODIN_CONSTRAINTS,
+    )
+
+
+def build_system_prompt(world_state: dict, recent_decisions: list[dict], provider: str = "ollama") -> str:
+    """Build the system prompt for Odin's reasoning loop.
+
+    Backward-compatible wrapper that renders with the specified provider.
+
+    Args:
+        world_state: Current state of all projects, tasks, and resources.
+        recent_decisions: Last N decisions Odin made, with seconds_ago/action/target/reason.
+        provider: Provider name for rendering ("ollama" or "claude").
+
+    Returns:
+        A system prompt string for the LLM.
+    """
+    spec = build_odin_spec(world_state, recent_decisions)
+    rendered = render_prompt(spec, provider)
+    return rendered.system_prompt

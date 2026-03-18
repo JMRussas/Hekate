@@ -1,10 +1,14 @@
 #  Orchestration Engine - LLM Router
 #
-#  Routes LLM calls through CLI providers (subscription billing) instead of
-#  the Anthropic API. Supports Claude, Gemini, Codex CLIs and Ollama HTTP.
+#  Routes LLM calls through the LLM Gateway HTTP service (port 5210).
+#  The gateway runs as the user and has CLI OAuth tokens.
+#  Falls back to direct CLI/Ollama calls if gateway is unavailable.
 #
-#  Depends on: backend/config.py
-#  Used by:    planner.py
+#  Depends on: backend/config.py, backend/services/prompt_renderer.py
+#  Used by:    planner.py, verifier.py, knowledge_extractor.py,
+#              sentinel/reasoner.py
+
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -12,19 +16,26 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import httpx
 
 from backend.config import cfg
 
+if TYPE_CHECKING:
+    from backend.services.prompt_renderer import PromptSpec
+
 logger = logging.getLogger("orchestration.llm_router")
 
-# Provider preference order for planning (complex reasoning tasks)
-_PLANNING_PROVIDERS = ["gemini", "claude", "codex"]
+_GATEWAY_URL = cfg("llm.gateway_url", "http://localhost:5210")
 
-# Provider preference order for simple tasks (verification, extraction)
-_SIMPLE_PROVIDERS = ["gemini", "ollama", "codex"]
+
+def _get_planning_providers() -> list[str]:
+    return cfg("llm.planning_providers", ["gemini", "claude", "ollama"])
+
+
+def _get_simple_providers() -> list[str]:
+    return cfg("llm.simple_providers", ["gemini", "ollama", "claude"])
 
 
 @dataclass
@@ -34,26 +45,43 @@ class LLMResponse:
     text: str
     provider: str
     model: Optional[str] = None
-    # CLI providers don't expose token counts — cost is $0 on subscription
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float = 0.0
 
 
+async def _call_gateway(provider: str, system_prompt: str, user_message: str,
+                        model: Optional[str] = None) -> LLMResponse:
+    """Call the LLM Gateway HTTP service."""
+    payload = {
+        "provider": provider,
+        "system_prompt": system_prompt,
+        "user_message": user_message,
+    }
+    if model:
+        payload["model"] = model
+
+    async with httpx.AsyncClient(timeout=330.0) as client:
+        resp = await client.post(f"{_GATEWAY_URL}/v1/chat", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    return LLMResponse(
+        text=data["text"],
+        provider=data["provider"],
+        model=data.get("model"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fallback: direct CLI calls (used when gateway is down)
+# ---------------------------------------------------------------------------
+
 def _resolve_cmd(name: str) -> Optional[str]:
-    """Resolve a CLI command name to full path (handles .cmd on Windows).
-
-    Falls back to the npm global prefix bin directory when the command
-    isn't on PATH — common in Git Bash / MSYS2 environments on Windows
-    where the npm global bin isn't inherited.
-
-    Returns None if the command is not found anywhere.
-    """
     resolved = shutil.which(name)
     if resolved:
         return resolved
     if sys.platform == "win32":
-        # npm global bin often missing from Git Bash PATH
         npm_bin = os.path.join(os.environ.get("APPDATA", ""), "npm")
         for ext in (".cmd", ".exe", ""):
             candidate = os.path.join(npm_bin, f"{name}{ext}")
@@ -62,16 +90,9 @@ def _resolve_cmd(name: str) -> Optional[str]:
     return None
 
 
-async def _call_cli(provider: str, system_prompt: str, user_message: str,
-                    model: Optional[str] = None) -> LLMResponse:
-    """Call a CLI provider with system prompt and user message.
-
-    Pipes the prompt via stdin to avoid Windows command line length limits.
-    All CLIs support reading prompts from stdin.
-    """
-    # CLI providers don't support separate system/user roles — flatten into one prompt.
-    # TODO: Claude CLI supports --system-prompt flag; use it when available to preserve
-    # role separation. Gemini and Codex CLIs have no equivalent yet.
+async def _call_cli_direct(provider: str, system_prompt: str, user_message: str,
+                           model: Optional[str] = None) -> LLMResponse:
+    """Direct CLI call — fallback when gateway is unavailable."""
     full_prompt = f"{system_prompt}\n\n---\n\n{user_message}"
 
     cli_names = {"claude": "claude", "codex": "codex", "gemini": "gemini"}
@@ -81,17 +102,15 @@ async def _call_cli(provider: str, system_prompt: str, user_message: str,
 
     resolved = _resolve_cmd(binary)
     if not resolved:
-        raise FileNotFoundError(f"{provider} CLI ({binary}) not found on PATH or in npm global bin")
+        raise FileNotFoundError(f"{provider} CLI ({binary}) not found on PATH")
 
     if provider == "claude":
-        # Claude: -p is --print (non-interactive mode), reads prompt from stdin
         cmd_args = [resolved, "-p", "--output-format", "text"]
     elif provider == "codex":
         cmd_args = [resolved, "exec"]
         if model:
             cmd_args.extend(["--model", model])
     elif provider == "gemini":
-        # Gemini: -p "" triggers non-interactive mode, stdin is prepended to prompt
         cmd_args = [resolved, "-p", ""]
         if model:
             cmd_args.extend(["-m", model])
@@ -111,18 +130,16 @@ async def _call_cli(provider: str, system_prompt: str, user_message: str,
         proc.kill()
         await proc.wait()
         raise
-    stdout_text = stdout.decode().strip()
-    stderr_text = stderr.decode().strip()
 
     if proc.returncode != 0:
-        raise RuntimeError(f"{provider} CLI failed (exit {proc.returncode}): {stderr_text}")
+        raise RuntimeError(f"{provider} CLI failed (exit {proc.returncode}): {stderr.decode().strip()}")
 
-    return LLMResponse(text=stdout_text, provider=provider, model=model)
+    return LLMResponse(text=stdout.decode().strip(), provider=provider, model=model)
 
 
-async def _call_ollama(system_prompt: str, user_message: str,
-                       model: Optional[str] = None) -> LLMResponse:
-    """Call Ollama HTTP API."""
+async def _call_ollama_direct(system_prompt: str, user_message: str,
+                              model: Optional[str] = None) -> LLMResponse:
+    """Direct Ollama call — fallback when gateway is unavailable."""
     ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
     ollama_model = model or os.environ.get("OLLAMA_MODEL", cfg("ollama.default_model", "qwen3.5:latest"))
 
@@ -143,48 +160,78 @@ async def _call_ollama(system_prompt: str, user_message: str,
     return LLMResponse(text=text.strip(), provider="ollama", model=ollama_model)
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 async def call_llm(
-    system_prompt: str,
-    user_message: str,
+    system_prompt: str = "",
+    user_message: str = "",
     *,
+    spec: PromptSpec | None = None,
     provider: Optional[str] = None,
     providers: Optional[list[str]] = None,
     model: Optional[str] = None,
     task_type: str = "planning",
 ) -> LLMResponse:
-    """Route an LLM call through CLI providers with fallback.
+    """Route an LLM call through the gateway with fallback to direct calls.
 
-    Args:
-        system_prompt: System instructions for the LLM.
-        user_message: The user/task content.
-        provider: Explicit single provider to use (no fallback).
-        providers: Ordered list of providers to try (with fallback).
-        model: Optional model override for the provider.
-        task_type: "planning" or "simple" — determines default provider order.
+    Tries the LLM Gateway first (has user CLI auth). If gateway is down,
+    falls back to direct CLI/Ollama calls (may fail under NSSM).
 
-    Returns:
-        LLMResponse with the text output.
-
-    Raises:
-        RuntimeError if all providers fail.
+    When ``spec`` is provided, the prompt is re-rendered for each provider
+    in the fallback chain. This means a Gemini-optimized prompt automatically
+    becomes a Claude-optimized prompt if Gemini fails and Claude is next.
     """
     if provider:
         chain = [provider]
     elif providers:
         chain = providers
     elif task_type == "simple":
-        chain = list(_SIMPLE_PROVIDERS)
+        chain = _get_simple_providers()
     else:
-        chain = list(_PLANNING_PROVIDERS)
+        chain = _get_planning_providers()
 
     errors = []
     for p in chain:
+        # Re-render per provider if spec is available
+        if spec is not None:
+            from backend.services.prompt_renderer import render_prompt
+            rendered = render_prompt(spec, p)
+            sys_prompt = rendered.system_prompt
+            usr_msg = rendered.user_message
+        else:
+            sys_prompt = system_prompt
+            usr_msg = user_message
+
+        # Try gateway first
         try:
-            logger.info("Calling %s for %s task", p, task_type)
+            logger.info("Calling %s via gateway for %s task", p, task_type)
+            return await _call_gateway(p, sys_prompt, usr_msg, model)
+        except httpx.ConnectError:
+            logger.warning("LLM Gateway unavailable, falling back to direct call")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 503:
+                # Provider not available on gateway — try next provider
+                msg = f"{p} not available on gateway"
+                logger.warning(msg)
+                errors.append(msg)
+                continue
+            # Other HTTP errors (502 = CLI failed, 504 = timeout) — try next
+            msg = f"{p} via gateway: {e.response.status_code} {e.response.text}"
+            logger.warning(msg)
+            errors.append(msg)
+            continue
+        except Exception as e:
+            logger.warning("Gateway call failed for %s: %s", p, e)
+
+        # Fallback to direct call
+        try:
+            logger.info("Calling %s directly for %s task", p, task_type)
             if p == "ollama":
-                return await _call_ollama(system_prompt, user_message, model)
+                return await _call_ollama_direct(sys_prompt, usr_msg, model)
             else:
-                return await _call_cli(p, system_prompt, user_message, model)
+                return await _call_cli_direct(p, sys_prompt, usr_msg, model)
         except FileNotFoundError:
             msg = f"{p} CLI not found"
             logger.warning(msg)

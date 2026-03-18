@@ -10,6 +10,7 @@
 
 import json
 import logging
+import re
 
 import httpx
 
@@ -19,6 +20,13 @@ from backend.config import (
     OLLAMA_HOSTS,
     OLLAMA_MAX_TOOL_ROUNDS,
 )
+from backend.services.prompt_renderer import (
+    ContextEntry,
+    ContextType,
+    PromptSpec,
+    render_prompt,
+)
+from backend.services.cli_common import _map_context_type
 
 logger = logging.getLogger("orchestration.executor")
 
@@ -38,13 +46,29 @@ async def run_ollama_task(*, task_row, http_client, budget, tool_registry=None) 
     model = OLLAMA_DEFAULT_MODEL
     host_url = OLLAMA_HOSTS.get("local", "http://localhost:11434")
 
-    # Build context
+    # Build context via PromptSpec → OllamaRenderer
     context = json.loads(task_row["context_json"]) if task_row["context_json"] else []
-    system_parts = [task_row["system_prompt"] or "You are a focused task executor."]
+    context_entries: list[ContextEntry] = []
     for ctx in context:
         ctx_type = ctx.get("type", "context")
-        system_parts.append(f"\n<{ctx_type}>\n{ctx.get('content', '')}\n</{ctx_type}>")
-    system_prompt = "\n".join(system_parts)
+        content = ctx.get("content", "")
+        if content:
+            sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", ctx_type)
+            context_entries.append(ContextEntry(
+                type=_map_context_type(sanitized),
+                tag=sanitized,
+                content=content,
+            ))
+
+    spec = PromptSpec(
+        role="task_executor",
+        identity=task_row["system_prompt"] or "You are a focused task executor.",
+        task_description=task_row["description"],
+        context=context_entries,
+        task_type=task_row.get("task_type", "") or "",
+    )
+    rendered = render_prompt(spec, "ollama")
+    system_prompt = rendered.system_prompt
 
     # Resolve tools
     tool_names = json.loads(task_row["tools_json"]) if task_row.get("tools_json") else []

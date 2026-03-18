@@ -120,6 +120,31 @@ export const fetchGitStatus = (projectId: string) =>
   apiFetch<GitStatus | null>(`/projects/${projectId}/git-status`)
 
 // ---------------------------------------------------------------------------
+// Plan Comments + Review / Deepen
+// ---------------------------------------------------------------------------
+
+export interface PlanComment {
+  id: string
+  plan_id: string
+  project_id: string
+  author: string
+  content: string
+  created_at: number
+}
+
+export const listPlanComments = (projectId: string, planId: string) =>
+  apiFetch<PlanComment[]>(`/projects/${projectId}/plans/${planId}/comments`)
+
+export const addPlanComment = (projectId: string, planId: string, content: string) =>
+  apiPost<PlanComment>(`/projects/${projectId}/plans/${planId}/comments`, { content })
+
+export const reviewPlan = (projectId: string, planId: string, targetRigor?: string) =>
+  apiPost<{ plan_id: string; plan: unknown; cost_usd: number }>(
+    `/projects/${projectId}/plans/${planId}/review`,
+    { target_rigor: targetRigor ?? null },
+  )
+
+// ---------------------------------------------------------------------------
 // Internal chat — routes to Claude/Gemini/Codex CLI or Ollama
 // ---------------------------------------------------------------------------
 

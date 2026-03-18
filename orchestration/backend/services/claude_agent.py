@@ -9,10 +9,24 @@
 
 import json
 import logging
+import re
 
 from backend.config import API_TIMEOUT, KNOWLEDGE_INJECTION_MAX_CHARS, MAX_HISTORY_ROUNDS, MAX_TOOL_ROUNDS
 from backend.models.enums import ModelTier
 from backend.services.model_router import calculate_cost, get_model_id
+from backend.services.prompt_renderer import (
+    ContextEntry,
+    ContextType,
+    PromptSpec,
+    render_prompt,
+)
+from backend.services.cli_common import (
+    _CODE_TASK_FEW_SHOT,
+    _CODE_TASK_TYPES,
+    _EXECUTION_RULES,
+    _format_knowledge_block,
+    _map_context_type,
+)
 
 logger = logging.getLogger("orchestration.executor")
 
@@ -95,25 +109,44 @@ async def run_claude_task(
     # Build context
     context = json.loads(task_row["context_json"]) if task_row["context_json"] else []
 
+    # Build PromptSpec from task row and context
+    context_entries: list[ContextEntry] = []
+
     # Check for C# method task — uses structured WorkerInstruction prompt
     csharp_context = _extract_csharp_context(context)
     if csharp_context:
-        system_parts = [_build_csharp_worker_prompt(csharp_context, task_row)]
-    else:
-        system_parts = [task_row["system_prompt"] or "You are a focused task executor."]
+        context_entries.append(ContextEntry(
+            type=ContextType.CSHARP_WORKER,
+            tag="WorkerInstruction",
+            content=_build_csharp_worker_prompt(csharp_context, task_row),
+        ))
 
-    system_parts.append(
-        "\n<meta_instructions>\n"
-        "If you discover any constraints, gotchas, API quirks, or architectural "
-        "decisions during this task, note them clearly in your output so they can "
-        "be preserved for other tasks.\n"
-        "</meta_instructions>"
-    )
+    identity = task_row["system_prompt"] or "You are a focused task executor."
+
+    # Meta instructions for knowledge discovery
+    context_entries.append(ContextEntry(
+        type=ContextType.META_INSTRUCTIONS,
+        tag="meta_instructions",
+        content=(
+            "If you discover any constraints, gotchas, API quirks, or architectural "
+            "decisions during this task, note them clearly in your output so they can "
+            "be preserved for other tasks."
+        ),
+    ))
+
+    # Add context entries (skip C# entries already handled)
     for ctx in context:
         ctx_type = ctx.get("type", "context")
         if ctx_type in ("target_signature", "available_methods", "constructor_params"):
-            continue  # Already injected into WorkerInstruction
-        system_parts.append(f"\n<{ctx_type}>\n{ctx.get('content', '')}\n</{ctx_type}>")
+            continue
+        content = ctx.get("content", "")
+        if content:
+            sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", ctx_type)
+            context_entries.append(ContextEntry(
+                type=_map_context_type(sanitized),
+                tag=sanitized,
+                content=content,
+            ))
 
     # Inject project knowledge from earlier tasks
     if db is not None:
@@ -142,18 +175,54 @@ async def run_claude_task(
                     knowledge_parts.append(entry)
                     total_chars += len(entry)
                 if knowledge_parts:
-                    system_parts.append(
-                        "\n<historical_rationale>\n"
-                        "The following findings capture WHY previous decisions were "
-                        "made. Use this rationale to inform your approach — avoid "
-                        "repeating failed strategies and build on what worked:\n"
-                        + "\n".join(f"- {p}" for p in knowledge_parts)
-                        + "\n</historical_rationale>"
-                    )
+                    context_entries.append(ContextEntry(
+                        type=ContextType.HISTORICAL_RATIONALE,
+                        tag="historical_rationale",
+                        content=(
+                            "The following findings capture WHY previous decisions were "
+                            "made. Use this rationale to inform your approach — avoid "
+                            "repeating failed strategies and build on what worked:\n"
+                            + "\n".join(f"- {p}" for p in knowledge_parts)
+                        ),
+                    ))
         except Exception as e:
             logger.debug("Failed to inject project knowledge: %s", e)
 
-    system_prompt = "\n".join(system_parts)
+    # Detect code task for execution rules + few-shot
+    task_type = task_row.get("task_type", "") or ""
+    tools_json_raw = task_row.get("tools", "[]") or "[]"
+    tool_names_list = json.loads(tools_json_raw) if isinstance(tools_json_raw, str) else tools_json_raw
+    is_code_task = task_type in _CODE_TASK_TYPES and "write_file" in tool_names_list
+
+    constraints = []
+    few_shot = []
+    if is_code_task:
+        context_entries.append(ContextEntry(
+            type=ContextType.EXECUTION_RULES,
+            tag="execution_rules",
+            content=_EXECUTION_RULES,
+        ))
+        few_shot.append(_CODE_TASK_FEW_SHOT)
+        constraints.append("You MUST write files using Write/Edit tools — text descriptions will be rejected.")
+
+    spec = PromptSpec(
+        role="task_executor",
+        identity=identity if not csharp_context else "You are a C# method implementation worker.",
+        task_description=task_row["description"],
+        context=context_entries,
+        constraints=constraints,
+        output_format="code" if is_code_task else "text",
+        few_shot_examples=few_shot,
+        assistant_prefill=(
+            "I'll start by reading the relevant files, then write the implementation."
+            if is_code_task else ""
+        ),
+        task_type=task_type,
+        tools_available=tool_names_list,
+    )
+
+    rendered = render_prompt(spec, "claude")
+    system_prompt = rendered.system_prompt
 
     # Build tool definitions
     tool_names = json.loads(task_row["tools_json"]) if task_row["tools_json"] else []

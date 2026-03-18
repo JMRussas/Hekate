@@ -6,7 +6,9 @@ import {
   getProject, listPlans, listTasks, fetchCoverage, fetchCheckpoints,
   generatePlan, approvePlan, startExecution, pauseExecution, cancelProject,
   resolveCheckpoint, updateProject, fetchGitStatus,
+  listPlanComments, addPlanComment, reviewPlan,
 } from '../api/projects'
+import type { PlanComment } from '../api/projects'
 import { useSSE } from '../hooks/useSSE'
 import { useFetch } from '../hooks/useFetch'
 import type { Project, Plan, Task, Checkpoint, CoverageReport, PlanningRigor, GitStatus } from '../types'
@@ -97,6 +99,53 @@ export default function ProjectDetail() {
   }
 
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null)
+
+  // Plan comments state
+  const [planComments, setPlanComments] = useState<Record<string, PlanComment[]>>({})
+  const [commentText, setCommentText] = useState('')
+  const [commentPlanId, setCommentPlanId] = useState<string | null>(null)
+
+  const loadComments = async (planId: string) => {
+    try {
+      const comments = await listPlanComments(id!, planId)
+      setPlanComments(prev => ({ ...prev, [planId]: comments }))
+    } catch { /* ignore */ }
+  }
+
+  const handleAddComment = async (planId: string) => {
+    if (!commentText.trim()) return
+    setLoading('comment')
+    setActionError('')
+    try {
+      await addPlanComment(id!, planId, commentText.trim())
+      setCommentText('')
+      await loadComments(planId)
+    } catch (e) {
+      setActionError(String(e))
+    }
+    setLoading('')
+  }
+
+  const handleReview = async (planId: string, targetRigor?: string) => {
+    const label = targetRigor ? 'deepen' : 'review'
+    setLoading(label)
+    setActionError('')
+    try {
+      await reviewPlan(id!, planId, targetRigor)
+      refetch()
+    } catch (e) {
+      setActionError(String(e))
+    }
+    setLoading('')
+  }
+
+  // Load comments when a plan is expanded
+  const effectPlanId = expandedPlanId ?? plans[0]?.id ?? null
+  useEffect(() => {
+    if (effectPlanId && id && !planComments[effectPlanId]) {
+      loadComments(effectPlanId)
+    }
+  }, [effectPlanId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!id) return <div className="text-dim">Invalid URL — missing project ID.</div>
   if (error && !project) return <div className="card" style={{ borderColor: 'var(--error)' }}>Error: {error}</div>
@@ -333,6 +382,77 @@ export default function ProjectDetail() {
                 {isExpanded && (
                   <div className="plan-version-body">
                     <PlanTree plan={plan.plan} />
+
+                    {/* Plan Comments */}
+                    {plan.status === 'draft' && (
+                      <div style={{ marginTop: '1rem', borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+                        <div className="flex-between mb-1">
+                          <h4 style={{ margin: 0 }}>Comments</h4>
+                          <div className="flex gap-1">
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => handleReview(plan.id)}
+                              disabled={!!loading}
+                            >
+                              {loading === 'review' ? 'Re-planning...' : 'Re-plan with Comments'}
+                            </button>
+                            {(project.planning_rigor === 'L0' || project.planning_rigor === 'L1' || project.planning_rigor === 'L2') && (
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => {
+                                  const next = project.planning_rigor === 'L0' ? 'L1'
+                                    : project.planning_rigor === 'L1' ? 'L2' : 'L3'
+                                  handleReview(plan.id, next)
+                                }}
+                                disabled={!!loading}
+                              >
+                                {loading === 'deepen' ? 'Deepening...' : `Deepen to ${
+                                  project.planning_rigor === 'L0' ? 'L1'
+                                    : project.planning_rigor === 'L1' ? 'L2' : 'L3'
+                                }`}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Existing comments */}
+                        {(planComments[plan.id] ?? []).map(c => (
+                          <div key={c.id} style={{
+                            padding: '0.5rem 0.75rem', marginBottom: '0.5rem',
+                            background: 'var(--bg)', borderRadius: 'var(--radius)',
+                            borderLeft: '3px solid var(--accent)',
+                          }}>
+                            <div className="flex-between">
+                              <span className="text-sm" style={{ fontWeight: 600 }}>{c.author}</span>
+                              <span className="text-dim text-sm">{new Date(c.created_at * 1000).toLocaleString()}</span>
+                            </div>
+                            <p className="text-sm" style={{ marginTop: '0.25rem', whiteSpace: 'pre-wrap' }}>{c.content}</p>
+                          </div>
+                        ))}
+
+                        {/* Add comment */}
+                        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                          <textarea
+                            value={commentPlanId === plan.id ? commentText : ''}
+                            onFocus={() => {
+                              setCommentPlanId(plan.id)
+                              if (!planComments[plan.id]) loadComments(plan.id)
+                            }}
+                            onChange={e => { setCommentPlanId(plan.id); setCommentText(e.target.value) }}
+                            placeholder="Add a comment — tell the planner what to fix, what patterns to follow, what's wrong..."
+                            style={{ flex: 1, minHeight: '60px', resize: 'vertical' }}
+                          />
+                          <button
+                            className="btn btn-primary btn-sm"
+                            style={{ alignSelf: 'flex-end' }}
+                            onClick={() => handleAddComment(plan.id)}
+                            disabled={!!loading || !commentText.trim()}
+                          >
+                            {loading === 'comment' ? '...' : 'Add'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

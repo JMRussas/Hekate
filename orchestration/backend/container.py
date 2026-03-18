@@ -60,6 +60,7 @@ class Container(containers.DeclarativeContainer):
             "backend.routes.external",
             "backend.routes.internal",
             "backend.routes.sentinel",
+            "backend.routes.odin",
             "backend.routes.chat",
             "backend.middleware.auth",
             "backend.services.model_discovery",
@@ -120,4 +121,5 @@ class Container(containers.DeclarativeContainer):
         diagnostic_ingester=diagnostic_ingester,
         quota_manager=provider_quota,
         system_sentinel=system_sentinel,
+        bus=sentinel_bus,
     )
