@@ -215,7 +215,7 @@ def build_odin_spec(world_state: dict, recent_decisions: list[dict]) -> PromptSp
             type=ContextType.GENERIC,
             tag="intervention_guidelines",
             content=_INTERVENTION_GUIDELINES,
-            priority_override=5,
+            priority_override=1,  # Must survive Ollama's 6k budget — Odin needs tool docs
         ),
     ]
 

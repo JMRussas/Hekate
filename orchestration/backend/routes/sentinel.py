@@ -440,10 +440,10 @@ async def list_decisions(
         # No filters — fetch all recent decisions across projects
         try:
             rows = await db.fetchall(
-                """SELECT id, project_id, timestamp, command, reasoning,
-                          confidence, outcome, details_json
-                   FROM sentinel_decisions
-                   ORDER BY timestamp DESC LIMIT $1""",
+                """SELECT decision_id, project_id, created_at, decision_type,
+                          reasoning, confidence, outcome, details_json
+                   FROM odin_decisions
+                   ORDER BY created_at DESC LIMIT $1""",
                 (limit,),
             )
             records = [DecisionLogger._row_to_record(r) for r in rows]

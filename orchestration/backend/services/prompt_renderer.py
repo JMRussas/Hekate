@@ -131,21 +131,23 @@ class RenderedPrompt:
 # Provider mapping
 # ---------------------------------------------------------------------------
 
+_TIER_TO_PROVIDER = {
+    "claude_code": "claude",
+    "haiku": "claude",
+    "sonnet": "claude",
+    "opus": "claude",
+    "gemini_cli": "gemini",
+    "codex_cli": "gemini",  # similar flat-prompt style
+    "ollama": "ollama",
+}
+
+
 def provider_from_tier(tier_value: str) -> str:
     """Map a model tier string to a provider name for renderer selection.
 
     Matches the TIER_TO_PROVIDER logic in model_router.py.
     """
-    _TIER_MAP = {
-        "claude_code": "claude",
-        "haiku": "claude",
-        "sonnet": "claude",
-        "opus": "claude",
-        "gemini_cli": "gemini",
-        "codex_cli": "gemini",  # similar flat-prompt style
-        "ollama": "ollama",
-    }
-    return _TIER_MAP.get(tier_value, "claude")
+    return _TIER_TO_PROVIDER.get(tier_value, "claude")
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +165,13 @@ class BaseRenderer:
     def _budget_context(
         self, entries: list[ContextEntry], budget: int | None = None,
     ) -> list[ContextEntry]:
-        """Sort by priority, truncate to fit within character budget."""
+        """Sort by priority, sanitize tags, truncate to fit within character budget."""
         if budget is None:
             budget = self.max_context_chars
+
+        # Sanitize all tags upfront — prevent injection via any renderer
+        for entry in entries:
+            entry.tag = self._sanitize_tag(entry.tag)
 
         sorted_entries = sorted(entries, key=lambda e: e.priority)
         result: list[ContextEntry] = []

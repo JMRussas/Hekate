@@ -104,6 +104,7 @@ def _map_context_type(ctx_type: str) -> ContextType:
         "sibling_tasks": ContextType.SIBLING_TASKS,
         "task_description": ContextType.TASK_DESCRIPTION,
         "meta_instructions": ContextType.META_INSTRUCTIONS,
+        "dependency_output": ContextType.DEPENDENCY_OUTPUT,
         "target_signature": ContextType.CSHARP_WORKER,
         "available_methods": ContextType.CSHARP_WORKER,
         "constructor_params": ContextType.CSHARP_WORKER,
@@ -163,8 +164,8 @@ def build_prompt_spec(task_row) -> PromptSpec:
 
     # Detect code task and add execution rules + few-shot
     task_type = task_row.get("task_type", "") or ""
-    tools_json = task_row.get("tools", "[]") or "[]"
-    tools = json.loads(tools_json) if isinstance(tools_json, str) else tools_json
+    tools_raw = task_row.get("tools_json") or task_row.get("tools", "[]") or "[]"
+    tools = json.loads(tools_raw) if isinstance(tools_raw, str) else tools_raw
 
     constraints: list[str] = []
     few_shot: list[FewShotExample] = []
@@ -182,7 +183,7 @@ def build_prompt_spec(task_row) -> PromptSpec:
     return PromptSpec(
         role="task_executor",
         identity=identity,
-        task_description=task_row["description"],
+        task_description=task_row["description"] or "",
         context=context_entries,
         constraints=constraints,
         output_format="code" if is_code_task else "text",

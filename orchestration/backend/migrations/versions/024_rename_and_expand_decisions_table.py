@@ -82,6 +82,8 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("task_id", sa.Text, nullable=True))
         # R9: action_taken — the concrete action executed after the decision
         batch_op.add_column(sa.Column("action_taken", sa.Text, nullable=True))
+        # params_json — serialized tool arguments for the decision
+        batch_op.add_column(sa.Column("params_json", sa.Text, nullable=True))
 
         # -- Pre-existing columns: enforce R9 schema constraints --
         # R9: reasoning — LLM reasoning output, must not be null

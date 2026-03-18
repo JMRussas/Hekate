@@ -1,8 +1,9 @@
 #  Decision Logger
 #
-#  Audit trail for every sentinel decision — writes to sentinel_decisions table.
+#  Audit trail for every sentinel/odin decision — writes to odin_decisions table.
+#  Table was renamed from sentinel_decisions in migration 024.
 #
-#  Used by: plan_sentinel.py, reasoner_context.py, routes/sentinel.py
+#  Used by: plan_sentinel.py, reasoner_context.py, routes/sentinel.py, odin.py
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class DecisionLogger:
-    """Async utility for recording and querying sentinel decisions."""
+    """Async utility for recording and querying decisions."""
 
     def __init__(self, db: Any) -> None:
         self._db = db
@@ -32,7 +33,7 @@ class DecisionLogger:
         outcome: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> str:
-        """Persist a decision to the sentinel_decisions table.
+        """Persist a decision to the odin_decisions table.
 
         Returns the generated decision_id.
         """
@@ -40,8 +41,9 @@ class DecisionLogger:
         details_json = json.dumps(details) if details else None
         try:
             await self._db.execute_write(
-                """INSERT INTO sentinel_decisions
-                   (id, project_id, timestamp, command, reasoning, confidence, outcome, details_json)
+                """INSERT INTO odin_decisions
+                   (decision_id, project_id, created_at, decision_type, reasoning,
+                    confidence, outcome, details_json)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
                 (
                     decision_id,
@@ -71,20 +73,20 @@ class DecisionLogger:
         try:
             if command:
                 rows = await self._db.fetchall(
-                    """SELECT id, project_id, timestamp, command, reasoning,
-                              confidence, outcome, details_json
-                       FROM sentinel_decisions
-                       WHERE project_id = $1 AND command = $2
-                       ORDER BY timestamp DESC LIMIT $3""",
+                    """SELECT decision_id, project_id, created_at, decision_type,
+                              reasoning, confidence, outcome, details_json
+                       FROM odin_decisions
+                       WHERE project_id = $1 AND decision_type = $2
+                       ORDER BY created_at DESC LIMIT $3""",
                     (project_id, command, limit),
                 )
             else:
                 rows = await self._db.fetchall(
-                    """SELECT id, project_id, timestamp, command, reasoning,
-                              confidence, outcome, details_json
-                       FROM sentinel_decisions
+                    """SELECT decision_id, project_id, created_at, decision_type,
+                              reasoning, confidence, outcome, details_json
+                       FROM odin_decisions
                        WHERE project_id = $1
-                       ORDER BY timestamp DESC LIMIT $2""",
+                       ORDER BY created_at DESC LIMIT $2""",
                     (project_id, limit),
                 )
             return [self._row_to_record(r) for r in rows]
@@ -103,11 +105,11 @@ class DecisionLogger:
         """
         try:
             rows = await self._db.fetchall(
-                """SELECT id, project_id, timestamp, command, reasoning,
-                          confidence, outcome, details_json
-                   FROM sentinel_decisions
-                   WHERE command = $1
-                   ORDER BY timestamp DESC LIMIT $2""",
+                """SELECT decision_id, project_id, created_at, decision_type,
+                          reasoning, confidence, outcome, details_json
+                   FROM odin_decisions
+                   WHERE decision_type = $1
+                   ORDER BY created_at DESC LIMIT $2""",
                 (command, limit),
             )
             return [self._row_to_record(r) for r in rows]
@@ -117,10 +119,10 @@ class DecisionLogger:
 
     @staticmethod
     def _row_to_record(row: Any) -> DecisionRecord:
-        """Convert a sqlite3.Row into a DecisionRecord."""
+        """Convert a DB row into a DecisionRecord."""
         from datetime import datetime, timezone
 
-        ts = row["timestamp"]
+        ts = row["created_at"]
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
 
         details_raw = row["details_json"]
@@ -129,12 +131,12 @@ class DecisionLogger:
         from backend.services.sentinel.models import SentinelCommand
 
         try:
-            cmd = SentinelCommand(row["command"])
+            cmd = SentinelCommand(row["decision_type"])
         except ValueError:
             cmd = SentinelCommand.DISPATCH_TASK  # fallback for unknown commands
 
         record = DecisionRecord(
-            id=row["id"],
+            id=row["decision_id"],
             project_id=row["project_id"],
             timestamp=dt,
             command=cmd,

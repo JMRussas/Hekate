@@ -190,7 +190,7 @@ async def run_claude_task(
 
     # Detect code task for execution rules + few-shot
     task_type = task_row.get("task_type", "") or ""
-    tools_json_raw = task_row.get("tools", "[]") or "[]"
+    tools_json_raw = task_row.get("tools_json") or task_row.get("tools", "[]") or "[]"
     tool_names_list = json.loads(tools_json_raw) if isinstance(tools_json_raw, str) else tools_json_raw
     is_code_task = task_type in _CODE_TASK_TYPES and "write_file" in tool_names_list
 
@@ -254,6 +254,13 @@ async def run_claude_task(
         if tool_defs:
             kwargs["tools"] = tool_defs
 
+        # Emit phase event for each API round
+        phase_label = "thinking" if round_num == 0 else f"tool_round_{round_num}"
+        await progress.push_event(
+            project_id, "phase", f"Phase: {phase_label}",
+            task_id=task_id, phase=phase_label, round=round_num,
+        )
+
         response = await client.messages.create(**kwargs)
 
         # Record usage
@@ -292,6 +299,11 @@ async def run_claude_task(
         for block in response.content:
             if block.type == "text":
                 text_parts.append(block.text)
+                # Emit output event with the text content for Iris streaming
+                await progress.push_event(
+                    project_id, "task_output", block.text,
+                    task_id=task_id,
+                )
             elif block.type == "tool_use":
                 has_tool_use = True
                 tool_name = block.name
@@ -317,6 +329,13 @@ async def run_claude_task(
                         logger.debug("Tool %s error detail: %s", tool_name, e)
                 else:
                     result = f"Unknown tool: {tool_name}"
+
+                # Emit tool_result event for Iris
+                await progress.push_event(
+                    project_id, "tool_result",
+                    f"{tool_name}: {'ok' if not str(result).startswith('Tool error') else 'error'}",
+                    task_id=task_id, tool=tool_name,
+                )
 
                 tool_results.append({
                     "type": "tool_result",

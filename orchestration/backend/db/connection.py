@@ -264,19 +264,21 @@ _SCHEMA_STATEMENTS = [
         reasoning TEXT,
         timestamp DOUBLE PRECISION NOT NULL
     )""",
-    """CREATE TABLE IF NOT EXISTS sentinel_decisions (
-        id TEXT PRIMARY KEY,
+    """CREATE TABLE IF NOT EXISTS odin_decisions (
+        decision_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
-        observation_id TEXT,
-        command TEXT NOT NULL,
+        task_id TEXT,
+        decision_type TEXT NOT NULL,
         params_json TEXT DEFAULT '{}',
         confidence DOUBLE PRECISION NOT NULL DEFAULT 0.0,
         reasoning TEXT,
+        action_taken TEXT,
+        outcome TEXT,
         details_json TEXT DEFAULT '{}',
-        timestamp DOUBLE PRECISION NOT NULL
+        created_at DOUBLE PRECISION NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_sentinel_obs_project ON sentinel_observations(project_id)",
-    "CREATE INDEX IF NOT EXISTS idx_sentinel_dec_project ON sentinel_decisions(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_odin_dec_project ON odin_decisions(project_id)",
     # Odin state
     """CREATE TABLE IF NOT EXISTS odin_state (
         id TEXT PRIMARY KEY DEFAULT 'singleton',
