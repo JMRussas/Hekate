@@ -758,9 +758,14 @@ class TestReasonerRetryDiagnosis:
         reasoner = SentinelReasoner(context=_mock_context(), enabled=True)
         await reasoner.reason(_make_obs(), state)
 
-        # Inspect the user message sent to call_llm
-        args, _ = mock_call_llm.call_args
-        user_message = args[1]  # second positional arg is the user message
+        # Inspect the user message sent to call_llm (may be in spec= kwarg or positional)
+        _, kwargs = mock_call_llm.call_args
+        spec = kwargs.get("spec")
+        if spec is not None:
+            user_message = spec.task_description
+        else:
+            args, _ = mock_call_llm.call_args
+            user_message = args[1]
         assert "model 'gemini-ultra' not found" in user_message
 
     @patch("backend.services.sentinel.reasoner.call_llm")

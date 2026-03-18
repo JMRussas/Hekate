@@ -1,6 +1,6 @@
 #  Odin Tools — LLM-callable tool definitions for the system overseer
 #
-#  10 tools: 4 observation, 6 intervention.
+#  22 tools: 7 observation, 7 intervention, 3 learning, 3 lifecycle, 2 mcp.
 #  Each tool has an OpenAI function-calling schema (for qwen3.5 via Ollama)
 #  and an async executor that operates on the DB directly.
 #
@@ -79,6 +79,30 @@ TOOLS: list[dict] = [
         "function": {
             "name": "get_resource_health",
             "description": "Check availability of Ollama, context store, and Claude CLI.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_provider_status",
+            "description": "Check availability and quota status of all LLM providers (Claude, Gemini, Ollama).",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_god_health",
+            "description": "Check heartbeat status of all registered gods (Odin, Huginn, etc). Shows uptime, last heartbeat, and dependency health.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -249,7 +273,7 @@ TOOLS: list[dict] = [
                 "properties": {
                     "name": {"type": "string", "description": "Short project name."},
                     "requirements": {"type": "string", "description": "What the project should accomplish. Be specific."},
-                    "repo_path": {"type": "string", "description": "Git repo path for the project. Use C:/Users/jruss/Documents/GitHub/Hekate for Hekate work."},
+                    "repo_path": {"type": "string", "description": "Git repo path for the project. Use C:/Users/jruss/Documents/GitHub/Hekate for Hekate work, or omit to use the default workspace D:/Conversations/Odin/."},
                 },
                 "required": ["name", "requirements"],
             },
@@ -313,6 +337,99 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "dispatch_task",
+            "description": "Dispatch a pending task for execution. Sets it to queued status so the executor picks it up.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "Task ID to dispatch.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this task should be dispatched now.",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "wave_readiness",
+            "description": "Check which tasks in a project are ready for dispatch (pending, dependencies met, in current wave).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": "Project ID to check.",
+                    },
+                },
+                "required": ["project_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "advance_wave",
+            "description": "Check if the current wave is complete and advance to the next wave. Unblocks pending tasks in the next wave.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": "Project ID to advance.",
+                    },
+                },
+                "required": ["project_id"],
+            },
+        },
+    },
+    # --- MCP server management tools ---
+    {
+        "type": "function",
+        "function": {
+            "name": "spawn_mcp_server",
+            "description": "Spawn an MCP server subprocess for task execution. Returns available tools.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Unique session name.",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command to run (e.g., 'node server.js' or 'python server.py').",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory for the server process.",
+                    },
+                },
+                "required": ["name", "command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_mcp_sessions",
+            "description": "List active MCP server sessions.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 INTERVENTION_TOOLS: set[str] = {
@@ -322,9 +439,12 @@ INTERVENTION_TOOLS: set[str] = {
     "reassign_tier",
     "modify_prompt",
     "log_observation",
+    "dispatch_task",
+    "advance_wave",
     "create_project",
     "plan_project",
     "start_project",
+    "spawn_mcp_server",
 }
 
 # ---------------------------------------------------------------------------
@@ -489,6 +609,74 @@ async def _get_resource_health(db: Database, bus: SentinelBus, args: dict) -> st
         checks.append("Claude CLI: NOT FOUND on PATH")
 
     return "Resource Health:\n" + "\n".join(f"  {c}" for c in checks)
+
+
+async def _get_provider_status(db: Database, bus: SentinelBus, args: dict) -> str:
+    import httpx
+    import os
+
+    gateway_url = os.environ.get("LLM_GATEWAY_URL", "http://localhost:5210")
+    lines = ["Provider Status (via LLM Gateway):"]
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{gateway_url}/providers")
+            if resp.status_code == 200:
+                providers = resp.json()
+                for name, info in providers.items():
+                    available = info.get("available", False) if isinstance(info, dict) else False
+                    status = "AVAILABLE" if available else "UNAVAILABLE"
+                    lines.append(f"  {name}: {status}")
+            else:
+                lines.append(f"  LLM Gateway: ERROR (status {resp.status_code})")
+    except Exception as exc:
+        lines.append(f"  LLM Gateway: UNREACHABLE ({type(exc).__name__}: {exc})")
+
+    return "\n".join(lines)
+
+
+async def _get_god_health(db: Database, bus: SentinelBus, args: dict) -> str:
+    try:
+        rows = await db.fetchall(
+            "SELECT god_name, payload, created_at FROM god_events "
+            "WHERE event_type = 'heartbeat' "
+            "ORDER BY created_at DESC LIMIT 50",
+            (),
+        )
+    except Exception as exc:
+        return f"Could not query god_events table: {type(exc).__name__}: {exc}"
+
+    if not rows:
+        return "No god heartbeats found. No gods are running."
+
+    gods = {}
+    for r in rows:
+        name = r["god_name"]
+        if name not in gods:
+            payload = r["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload) if payload else {}
+            elif payload is None:
+                payload = {}
+            deps = payload.get("dependencies", {})
+            dep_summary = ", ".join(
+                f"{d}={'OK' if v.get('healthy') else 'DOWN'}"
+                for d, v in deps.items()
+            ) if deps else "none"
+            gods[name] = {
+                "last_heartbeat": str(r["created_at"]),
+                "uptime_s": payload.get("uptime_s", 0),
+                "deps": dep_summary,
+            }
+
+    lines = ["God Health:"]
+    for name, info in gods.items():
+        lines.append(
+            f"  {name}: uptime={info['uptime_s']:.0f}s "
+            f"last_beat={info['last_heartbeat']} deps=[{info['deps']}]"
+        )
+
+    return "\n".join(lines)
 
 
 async def _retry_task(db: Database, bus: SentinelBus, args: dict) -> str:
@@ -706,6 +894,108 @@ async def _log_observation(db: Database, bus: SentinelBus, args: dict) -> str:
     return f"Observation logged: [{severity}] {summary}"
 
 
+async def _dispatch_task(db: Database, bus: SentinelBus, args: dict) -> str:
+    task_id = args.get("task_id")
+    reason = args.get("reason", "")
+    if not task_id:
+        return "Error: task_id is required."
+
+    task = await db.fetchone(
+        "SELECT id, title, status, model_tier, project_id FROM tasks WHERE id = $1",
+        (task_id,),
+    )
+    if not task:
+        return f"Error: task {task_id} not found."
+    if task["status"] not in ("pending", "blocked"):
+        return f"Error: task is '{task['status']}', must be pending or blocked to dispatch."
+
+    now = time.time()
+    await db.execute_write(
+        "UPDATE tasks SET status = 'pending', updated_at = $1 WHERE id = $2",
+        (now, task_id),
+    )
+
+    # Publish dispatch command for the executor
+    await bus.publish(SentinelMessage(
+        topic="dispatch_command",
+        source="odin",
+        payload={
+            "task_id": task_id,
+            "project_id": task["project_id"],
+            "reason": reason,
+        },
+    ))
+
+    return f"Task {task_id[:8]} ({task['title']}) set to pending for dispatch. Reason: {reason}"
+
+
+async def _wave_readiness(db: Database, bus: SentinelBus, args: dict) -> str:
+    project_id = args.get("project_id")
+    if not project_id:
+        return "Error: project_id is required."
+
+    # Find current wave (lowest wave with incomplete tasks)
+    wave_row = await db.fetchone(
+        "SELECT MIN(wave) as w FROM tasks "
+        "WHERE project_id = $1 AND status NOT IN ('completed', 'cancelled', 'skipped', 'needs_review')",
+        (project_id,),
+    )
+    if not wave_row or wave_row["w"] is None:
+        return f"All tasks complete for project {project_id}."
+
+    current_wave = wave_row["w"]
+
+    # Try dependency-aware query first (task_deps table)
+    ready = None
+    try:
+        ready = await db.fetchall(
+            "SELECT t.id, t.title, t.status, t.model_tier, t.retry_count, t.error "
+            "FROM tasks t "
+            "LEFT JOIN task_deps d ON d.task_id = t.id "
+            "LEFT JOIN tasks dep ON dep.id = d.depends_on "
+            "  AND dep.status NOT IN ('completed', 'needs_review') "
+            "WHERE t.project_id = $1 AND t.status = 'pending' AND t.wave = $2 "
+            "GROUP BY t.id, t.title, t.status, t.model_tier, t.retry_count, t.error "
+            "HAVING COUNT(dep.id) = 0 "
+            "ORDER BY t.priority ASC",
+            (project_id, current_wave),
+        )
+    except Exception:
+        # task_deps table doesn't exist — fall back to simple query
+        ready = None
+
+    if ready is None:
+        ready = await db.fetchall(
+            "SELECT id, title, status, model_tier, retry_count, error "
+            "FROM tasks WHERE project_id = $1 AND status = 'pending' AND wave = $2 "
+            "ORDER BY priority ASC",
+            (project_id, current_wave),
+        )
+
+    if not ready:
+        # Check if there are running tasks in the current wave
+        running = await db.fetchall(
+            "SELECT id, title FROM tasks "
+            "WHERE project_id = $1 AND status IN ('running', 'queued') AND wave = $2",
+            (project_id, current_wave),
+        )
+        if running:
+            lines = [f"Wave {current_wave}: {len(running)} task(s) still running:"]
+            for r in running:
+                lines.append(f"  - {r['title']} [{r['id'][:8]}]")
+            return "\n".join(lines)
+        return f"Wave {current_wave}: no ready tasks (may be blocked by dependencies)."
+
+    lines = [f"Wave {current_wave}: {len(ready)} task(s) ready for dispatch:"]
+    for t in ready:
+        err = f" [last error: {t['error'][:60]}]" if t.get("error") else ""
+        lines.append(
+            f"  - {t['title']} [{t['id'][:8]}] tier={t['model_tier']} retries={t['retry_count']}{err}"
+        )
+    lines.append("\nUse dispatch_task to start any of these.")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Learning & iteration executors
 # ---------------------------------------------------------------------------
@@ -841,7 +1131,7 @@ async def _get_recent_completions(db: Database, bus: SentinelBus, args: dict) ->
 async def _create_project(db: Database, bus: SentinelBus, args: dict) -> str:
     name = args.get("name")
     requirements = args.get("requirements")
-    repo_path = args.get("repo_path", "C:/Users/jruss/Documents/GitHub/Hekate")
+    repo_path = args.get("repo_path", "D:/Conversations/Odin")
     if not name or not requirements:
         return "Error: name and requirements are required."
 
@@ -919,6 +1209,113 @@ async def _start_project(db: Database, bus: SentinelBus, args: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Wave advancement executor
+# ---------------------------------------------------------------------------
+
+
+async def _advance_wave(db: Database, bus: SentinelBus, args: dict) -> str:
+    project_id = args.get("project_id")
+    if not project_id:
+        return "Error: project_id is required."
+
+    # Find current wave (lowest wave with incomplete tasks)
+    wave_row = await db.fetchone(
+        "SELECT MIN(wave) as w FROM tasks "
+        "WHERE project_id = $1 AND status NOT IN ('completed', 'cancelled', 'skipped', 'needs_review')",
+        (project_id,),
+    )
+    if not wave_row or wave_row["w"] is None:
+        return f"All tasks complete for project {project_id}."
+
+    current_wave = wave_row["w"]
+
+    # Check if current wave is done
+    remaining = await db.fetchone(
+        "SELECT COUNT(*) as cnt FROM tasks "
+        "WHERE project_id = $1 AND wave = $2 AND status NOT IN ('completed', 'cancelled', 'skipped', 'needs_review')",
+        (project_id, current_wave),
+    )
+    if remaining and remaining["cnt"] > 0:
+        return f"Wave {current_wave} still has {remaining['cnt']} incomplete task(s). Cannot advance."
+
+    # Unblock next wave tasks
+    next_wave_row = await db.fetchone(
+        "SELECT MIN(wave) as w FROM tasks "
+        "WHERE project_id = $1 AND wave > $2 AND status = 'blocked'",
+        (project_id, current_wave),
+    )
+    if not next_wave_row or next_wave_row["w"] is None:
+        return f"Wave {current_wave} complete. No more waves -- project may be done."
+
+    next_wave = next_wave_row["w"]
+    now = time.time()
+    await db.execute_write(
+        "UPDATE tasks SET status = 'pending', updated_at = $1 "
+        "WHERE project_id = $2 AND wave = $3 AND status = 'blocked'",
+        (now, project_id, next_wave),
+    )
+
+    await bus.publish(SentinelMessage(
+        topic="state_change",
+        source="odin",
+        payload={
+            "type": "wave_advanced",
+            "project_id": project_id,
+            "from_wave": current_wave,
+            "to_wave": next_wave,
+        },
+    ))
+
+    return f"Wave {current_wave} complete. Advanced to wave {next_wave}. Blocked tasks unblocked."
+
+
+# ---------------------------------------------------------------------------
+# MCP server management tools
+# ---------------------------------------------------------------------------
+
+_mcp_spawner: "McpSpawner | None" = None
+
+
+def _get_spawner():
+    global _mcp_spawner
+    if _mcp_spawner is None:
+        from backend.services.mcp_spawner import McpSpawner
+        _mcp_spawner = McpSpawner()
+    return _mcp_spawner
+
+
+async def _spawn_mcp_server(db: Database, bus: SentinelBus, args: dict) -> str:
+    name = args.get("name")
+    command_str = args.get("command")
+    cwd = args.get("cwd")
+
+    if not name or not command_str:
+        return "Error: name and command are required."
+
+    import shlex
+    command = shlex.split(command_str)
+
+    spawner = _get_spawner()
+    try:
+        session = await spawner.spawn(name, command, cwd=cwd)
+        tools = [t.get("name", "?") for t in session.tools]
+        return (
+            f"MCP server '{name}' spawned with {len(session.tools)} tools: "
+            f"{', '.join(tools)}"
+        )
+    except Exception as e:
+        return f"Error spawning MCP server '{name}': {type(e).__name__}: {e}"
+
+
+async def _list_mcp_sessions(db: Database, bus: SentinelBus, args: dict) -> str:
+    spawner = _get_spawner()
+    sessions = spawner.active_sessions
+    if not sessions:
+        return "No active MCP sessions."
+    return f"Active MCP sessions: {', '.join(sessions)}"
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -927,18 +1324,25 @@ _EXECUTORS: dict[str, callable] = {
     "get_project_detail": _get_project_detail,
     "get_task_detail": _get_task_detail,
     "get_resource_health": _get_resource_health,
+    "get_provider_status": _get_provider_status,
+    "get_god_health": _get_god_health,
     "retry_task": _retry_task,
     "release_task": _release_task,
     "skip_task": _skip_task,
     "reassign_tier": _reassign_tier,
     "modify_prompt": _modify_prompt,
     "log_observation": _log_observation,
+    "dispatch_task": _dispatch_task,
+    "wave_readiness": _wave_readiness,
+    "advance_wave": _advance_wave,
     "review_completed_project": _review_completed_project,
     "get_project_knowledge": _get_project_knowledge,
     "get_recent_completions": _get_recent_completions,
     "create_project": _create_project,
     "plan_project": _plan_project,
     "start_project": _start_project,
+    "spawn_mcp_server": _spawn_mcp_server,
+    "list_mcp_sessions": _list_mcp_sessions,
 }
 
 

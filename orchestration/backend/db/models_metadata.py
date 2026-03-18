@@ -8,7 +8,9 @@
 #  Used by:    migrations/env.py (Alembic autogenerate)
 
 from sqlalchemy import (
+    BigInteger,
     Column,
+    DateTime,
     Float,
     ForeignKey,
     Index,
@@ -17,6 +19,7 @@ from sqlalchemy import (
     Table,
     Text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
 
@@ -64,7 +67,7 @@ plans = Table(
     Column("cost_usd", Float, nullable=False, server_default="0.0"),
     Column("plan_json", Text, nullable=False),
     Column("status", Text, nullable=False, server_default="draft"),
-    Column("node_mapping", Text, nullable=True),
+    Column("node_mapping_json", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -273,18 +276,56 @@ Index("idx_sentinel_obs_severity", sentinel_observations.c.severity)
 Index("idx_sentinel_obs_category", sentinel_observations.c.category)
 Index("idx_sentinel_obs_created", sentinel_observations.c.created_at)
 
-# -- Sentinel decisions (orchestrator command log) --
-sentinel_decisions = Table(
-    "sentinel_decisions",
+# -- Odin decisions (decision audit trail, R9) --
+odin_decisions = Table(
+    "odin_decisions",
     metadata,
-    Column("id", Text, primary_key=True),
+    Column("decision_id", Text, primary_key=True),
     Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
-    Column("timestamp", Float, nullable=False),
-    Column("command", Text, nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("decision_type", Text, nullable=False),
     Column("reasoning", Text, nullable=False),
     Column("confidence", Float, nullable=False),
+    Column("action_taken", Text, nullable=True),
     Column("outcome", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
     Column("details_json", Text, nullable=True),
 )
-Index("idx_sentinel_dec_project", sentinel_decisions.c.project_id)
-Index("idx_sentinel_dec_timestamp", sentinel_decisions.c.timestamp)
+Index("idx_odin_dec_project", odin_decisions.c.project_id)
+Index("idx_odin_dec_created_at", odin_decisions.c.created_at)
+Index("idx_odin_dec_type", odin_decisions.c.decision_type)
+
+# -- Security findings (Ares pre-plan security review) --
+security_findings = Table(
+    "security_findings",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("plan_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("task_index", Integer, nullable=False),
+    Column("task_title", Text, nullable=False),
+    Column("category", Text, nullable=False),
+    Column("severity", Text, nullable=False),
+    Column("description", Text, nullable=False),
+    Column("recommended_mitigation", Text, nullable=False),
+    Column("affected_files_json", Text, nullable=False),
+    Column("context_store_node_id", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+)
+Index("idx_security_findings_plan", security_findings.c.plan_id)
+Index("idx_security_findings_project", security_findings.c.project_id)
+
+# -- God events (cross-god event system for Odin polling, Postgres-only) --
+god_events = Table(
+    "god_events",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("god_name", Text, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("payload", JSONB(astext_type=Text()), nullable=True),
+    Column("severity", Text, nullable=False, server_default="info"),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+Index("idx_god_events_name_created", god_events.c.god_name, god_events.c.created_at)
+Index("idx_god_events_created", god_events.c.created_at)
+Index("idx_god_events_type", god_events.c.event_type)

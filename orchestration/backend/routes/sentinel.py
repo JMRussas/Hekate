@@ -310,23 +310,22 @@ async def approve_intervention(
 
     pid = row["project_id"]
 
-    # If the plan sentinel is still running, execute the intervention
-    from backend.services.sentinel.plan_sentinel import InterventionAction
-    action = InterventionAction(action_str)
-    ps = sentinel.plan_sentinels.get(pid)
-    if ps is not None:
-        # Reconstruct a minimal SentinelObservation for execution
-        from backend.services.sentinel.models import SentinelObservation, Severity as SevEnum
-        obs = SentinelObservation(
-            observation_id=details.get("observation_id", intervention_id),
-            category=row["category"],
-            message=row["message"],
-            severity=SevEnum(row["severity"]),
-            project_id=pid,
-            task_id=row["task_id"],
-            details=details,
-        )
-        await ps._execute_auto_intervention(action, obs)
+    # Forward approved intervention to Odin via the bus
+    from backend.services.sentinel.models import SentinelMessage
+    await sentinel.bus.publish(SentinelMessage(
+        topic="odin_anomaly",
+        source="sentinel_route",
+        payload={
+            "type": "intervention_approved",
+            "action": action_str,
+            "project_id": pid,
+            "task_id": row["task_id"],
+            "severity": row["severity"],
+            "message": row["message"],
+            "details": details,
+            "intervention_id": intervention_id,
+        },
+    ))
 
     # Update the DB record with approved status
     details["status"] = "approved"
@@ -383,14 +382,6 @@ async def reject_intervention(
 
     action_str = details.get("action", "unknown")
     pid = row["project_id"]
-
-    # Mark as handled in the plan sentinel's in-memory state (if still running)
-    # so the same issue won't be re-proposed
-    ps = sentinel.plan_sentinels.get(pid)
-    if ps is not None:
-        dedup_target = row["task_id"] or str(details.get("wave", ""))
-        dedup_key = (action_str, dedup_target)
-        ps.state.handled_interventions.add(dedup_key)
 
     # Update the DB record with rejected status
     details["status"] = "rejected"
@@ -449,10 +440,10 @@ async def list_decisions(
         # No filters — fetch all recent decisions across projects
         try:
             rows = await db.fetchall(
-                """SELECT id, project_id, timestamp, command, reasoning,
-                          confidence, outcome, details_json
-                   FROM sentinel_decisions
-                   ORDER BY timestamp DESC LIMIT $1""",
+                """SELECT decision_id, project_id, created_at, decision_type,
+                          reasoning, confidence, outcome, details_json
+                   FROM odin_decisions
+                   ORDER BY created_at DESC LIMIT $1""",
                 (limit,),
             )
             records = [DecisionLogger._row_to_record(r) for r in rows]

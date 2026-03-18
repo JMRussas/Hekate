@@ -29,26 +29,124 @@ HEKATE_ROOT = Path(os.environ.get("HEKATE_ROOT", "C:/Hekate"))
 SOURCE_ROOT = Path(os.environ.get("HEKATE_SOURCE", "C:/Users/jruss/Documents/GitHub/Hekate"))
 PORT = int(os.environ.get("ADMIN_MCP_PORT", "5201"))
 
-# All known NSSM services
-SERVICES = {
-    "HekateOrchestration":    {"port": 5200, "health": "http://localhost:5200/api/health"},
-    "HekateContextStore":     {"port": 5102, "health": "http://localhost:5102/api/health"},
-    "HekateServer":           {"port": 5110, "health": None},
-    "HekatePythonWorker":     {"port": 9200, "health": None},
-    "HekateTypeScriptWorker": {"port": 9202, "health": None},
-    "HekateCppWorker":        {"port": 9201, "health": None},
-    "HekateAdmin":            {"port": 5201, "health": "http://localhost:5201/health"},
-    "Ollama":                 {"port": 11434, "health": "http://localhost:11434/"},
-    "ComfyUI":                {"port": 8188, "health": "http://localhost:8188/"},
-}
+# Service registry — loaded from services.json, with hardcoded fallback
+SERVICES_FILE = Path(__file__).parent / "services.json"
 
-CORE_SERVICES = ["HekateOrchestration", "HekateContextStore"]
+
+def _load_services() -> tuple[dict, dict]:
+    """Load service registry and infra config from JSON config."""
+    if SERVICES_FILE.exists():
+        with open(SERVICES_FILE, "r") as f:
+            data = json.load(f)
+        return data.get("services", {}), data.get("infra", {})
+    # Fallback if JSON missing
+    return {
+        "HekateOrchestration":    {"port": 5200, "health": "http://localhost:5200/api/health", "managed": True, "group": "core"},
+        "HekateContextStore":     {"port": 5102, "health": "http://localhost:5102/api/health", "managed": True, "group": "core"},
+        "HekateServer":           {"port": 5110, "health": None, "managed": True, "group": "mcp"},
+        "HekatePythonWorker":     {"port": 9200, "health": None, "managed": True, "group": "mcp"},
+        "HekateTypeScriptWorker": {"port": 9202, "health": None, "managed": True, "group": "mcp"},
+        "HekateCppWorker":        {"port": 9201, "health": None, "managed": True, "group": "mcp"},
+        "HekateAdmin":            {"port": 5201, "health": "http://localhost:5201/health", "managed": False, "group": "admin"},
+        "Ollama":                 {"port": 11434, "health": "http://localhost:11434/", "managed": False, "group": "external"},
+        "ComfyUI":                {"port": 8188, "health": "http://localhost:8188/", "managed": False, "group": "external"},
+    }, {}
+
+
+def _save_services(services: dict) -> None:
+    """Persist service registry to JSON config (preserves infra section)."""
+    data = {"infra": INFRA, "services": services}
+    with open(SERVICES_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+SERVICES, INFRA = _load_services()
+CORE_SERVICES = [name for name, info in SERVICES.items() if info.get("group") == "core"]
 
 log = logging.getLogger("hades")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
 )
+
+# ---------------------------------------------------------------------------
+# Infrastructure — Docker + Postgres readiness
+# ---------------------------------------------------------------------------
+
+def _docker_daemon_ready() -> bool:
+    """Return True if the Docker daemon is accepting connections."""
+    r = _run(["docker", "info"], timeout=10)
+    return r["returncode"] == 0
+
+
+async def _ensure_docker() -> dict:
+    """Ensure Docker Desktop is running. Start it if not, wait up to startup_timeout."""
+    if _docker_daemon_ready():
+        return {"docker": "already_running"}
+
+    desktop = INFRA.get("docker_desktop", r"C:\Program Files\Docker\Docker\Docker Desktop.exe")
+    timeout = INFRA.get("startup_timeout", 90)
+
+    if not Path(desktop).exists():
+        return {"docker": "error", "detail": f"Docker Desktop not found at {desktop}"}
+
+    log.info("Docker not running — launching Docker Desktop")
+    subprocess.Popen([desktop], shell=False)
+
+    for i in range(timeout):
+        await asyncio.sleep(1)
+        if _docker_daemon_ready():
+            log.info("Docker daemon ready after %ds", i + 1)
+            return {"docker": "started", "wait_seconds": i + 1}
+
+    return {"docker": "timeout", "detail": f"Docker daemon not ready after {timeout}s"}
+
+
+async def _ensure_postgres() -> dict:
+    """Ensure the Postgres container is running via docker compose."""
+    container = INFRA.get("postgres_container", "code-storage-db")
+    compose_file = INFRA.get("compose_file", "")
+
+    # Check if container is already running
+    r = _run(["docker", "inspect", "--format", "{{.State.Running}}", container], timeout=10)
+    if r["returncode"] == 0 and r["stdout"].strip() == "true":
+        return {"postgres": "already_running", "container": container}
+
+    # Start via docker compose
+    if not compose_file or not Path(compose_file).exists():
+        return {"postgres": "error", "detail": f"compose_file not found: {compose_file}"}
+
+    compose_dir = str(Path(compose_file).parent)
+    log.info("Starting Postgres container via docker compose in %s", compose_dir)
+    r = _run(["docker", "compose", "up", "-d"], timeout=30, cwd=compose_dir)
+
+    if r["returncode"] != 0:
+        return {"postgres": "error", "detail": r["stderr"] or r["stdout"]}
+
+    # Wait for container health
+    port = INFRA.get("postgres_port", 5433)
+    for i in range(30):
+        await asyncio.sleep(1)
+        r = _run(["docker", "inspect", "--format", "{{.State.Running}}", container], timeout=5)
+        if r["returncode"] == 0 and r["stdout"].strip() == "true":
+            log.info("Postgres container ready after %ds on port %d", i + 1, port)
+            return {"postgres": "started", "container": container, "wait_seconds": i + 1}
+
+    return {"postgres": "timeout", "detail": f"container '{container}' not running after 30s"}
+
+
+async def _ensure_infra() -> dict:
+    """Ensure Docker and Postgres are ready. Called before starting core services."""
+    docker_result = await _ensure_docker()
+    if docker_result.get("docker") in ("error", "timeout"):
+        return {"ok": False, **docker_result}
+
+    postgres_result = await _ensure_postgres()
+    if postgres_result.get("postgres") in ("error", "timeout"):
+        return {"ok": False, **docker_result, **postgres_result}
+
+    return {"ok": True, **docker_result, **postgres_result}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,6 +161,7 @@ def _run(cmd: list[str], timeout: int = 30, cwd: str | None = None) -> dict:
             text=True,
             timeout=timeout,
             cwd=cwd,
+            shell=(os.name == "nt"),  # Windows needs shell=True for .cmd wrappers (npm, npx, etc.)
         )
         return {
             "returncode": result.returncode,
@@ -187,6 +286,19 @@ class ExecRequest(BaseModel):
     timeout: int = 120  # seconds, max 600
     shell: str = "bash"  # "bash", "cmd", "powershell"
 
+class CreateServiceRequest(BaseModel):
+    name: str              # must start with "Hekate"
+    app: str               # path to executable
+    app_args: str = ""
+    app_dir: str = ""      # defaults to exe's parent
+    port: Optional[int] = None
+    health: Optional[str] = None
+    group: str = "custom"
+    managed: bool = True
+    env_vars: Optional[dict[str, str]] = None
+    stdout_log: Optional[str] = None
+    stderr_log: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Routes — Health
@@ -207,7 +319,7 @@ async def list_services():
     results = {}
     for name, info in SERVICES.items():
         status = _nssm_status(name)
-        entry = {"nssm_status": status, "port": info["port"]}
+        entry = {"nssm_status": status, "port": info.get("port")}
 
         # Health check for running services with health endpoints
         if status == "SERVICE_RUNNING" and info.get("health"):
@@ -218,18 +330,126 @@ async def list_services():
     return {"services": results}
 
 
+@app.get("/services/sync-check")
+async def sync_check():
+    """Compare JSON config vs actual NSSM state. Reports drift."""
+    result = _run(["powershell", "-NoProfile", "-Command",
+                    "Get-Service -Name 'Hekate*' | Select-Object -ExpandProperty Name"])
+
+    nssm_services = set()
+    if result["returncode"] == 0 and result["stdout"]:
+        nssm_services = {s.strip() for s in result["stdout"].splitlines() if s.strip()}
+
+    config_services = set(SERVICES.keys())
+    config_hekate = {s for s in config_services if s.startswith("Hekate")}
+
+    in_nssm_not_config = nssm_services - config_hekate
+    in_config_not_nssm = config_hekate - nssm_services
+    in_both = nssm_services & config_hekate
+
+    return {
+        "synced": len(in_nssm_not_config) == 0 and len(in_config_not_nssm) == 0,
+        "in_both": sorted(in_both),
+        "in_nssm_only": sorted(in_nssm_not_config),
+        "in_config_only": sorted(in_config_not_nssm),
+        "external_services": sorted(config_services - config_hekate),
+    }
+
+
 @app.get("/services/{name}")
 async def get_service(name: str):
     """Get status of a specific NSSM service."""
     _validate_service(name)
     info = SERVICES[name]
     status = _nssm_status(name)
-    result = {"service": name, "nssm_status": status, "port": info["port"]}
+    result = {"service": name, "nssm_status": status, "port": info.get("port")}
 
     if status == "SERVICE_RUNNING" and info.get("health"):
         result["health"] = await _health_check(info["health"])
 
     return result
+
+
+@app.post("/services")
+async def create_service(req: CreateServiceRequest):
+    """Provision a new NSSM service and register it in the config."""
+    if req.name in SERVICES:
+        raise HTTPException(409, f"Service '{req.name}' already exists in registry")
+
+    if not req.name.startswith("Hekate"):
+        raise HTTPException(400, "Service name must start with 'Hekate'")
+
+    if not Path(req.app).exists():
+        raise HTTPException(400, f"Application not found: {req.app}")
+
+    app_dir = req.app_dir or str(Path(req.app).parent)
+
+    # 1. nssm install
+    install_cmd = ["nssm", "install", req.name, req.app]
+    if req.app_args:
+        install_cmd.append(req.app_args)
+    result = _run(install_cmd)
+    if result["returncode"] != 0:
+        raise HTTPException(500, f"nssm install failed: {result['stderr']}")
+
+    # 2. Set AppDirectory
+    _run(["nssm", "set", req.name, "AppDirectory", app_dir])
+
+    # 3. Log paths
+    if req.stdout_log:
+        _run(["nssm", "set", req.name, "AppStdout", req.stdout_log])
+    if req.stderr_log:
+        _run(["nssm", "set", req.name, "AppStderr", req.stderr_log])
+
+    # 4. Environment variables
+    if req.env_vars:
+        env_str = " ".join(f"{k}={v}" for k, v in req.env_vars.items())
+        _run(["nssm", "set", req.name, "AppEnvironmentExtra", env_str])
+
+    # 5. Register in config
+    entry = {
+        "port": req.port,
+        "health": req.health,
+        "app": req.app,
+        "app_args": req.app_args,
+        "app_dir": app_dir,
+        "group": req.group,
+        "managed": req.managed,
+    }
+    SERVICES[req.name] = entry
+    _save_services(SERVICES)
+
+    log.info("Created service: %s -> %s", req.name, req.app)
+    return {"action": "create", "service": req.name, "nssm_status": _nssm_status(req.name), **entry}
+
+
+@app.delete("/services/{name}")
+async def remove_service(name: str, confirm: bool = False):
+    """Remove an NSSM service and unregister from config."""
+    _validate_service(name)
+
+    if not confirm:
+        raise HTTPException(400, "Pass ?confirm=true to actually remove the service")
+
+    if name == "HekateAdmin":
+        raise HTTPException(400, "Cannot remove the admin service from itself")
+
+    # Stop if running
+    status = _nssm_status(name)
+    if status == "SERVICE_RUNNING":
+        await _stop_and_wait(name)
+
+    # nssm remove
+    result = _run(["nssm", "remove", name, "confirm"])
+    if result["returncode"] != 0:
+        raise HTTPException(500, f"nssm remove failed: {result['stderr']}")
+
+    # Remove from config
+    SERVICES.pop(name, None)
+    _save_services(SERVICES)
+
+    log.info("Removed service: %s", name)
+    return {"action": "remove", "service": name, "status": "removed"}
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +471,15 @@ async def restart_service(name: str):
 
     log.info("Restarting service: %s", name)
     stop_status = await _stop_and_wait(name)
+    infra = {}
+    if SERVICES.get(name, {}).get("group") == "core":
+        infra = await _ensure_infra()
+        log.info("Infra readiness: %s", infra)
     start_result = await _start_and_health(name)
-    return {"service": name, "action": "restart", "stop_status": stop_status, **start_result}
+    result = {"service": name, "action": "restart", "stop_status": stop_status, **start_result}
+    if infra:
+        result["infra"] = infra
+    return result
 
 
 @app.post("/services/{name}/stop")
@@ -273,7 +500,13 @@ async def start_service(name: str):
     """Start an NSSM service and wait for health."""
     _validate_service(name)
     log.info("Starting service: %s", name)
+    infra = {}
+    if SERVICES.get(name, {}).get("group") == "core":
+        infra = await _ensure_infra()
+        log.info("Infra readiness: %s", infra)
     result = await _start_and_health(name)
+    if infra:
+        result["infra"] = infra
     return {"service": name, "action": "start", **result}
 
 
@@ -291,7 +524,7 @@ async def deploy(req: DeployRequest = DeployRequest()):
     steps = []
 
     # --- 1. Stop all managed services and wait for clean shutdown ---
-    managed = [s for s in SERVICES if s not in ("Ollama", "ComfyUI", "HekateAdmin")]
+    managed = [s for s, info in SERVICES.items() if info.get("managed", True)]
     stop_results = {}
     for svc in managed:
         status = await _stop_and_wait(svc, timeout=20)
@@ -355,6 +588,11 @@ async def deploy(req: DeployRequest = DeployRequest()):
         req_file = hades_src / "requirements.txt"
         if req_file.exists():
             shutil.copy2(req_file, hades_dst / "requirements.txt")
+        # Seed services.json only if missing (target may have custom services)
+        src_svc_json = hades_src / "services.json"
+        dst_svc_json = hades_dst / "services.json"
+        if src_svc_json.exists() and not dst_svc_json.exists():
+            shutil.copy2(src_svc_json, dst_svc_json)
         steps.append({"step": "copy_hades", "status": "ok"})
 
         # --- 5. Copy scripts ---
@@ -427,7 +665,14 @@ async def deploy(req: DeployRequest = DeployRequest()):
         # Still try to start services even on copy failure
         log.error("Deploy error: %s", e, exc_info=True)
 
-    # --- 9. Start all services and health check ---
+    # --- 9. Ensure infrastructure (Docker + Postgres) before starting ---
+    infra = await _ensure_infra()
+    steps.append({"step": "ensure_infra", **infra})
+    if not infra.get("ok"):
+        steps.append({"step": "error", "detail": "Infrastructure not ready — services not started"})
+        return {"action": "deploy", "success": False, "steps": steps}
+
+    # --- 10. Start all services and health check ---
     start_results = {}
     for svc in managed:
         result = await _start_and_health(svc)
@@ -579,31 +824,39 @@ async def restart_core():
     for svc in CORE_SERVICES:
         stop_results[svc] = await _stop_and_wait(svc)
 
+    # Ensure Docker + Postgres are up before starting
+    infra = await _ensure_infra()
+    log.info("Infra readiness: %s", infra)
+
     # Start all core, wait for health
     start_results = {}
     for svc in CORE_SERVICES:
         start_results[svc] = await _start_and_health(svc)
 
-    return {"action": "restart_core", "stopped": stop_results, "started": start_results}
+    return {"action": "restart_core", "infra": infra, "stopped": stop_results, "started": start_results}
 
 
 @app.post("/restart-all")
 async def restart_all():
-    """Restart all managed services (excluding Ollama, ComfyUI, HekateAdmin)."""
+    """Restart all managed services (those with managed=true in config)."""
     log.info("Restarting all Hekate services")
-    managed = [s for s in SERVICES if s not in ("Ollama", "ComfyUI", "HekateAdmin")]
+    managed = [s for s, info in SERVICES.items() if info.get("managed", True)]
 
     # Stop all, wait for clean shutdown
     stop_results = {}
     for svc in managed:
         stop_results[svc] = await _stop_and_wait(svc)
 
+    # Ensure Docker + Postgres are up before starting
+    infra = await _ensure_infra()
+    log.info("Infra readiness: %s", infra)
+
     # Start all, wait for health
     start_results = {}
     for svc in managed:
         start_results[svc] = await _start_and_health(svc)
 
-    return {"action": "restart_all", "stopped": stop_results, "started": start_results}
+    return {"action": "restart_all", "infra": infra, "stopped": stop_results, "started": start_results}
 
 
 # ---------------------------------------------------------------------------

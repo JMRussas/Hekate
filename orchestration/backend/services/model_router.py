@@ -44,7 +44,7 @@ _DEFAULT_MODELS = {
 _DEFAULT_CLI_FALLBACKS = {
     "gemini_cli": "gemini-2.5-pro",
     "codex_cli": "gpt-5.2-codex",
-    "ollama": "qwen2.5-coder:14b",
+    "ollama": "qwen3.5:latest",
 }
 
 # Injected at startup by app.py lifespan via set_discovery_service().

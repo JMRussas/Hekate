@@ -99,8 +99,26 @@ class PlanOut(BaseModel):
     cost_usd: float
     plan: dict  # The structured plan JSON
     status: PlanStatus
-    node_mapping: str | None = None
+    node_mapping_json: str | None = None
     created_at: float
+
+
+class PlanCommentCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=10_000)
+
+
+class PlanCommentOut(BaseModel):
+    id: str
+    plan_id: str
+    project_id: str
+    author: str
+    content: str
+    created_at: float
+
+
+class PlanReviewRequest(BaseModel):
+    """Request to re-review or deepen a plan with optional guidance."""
+    target_rigor: PlanningRigor | None = None  # None = same rigor, set = deepen/change
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +213,9 @@ class FindingOut(BaseModel):
     task_id: str | None = None
     category: str
     content: str
-    rationale: str | None = ""
+    rationale: str | None = None
     alternatives_considered: str | None = ""
-    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
+    confidence: float | str = Field(default=ConfidenceLevel.MEDIUM)
     source_task_title: str | None = None
     created_at: float
 

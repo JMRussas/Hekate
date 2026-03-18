@@ -66,7 +66,7 @@ def _config_fallbacks() -> dict[str, list[str]]:
             cfg("codex_cli.model", "gpt-4o"),
         ],
         "ollama": [
-            cfg("ollama.default_model", "qwen2.5-coder:14b"),
+            cfg("ollama.default_model", "qwen3.5:latest"),
         ],
     }
 

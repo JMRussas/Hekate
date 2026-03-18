@@ -1,0 +1,101 @@
+{
+  "infra": {
+    "docker_desktop": "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe",
+    "compose_file": "C:\\Users\\jruss\\Documents\\GitHub\\Hekate\\context-store\\docker-compose.yml",
+    "postgres_container": "code-storage-db",
+    "postgres_port": 5433,
+    "startup_timeout": 90
+  },
+  "services": {
+    "HekateOrchestration": {
+      "port": 5200,
+      "health": "http://localhost:5200/api/health",
+      "app": "C:\\Users\\jruss\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "app_args": "run.py",
+      "app_dir": "C:\\Hekate\\orchestration",
+      "group": "core",
+      "managed": true
+    },
+    "HekateContextStore": {
+      "port": 5102,
+      "health": "http://localhost:5102/api/health",
+      "app": "C:\\Hekate\\context-store\\Api.exe",
+      "app_args": "",
+      "app_dir": "C:\\Hekate\\context-store",
+      "group": "core",
+      "managed": true
+    },
+    "HekateServer": {
+      "port": 5110,
+      "health": null,
+      "app": "C:\\Hekate\\server\\HekateMcp.Server.exe",
+      "app_args": "--http 5110",
+      "app_dir": "C:\\Hekate\\server",
+      "group": "mcp",
+      "managed": true
+    },
+    "HekatePythonWorker": {
+      "port": 9200,
+      "health": null,
+      "app": "C:\\Hekate\\workers\\python\\HekateMcp.Worker.Python.exe",
+      "app_args": "",
+      "app_dir": "C:\\Hekate\\workers\\python",
+      "group": "mcp",
+      "managed": true
+    },
+    "HekateTypeScriptWorker": {
+      "port": 9202,
+      "health": null,
+      "app": "C:\\Hekate\\workers\\typescript\\HekateMcp.Worker.TypeScript.exe",
+      "app_args": "",
+      "app_dir": "C:\\Hekate\\workers\\typescript",
+      "group": "mcp",
+      "managed": true
+    },
+    "HekateCppWorker": {
+      "port": 9201,
+      "health": null,
+      "app": "C:\\Hekate\\workers\\cpp\\HekateMcp.Worker.Cpp.exe",
+      "app_args": "",
+      "app_dir": "C:\\Hekate\\workers\\cpp",
+      "group": "mcp",
+      "managed": true
+    },
+    "HekateAdmin": {
+      "port": 5201,
+      "health": "http://localhost:5201/health",
+      "app": "C:\\Python314\\python.exe",
+      "app_args": "C:\\Hekate\\hades\\server.py",
+      "app_dir": "C:\\Hekate\\hades",
+      "group": "admin",
+      "managed": false
+    },
+    "HekateLLMGateway": {
+      "port": 5210,
+      "health": "http://localhost:5210/health",
+      "app": "C:\\Users\\jruss\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "app_args": "C:\\Hekate\\llm-gateway\\server.py",
+      "app_dir": "C:\\Hekate\\llm-gateway",
+      "group": "core",
+      "managed": true
+    },
+    "Ollama": {
+      "port": 11434,
+      "health": "http://localhost:11434/",
+      "app": null,
+      "app_args": null,
+      "app_dir": null,
+      "group": "external",
+      "managed": false
+    },
+    "ComfyUI": {
+      "port": 8188,
+      "health": "http://localhost:8188/",
+      "app": null,
+      "app_args": null,
+      "app_dir": null,
+      "group": "external",
+      "managed": false
+    }
+  }
+}

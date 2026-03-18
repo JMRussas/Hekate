@@ -25,8 +25,8 @@ from backend.services.sentinel.models import DecisionRecord, SentinelCommand
 async def _insert_decision(db, decision_id, project_id, command, reasoning, confidence, outcome=None, details=None, ts=None):
     """Insert a decision row directly for query tests."""
     await db.execute_write(
-        """INSERT INTO sentinel_decisions
-           (id, project_id, timestamp, command, reasoning, confidence, outcome, details_json)
+        """INSERT INTO odin_decisions
+           (decision_id, project_id, created_at, decision_type, reasoning, confidence, outcome, details_json)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             decision_id,
@@ -70,11 +70,11 @@ class TestLogDecision:
             details={"task_id": "t5", "wave": 2},
         )
         row = await tmp_db.fetchone(
-            "SELECT * FROM sentinel_decisions WHERE id = ?", (decision_id,)
+            "SELECT * FROM odin_decisions WHERE decision_id = ?", (decision_id,)
         )
         assert row is not None
         assert row["project_id"] == "proj1"
-        assert row["command"] == "skip_task"
+        assert row["decision_type"] == "skip_task"
         assert row["reasoning"] == "Cascade failure detected"
         assert row["confidence"] == 0.72
         assert row["outcome"] == "skipped"
@@ -91,7 +91,7 @@ class TestLogDecision:
             confidence=0.5,
         )
         row = await tmp_db.fetchone(
-            "SELECT details_json FROM sentinel_decisions WHERE id = ?", (decision_id,)
+            "SELECT details_json FROM odin_decisions WHERE decision_id = ?", (decision_id,)
         )
         assert row["details_json"] is None
 
@@ -229,8 +229,8 @@ class TestRowToRecord:
             outcome="retried", details={"depth": 3}, ts=ts,
         )
         rows = await tmp_db.fetchall(
-            "SELECT id, project_id, timestamp, command, reasoning, confidence, outcome, details_json "
-            "FROM sentinel_decisions WHERE id = 'd1'"
+            "SELECT decision_id, project_id, created_at, decision_type, reasoning, confidence, outcome, details_json "
+            "FROM odin_decisions WHERE decision_id = 'd1'"
         )
         record = DecisionLogger._row_to_record(rows[0])
         assert record.id == "d1"
@@ -245,8 +245,8 @@ class TestRowToRecord:
         await create_test_project(tmp_db, "proj1")
         await _insert_decision(tmp_db, "d1", "proj1", "unknown_future_cmd", "test", 0.5)
         rows = await tmp_db.fetchall(
-            "SELECT id, project_id, timestamp, command, reasoning, confidence, outcome, details_json "
-            "FROM sentinel_decisions WHERE id = 'd1'"
+            "SELECT decision_id, project_id, created_at, decision_type, reasoning, confidence, outcome, details_json "
+            "FROM odin_decisions WHERE decision_id = 'd1'"
         )
         record = DecisionLogger._row_to_record(rows[0])
         assert record.command == SentinelCommand.DISPATCH_TASK  # fallback
@@ -255,8 +255,8 @@ class TestRowToRecord:
         await create_test_project(tmp_db, "proj1")
         await _insert_decision(tmp_db, "d1", "proj1", "retry_task", "test", 0.5)
         rows = await tmp_db.fetchall(
-            "SELECT id, project_id, timestamp, command, reasoning, confidence, outcome, details_json "
-            "FROM sentinel_decisions WHERE id = 'd1'"
+            "SELECT decision_id, project_id, created_at, decision_type, reasoning, confidence, outcome, details_json "
+            "FROM odin_decisions WHERE decision_id = 'd1'"
         )
         record = DecisionLogger._row_to_record(rows[0])
         assert record.details == {}  # type: ignore[attr-defined]
@@ -265,8 +265,8 @@ class TestRowToRecord:
         await create_test_project(tmp_db, "proj1")
         await _insert_decision(tmp_db, "d1", "proj1", "retry_task", "test", 0.5)
         rows = await tmp_db.fetchall(
-            "SELECT id, project_id, timestamp, command, reasoning, confidence, outcome, details_json "
-            "FROM sentinel_decisions WHERE id = 'd1'"
+            "SELECT decision_id, project_id, created_at, decision_type, reasoning, confidence, outcome, details_json "
+            "FROM odin_decisions WHERE decision_id = 'd1'"
         )
         record = DecisionLogger._row_to_record(rows[0])
         assert record.outcome == ""
@@ -276,8 +276,8 @@ class TestRowToRecord:
         await create_test_project(tmp_db, "proj1")
         await _insert_decision(tmp_db, "d1", "proj1", "retry_task", "test", 0.5)
         rows = await tmp_db.fetchall(
-            "SELECT id, project_id, timestamp, command, reasoning, confidence, outcome, details_json "
-            "FROM sentinel_decisions WHERE id = 'd1'"
+            "SELECT decision_id, project_id, created_at, decision_type, reasoning, confidence, outcome, details_json "
+            "FROM odin_decisions WHERE decision_id = 'd1'"
         )
         record = DecisionLogger._row_to_record(rows[0])
         assert record.timestamp.tzinfo == timezone.utc

@@ -21,6 +21,7 @@ from backend.config import (
 )
 from backend.models.enums import ConfidenceLevel, FindingCategory
 from backend.services.model_router import calculate_cost
+from backend.services.prompt_renderer import PromptSpec
 from backend.utils.json_utils import extract_json_object
 
 logger = logging.getLogger("orchestration.knowledge")
@@ -31,50 +32,40 @@ _VALID_CONFIDENCE = {c.value for c in ConfidenceLevel}
 # Cap task output sent to extraction model to control cost
 _MAX_OUTPUT_CHARS = 4000
 
-_EXTRACTION_PROMPT = """\
-You are a knowledge extraction assistant. Given a task description and its output,
-identify any reusable findings that would help OTHER tasks in the same project.
+_EXTRACTOR_IDENTITY = (
+    "You are a knowledge extraction assistant. Given a task description and its output, "
+    "identify any reusable findings that would help OTHER tasks in the same project."
+)
 
-For each finding, capture not just WHAT was learned, but WHY it matters and what
-alternatives were considered or rejected.
+_EXTRACTOR_CONSTRAINTS = [
+    "Capture not just WHAT was learned, but WHY it matters and what alternatives were considered.",
+    "Categories: constraint, decision, discovery, reference, gotcha, architecture.",
+    "Only extract findings that are REUSABLE — skip task-specific implementation details.",
+    "Each finding should be self-contained (understandable without reading the full output).",
+    "If there are NO reusable findings, return an empty array.",
+    "Keep each finding concise (1-3 sentences).",
+    'For "rationale": explain WHY this finding matters. If unknown, write "Unknown".',
+    'For "alternatives_considered": list other approaches tried. If none, use empty string.',
+    'For "confidence": high (observed/tested), medium (inferred), low (speculative).',
+]
 
-<finding_categories>
-1. Constraints: limitations discovered ("X must be Y", "API limits to N")
-2. Decisions: choices made with rationale ("chose X over Y because...")
-3. Discoveries: API behavior, library quirks, undocumented features
-4. References: useful URLs, documentation pointers, code patterns found
-5. Gotchas: things that don't work as expected, pitfalls encountered
-6. Architecture: structural choices, data flow patterns, component relationships
-</finding_categories>
+_EXTRACTOR_OUTPUT_SCHEMA = """\
+{"findings": [{"category": "constraint|decision|discovery|reference|gotcha|architecture", \
+"content": "1-3 sentences", "rationale": "Why this matters", \
+"alternatives_considered": "Other approaches", "confidence": "high|medium|low"}]}"""
 
-<rules>
-- Only extract findings that are REUSABLE — skip task-specific implementation details.
-- Each finding should be self-contained (understandable without reading the full output).
-- If there are NO reusable findings, return an empty array.
-- Keep each finding concise (1-3 sentences).
-- For "rationale": explain WHY this finding matters — what failed, what succeeded, what \
-the underlying reason is. If the output doesn't explain why, write "Unknown".
-- For "alternatives_considered": list other approaches that were tried or discussed. \
-If none are mentioned, use an empty string.
-- For "confidence": assess how reliable this finding is based on the evidence in the output.
-  - "high": directly observed, tested, or confirmed in the output.
-  - "medium": reasonable inference from the output, but not explicitly verified.
-  - "low": speculative or based on incomplete information.
-</rules>
 
-Respond with ONLY a JSON object (no markdown):
-{
-  "findings": [
-    {
-      "category": "constraint|decision|discovery|reference|gotcha|architecture",
-      "content": "The finding itself (1-3 sentences)",
-      "rationale": "Why this matters or why it worked/failed",
-      "alternatives_considered": "Other approaches tried or discussed, if any",
-      "confidence": "high|medium|low"
-    }
-  ]
-}
-"""
+def _build_extraction_spec(user_msg: str) -> PromptSpec:
+    """Build a PromptSpec for knowledge extraction."""
+    return PromptSpec(
+        role="knowledge_extractor",
+        identity=_EXTRACTOR_IDENTITY,
+        task_description=user_msg,
+        constraints=_EXTRACTOR_CONSTRAINTS,
+        output_schema=_EXTRACTOR_OUTPUT_SCHEMA,
+        output_format="json",
+        suppressions=["Do not include markdown fences."],
+    )
 
 
 async def extract_knowledge(
@@ -134,13 +125,17 @@ async def _do_extract(
         f"### Output\n{output_text[:_MAX_OUTPUT_CHARS]}"
     )
 
+    spec = _build_extraction_spec(user_msg)
+
     if client:
         # Use Anthropic SDK directly when API key is available
+        from backend.services.prompt_renderer import render_prompt
+        rendered = render_prompt(spec, "claude")
         response = await client.messages.create(
             model=KNOWLEDGE_EXTRACTION_MODEL,
             max_tokens=KNOWLEDGE_EXTRACTION_MAX_TOKENS,
-            system=_EXTRACTION_PROMPT,
-            messages=[{"role": "user", "content": user_msg}],
+            system=rendered.system_prompt,
+            messages=[{"role": "user", "content": rendered.user_message}],
             timeout=API_TIMEOUT,
         )
 
@@ -161,10 +156,10 @@ async def _do_extract(
 
         raw = "".join(block.text for block in response.content if block.type == "text")
     else:
-        # No API key — fall back to CLI providers via llm_router
+        # No API key — fall back to CLI providers via llm_router (re-renders per provider)
         from backend.services.llm_router import call_llm
         llm_response = await call_llm(
-            _EXTRACTION_PROMPT, user_msg, task_type="simple",
+            spec=spec, task_type="simple",
         )
         raw = llm_response.text
 

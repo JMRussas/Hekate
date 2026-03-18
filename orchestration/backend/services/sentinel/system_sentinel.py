@@ -15,6 +15,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from backend.models.enums import ResourceStatus
@@ -35,6 +36,9 @@ if TYPE_CHECKING:
     from backend.services.sentinel.context_client import SentinelContextClient
 
 logger = logging.getLogger(__name__)
+
+
+
 
 # How often the sentinel polls resource health (seconds)
 DEFAULT_POLL_INTERVAL = 30.0
@@ -106,6 +110,10 @@ class SystemSentinel:
 
         # Contention tracking — tier → set of project_ids (last known)
         self._last_contention: dict[str, set[str]] = {}
+
+        # Stale code detection
+        self._started_at = datetime.now(timezone.utc)
+        self._stale_code_proposed = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -199,33 +207,11 @@ class SystemSentinel:
             )
             return existing
 
-        # Create InterventionExecutor with DB access for tier reassignment
-        from backend.services.sentinel.intervention_executor import InterventionExecutor
-        executor = InterventionExecutor(
-            base_url="http://localhost:5200",
-            bus=self._bus,
-            db=self._db,
-        )
-
-        # Create reasoner + interrogator for intelligent decision-making
-        from backend.config import INTERROGATION_ENABLED, INTERROGATION_MODEL
-        from backend.services.sentinel.interrogator import SelfInterrogator
-        from backend.services.sentinel.reasoner import SentinelReasoner
-
-        reasoner = SentinelReasoner(enabled=True)
-        interrogator = SelfInterrogator(
-            enabled=INTERROGATION_ENABLED,
-            model=INTERROGATION_MODEL,
-        )
-
         sentinel = PlanSentinel(
             project_id=project_id,
             bus=self._bus,
             progress_manager=self._progress_manager,
             db=self._db,
-            reasoner=reasoner,
-            interrogator=interrogator,
-            intervention_executor=executor,
         )
         await sentinel.start()
         self._plan_sentinels[project_id] = sentinel
@@ -292,9 +278,13 @@ class SystemSentinel:
             await asyncio.sleep(self._poll_interval)
 
     async def _tick(self) -> None:
-        """Single sentinel tick: poll resources, update trends, detect contention."""
+        """Single sentinel tick: poll resources, update trends, detect contention, check stale code."""
         states = await self._resource_monitor.check_all()
         now = datetime.now(timezone.utc)
+
+        # Stale code detection (requires DB for task check)
+        if self._db:
+            await self._check_stale_code()
 
         # Contention detection (requires DB)
         if self._db and self._plan_sentinels:
@@ -421,6 +411,117 @@ class SystemSentinel:
             await self._context_client.save_observation(observation, parent_id=parent)
         except Exception:
             logger.debug("Failed to persist observation %s", observation.observation_id, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Stale code detection
+    # ------------------------------------------------------------------
+
+    async def _check_stale_code(self) -> None:
+        """Detect when the running server has stale code and propose restart."""
+        assert self._db is not None
+
+        # Run filesystem checks off the event loop
+        flag_exists, stale_files = await asyncio.to_thread(self._scan_stale_code)
+
+        if not flag_exists and not stale_files:
+            # No staleness — reset dedup flag so we can detect again later
+            self._stale_code_proposed = False
+            return
+
+        # Already proposed and condition hasn't cleared
+        if self._stale_code_proposed:
+            return
+
+        # Build observation details
+        trigger = []
+        if flag_exists:
+            trigger.append(".restart-needed flag file present")
+        if stale_files:
+            trigger.append(f"{len(stale_files)} modified .py file(s): {', '.join(stale_files[:5])}")
+
+        severity = Severity.CRITICAL if flag_exists else Severity.WARNING
+        reason = "; ".join(trigger)
+
+        await self._persist_observation(SentinelObservation(
+            category="stale_code_detected",
+            message=f"Stale code detected: {reason}",
+            severity=severity,
+            details={
+                "flag_file": flag_exists,
+                "stale_files": stale_files[:20],
+                "trigger": trigger,
+            },
+        ))
+
+        # Check for running/queued tasks
+        try:
+            row = await self._db.fetchone(
+                "SELECT COUNT(*) AS cnt FROM tasks WHERE status IN ('running', 'queued')",
+                (),
+            )
+            running_count = row["cnt"] if row else 0
+        except Exception:
+            logger.exception("Failed to check running tasks for stale code restart")
+            return
+
+        self._stale_code_proposed = True
+
+        # Publish observation for Odin to handle reasoning and intervention
+        logger.info("Stale code detected — forwarding to Odin: %s", reason)
+        await self._bus.publish(SentinelMessage(
+            topic="odin_anomaly",
+            source="system_sentinel",
+            payload={
+                "type": "stale_code_detected",
+                "severity": severity.value,
+                "summary": f"Stale code detected: {reason}",
+                "flag_file": flag_exists,
+                "stale_files": stale_files[:20],
+                "running_count": running_count,
+            },
+        ))
+
+    def _scan_stale_code(self) -> tuple[bool, list[str]]:
+        """Synchronous filesystem scan for stale code indicators.
+
+        Returns (flag_exists, list_of_stale_file_paths).
+        """
+        # Check 1: .restart-needed flag file
+        flag_path = Path(__file__).resolve().parents[3] / ".restart-needed"
+        flag_exists = flag_path.exists()
+
+        # Check 2: .py files modified after server startup
+        backend_dir = Path(__file__).resolve().parents[2]  # backend/
+        started_ts = self._started_at.timestamp()
+        stale_files: list[str] = []
+
+        try:
+            for py_file in backend_dir.rglob("*.py"):
+                if py_file.name == "__pycache__":
+                    continue
+                try:
+                    if py_file.stat().st_mtime > started_ts:
+                        # Store relative path for readability
+                        try:
+                            rel = str(py_file.relative_to(backend_dir.parent))
+                        except ValueError:
+                            rel = str(py_file)
+                        stale_files.append(rel)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+
+        return flag_exists, stale_files
+
+    @staticmethod
+    def _remove_restart_flag() -> None:
+        """Remove the .restart-needed flag file if it exists."""
+        flag_path = Path(__file__).resolve().parents[3] / ".restart-needed"
+        try:
+            flag_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Contention detection

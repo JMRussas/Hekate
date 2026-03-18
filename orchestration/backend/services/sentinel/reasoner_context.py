@@ -113,21 +113,21 @@ class ReasonerContext:
         try:
             if category:
                 rows = await self._db.fetchall(
-                    "SELECT id, command, reasoning, confidence, outcome, "
-                    "details_json, timestamp "
-                    "FROM sentinel_decisions "
+                    "SELECT decision_id, decision_type, reasoning, confidence, outcome, "
+                    "details_json, created_at "
+                    "FROM odin_decisions "
                     "WHERE project_id = $1 "
                     "AND (reasoning LIKE $2 OR details_json LIKE $3) "
-                    "ORDER BY timestamp DESC LIMIT 20",
+                    "ORDER BY created_at DESC LIMIT 20",
                     (project_id, f"%{category}%", f"%{category}%"),
                 )
             else:
                 rows = await self._db.fetchall(
-                    "SELECT id, command, reasoning, confidence, outcome, "
-                    "details_json, timestamp "
-                    "FROM sentinel_decisions "
+                    "SELECT decision_id, decision_type, reasoning, confidence, outcome, "
+                    "details_json, created_at "
+                    "FROM odin_decisions "
                     "WHERE project_id = $1 "
-                    "ORDER BY timestamp DESC LIMIT 20",
+                    "ORDER BY created_at DESC LIMIT 20",
                     (project_id,),
                 )
             return [dict(r) for r in rows]

@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Optional
 
-from backend.config import PLANNING_MODEL
+from backend.config import PLANNING_MODEL, cfg
 from backend.exceptions import BudgetExhaustedError, NotFoundError, PlanParseError
 from backend.models.enums import (
     PlanningRigor,
@@ -42,6 +42,10 @@ Requirements are numbered [R1], [R2], etc. for traceability.
 - Keep task descriptions self-contained — include enough context for a fresh AI instance.
 - Use "depends_on" to reference task indices (0-based) for ordering dependencies.
 - Prefer simple tasks when possible — they use cheaper models.
+- For Alembic migrations (in backend/migrations/versions/):
+  - Filename MUST be 'NNN_description.py' where NNN is the next 3-digit number.
+  - The `revision_id` variable in the file MUST be the 'NNN' string.
+  - The `down_revision` variable MUST match the `revision_id` of the previous migration.
 - Use task_type "research" for information gathering that can run on a free local model.
 - Use task_type "analysis" for summarization/comparison that can run locally.
 - Use task_type "asset" for image/visual generation (uses ComfyUI).
@@ -53,6 +57,7 @@ Requirements are numbered [R1], [R2], etc. for traceability.
 - Include verification_criteria: a concrete check to confirm task completion.
 - Include affected_files: list of files this task will create or modify (best guess).
 - Include rationale: explain WHY this approach was chosen, what alternatives were considered and rejected, and what constraints or dependencies drove the decision. This captures decision context so future tasks and revisions understand the reasoning.
+- When a feature has well-known implementation patterns (window resizing, drag-and-drop, undo/redo, virtual scrolling, etc.), plan to replicate the established pattern rather than speculating about difficulty. Reference the standard approach in the task description so the implementer knows what to follow.
 </task_guidelines>
 
 <available_tools>
@@ -572,6 +577,8 @@ class PlannerService:
         self,
         project_id: str,
         provider: Optional[str] = None,
+        comments: Optional[list[dict]] = None,
+        previous_plan: Optional[dict] = None,
     ) -> dict:
         """Generate a structured plan for a project using CLI providers.
 
@@ -581,6 +588,8 @@ class PlannerService:
         Args:
             project_id: The project to plan for.
             provider: Optional explicit provider (gemini, claude, codex). Defaults to fallback chain.
+            comments: Optional list of human review comments ({"author", "content"}) to fold into re-planning.
+            previous_plan: Optional previous plan JSON to provide context for revision.
 
         Returns the plan dict and updates the database.
         """
@@ -643,11 +652,35 @@ class PlannerService:
             numbered = requirements
         user_msg = f"Project: {project_name}\n\nRequirements:\n{numbered}"
 
+        # Inject previous plan + human review comments for re-planning
+        if previous_plan:
+            user_msg += (
+                "\n\n<previous_plan>\n"
+                "A previous version of this plan was generated and reviewed by a human. "
+                "Use it as a starting point — keep what works, fix what was called out.\n"
+                f"{json.dumps(previous_plan, indent=2)}\n"
+                "</previous_plan>"
+            )
+
+        if comments:
+            comment_block = "\n".join(
+                f"- [{c.get('author', 'reviewer')}]: {c['content']}" for c in comments
+            )
+            user_msg += (
+                "\n\n<human_review_comments>\n"
+                "The human reviewer left these comments on the previous plan. "
+                "Address each one. If the comment mentions a well-known pattern or solved problem, "
+                "plan to replicate the established approach rather than inventing a new one.\n"
+                f"{comment_block}\n"
+                "</human_review_comments>"
+            )
+
         try:
             llm_response = await call_llm(
                 system_prompt,
                 user_msg,
                 provider=provider,
+                model=cfg("llm.planning_model"),
                 task_type="planning",
             )
 
@@ -807,6 +840,10 @@ async def generate_plan(
     db,
     budget,
     provider: Optional[str] = None,
+    comments: Optional[list[dict]] = None,
+    previous_plan: Optional[dict] = None,
 ) -> dict:
     """Convenience wrapper for backward compatibility with tests and direct callers."""
-    return await PlannerService(db=db, budget=budget).generate(project_id, provider=provider)
+    return await PlannerService(db=db, budget=budget).generate(
+        project_id, provider=provider, comments=comments, previous_plan=previous_plan,
+    )

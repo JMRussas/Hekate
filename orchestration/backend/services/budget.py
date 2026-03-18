@@ -77,10 +77,10 @@ class BudgetManager:
                 "total_prompt_tokens, total_completion_tokens, api_call_count) "
                 "VALUES ($1, 'daily', $2, $3, $4, 1) "
                 "ON CONFLICT(period_key) DO UPDATE SET "
-                "total_cost_usd = total_cost_usd + excluded.total_cost_usd, "
-                "total_prompt_tokens = total_prompt_tokens + excluded.total_prompt_tokens, "
-                "total_completion_tokens = total_completion_tokens + excluded.total_completion_tokens, "
-                "api_call_count = api_call_count + 1",
+                "total_cost_usd = budget_periods.total_cost_usd + excluded.total_cost_usd, "
+                "total_prompt_tokens = budget_periods.total_prompt_tokens + excluded.total_prompt_tokens, "
+                "total_completion_tokens = budget_periods.total_completion_tokens + excluded.total_completion_tokens, "
+                "api_call_count = budget_periods.api_call_count + 1",
                 (day_key, cost_usd, prompt_tokens, completion_tokens),
             ),
             # Update monthly budget period
@@ -89,10 +89,10 @@ class BudgetManager:
                 "total_prompt_tokens, total_completion_tokens, api_call_count) "
                 "VALUES ($1, 'monthly', $2, $3, $4, 1) "
                 "ON CONFLICT(period_key) DO UPDATE SET "
-                "total_cost_usd = total_cost_usd + excluded.total_cost_usd, "
-                "total_prompt_tokens = total_prompt_tokens + excluded.total_prompt_tokens, "
-                "total_completion_tokens = total_completion_tokens + excluded.total_completion_tokens, "
-                "api_call_count = api_call_count + 1",
+                "total_cost_usd = budget_periods.total_cost_usd + excluded.total_cost_usd, "
+                "total_prompt_tokens = budget_periods.total_prompt_tokens + excluded.total_prompt_tokens, "
+                "total_completion_tokens = budget_periods.total_completion_tokens + excluded.total_completion_tokens, "
+                "api_call_count = budget_periods.api_call_count + 1",
                 (month_key, cost_usd, prompt_tokens, completion_tokens),
             ),
         ])

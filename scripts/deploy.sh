@@ -146,6 +146,17 @@ fi
 echo -e "  ${GREEN}Copied${NC}"
 
 # ---------------------------------------------------------------
+# 3c. Copy Odin god server (HekateOdin — port 5220)
+# ---------------------------------------------------------------
+if [ -d "$SOURCE/Odin/gods/odin" ]; then
+    echo -e "${YELLOW}Copying Odin god server...${NC}"
+    mkdir -p "$TARGET/gods/odin"
+    cp -r "$SOURCE/Odin/gods/odin/" "$TARGET/gods/odin/"
+    find "$TARGET/gods/odin" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    echo -e "  ${GREEN}Copied${NC}"
+fi
+
+# ---------------------------------------------------------------
 # 4. Sync migrations
 # ---------------------------------------------------------------
 echo -e "${YELLOW}Syncing migrations...${NC}"

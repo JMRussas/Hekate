@@ -1,27 +1,24 @@
-"""add node_mapping to plans
+"""Add node_mapping_json to plans table
 
 Revision ID: 019
 Revises: 018
-Create Date: 2026-03-16 00:00:00.000000
-"""
-from typing import Sequence, Union
+Create Date: 2026-03-17 12:00:00.000000
 
+"""
 from alembic import op
 import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '019'
-down_revision: Union[str, None] = '018'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision = '019'
+down_revision = '018'
+branch_labels = None
+depends_on = None
 
 
-def upgrade() -> None:
-    with op.batch_alter_table('plans', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('node_mapping', sa.Text(), nullable=True))
+def upgrade():
+    op.add_column('plans', sa.Column('node_mapping_json', sa.Text(), nullable=True))
 
 
-def downgrade() -> None:
-    with op.batch_alter_table('plans', schema=None) as batch_op:
-        batch_op.drop_column('node_mapping')
+def downgrade():
+    op.drop_column('plans', 'node_mapping_json')

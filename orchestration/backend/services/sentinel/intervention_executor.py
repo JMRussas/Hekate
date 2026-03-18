@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import pathlib
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -455,6 +457,116 @@ class InterventionExecutor:
                 "new_tier": new_tier,
                 "reassigned": reassigned,
             },
+        )
+
+
+    async def restart_server(self, reason: str) -> InterventionResult:
+        """Restart the orchestration server to pick up code changes.
+
+        Safety gate: only proceeds if no tasks are running or queued.
+        If tasks are active, returns failure so the caller can create
+        a supervised intervention proposal instead.
+        """
+        if not self._db:
+            return InterventionResult(
+                action="restart_server",
+                success=False,
+                detail="no database connection available",
+            )
+
+        # Safety gate — check for active tasks
+        try:
+            row = await self._db.fetchone(
+                "SELECT COUNT(*) AS cnt FROM tasks WHERE status IN ('running', 'queued')",
+                (),
+            )
+            running_count = row["cnt"] if row else 0
+        except Exception as exc:
+            logger.warning("restart_server task check failed: %s", exc)
+            return InterventionResult(
+                action="restart_server",
+                success=False,
+                detail=f"db error checking running tasks: {exc}",
+            )
+
+        if running_count > 0:
+            logger.info(
+                "Restart deferred — %d task(s) currently running/queued", running_count,
+            )
+            return InterventionResult(
+                action="restart_server",
+                success=False,
+                detail="Tasks currently running — restart deferred to supervised intervention",
+                metadata={"running_count": running_count},
+            )
+
+        # Locate restart.sh relative to the orchestration package root
+        script = pathlib.Path(__file__).resolve().parents[3] / "restart.sh"
+        if not script.exists():
+            return InterventionResult(
+                action="restart_server",
+                success=False,
+                detail=f"restart.sh not found at {script}",
+            )
+
+        logger.info("Executing server restart — reason: %s", reason)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bash", str(script),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            logger.error("restart_server timed out after 120s")
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            return InterventionResult(
+                action="restart_server",
+                success=False,
+                detail="restart.sh timed out after 120s",
+                metadata={"reason": reason},
+            )
+        except Exception as exc:
+            logger.error("restart_server subprocess error: %s", exc)
+            return InterventionResult(
+                action="restart_server",
+                success=False,
+                detail=f"subprocess error: {exc}",
+                metadata={"reason": reason},
+            )
+
+        stdout_text = stdout.decode(errors="replace").strip() if stdout else ""
+        stderr_text = stderr.decode(errors="replace").strip() if stderr else ""
+
+        if proc.returncode == 0:
+            logger.info("Server restart completed successfully")
+            await self._bus.publish(SentinelMessage(
+                topic="stall_notification",
+                source="intervention_executor",
+                payload={
+                    "type": "server_restarted",
+                    "reason": reason,
+                },
+            ))
+            return InterventionResult(
+                action="restart_server",
+                success=True,
+                detail="server restarted successfully",
+                metadata={"reason": reason, "stdout": stdout_text[-500:]},
+            )
+
+        logger.error(
+            "restart.sh failed (exit %d): %s", proc.returncode, stderr_text[:300],
+        )
+        return InterventionResult(
+            action="restart_server",
+            success=False,
+            detail=f"restart.sh exited {proc.returncode}: {stderr_text[:300]}",
+            metadata={"reason": reason, "exit_code": proc.returncode},
         )
 
 

@@ -114,3 +114,9 @@ class ResourceStatus(str, Enum):
     OFFLINE = "offline"
     DEGRADED = "degraded"    # Reachable but missing models
     CHECKING = "checking"    # Initial state before first health check
+
+
+class SecuritySeverity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"

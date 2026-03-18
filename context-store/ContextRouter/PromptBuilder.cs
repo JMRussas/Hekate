@@ -148,6 +148,20 @@ public class PromptBuilder
             sb.AppendLine("  </open_items>");
         }
 
+        // Recent turns — last few messages so short replies like "yes" have context
+        if (state.RecentTurns.Count > 0)
+        {
+            sb.AppendLine("  <recent_turns>");
+            foreach (var turn in state.RecentTurns)
+            {
+                var speaker = turn.Status ?? "user";
+                var text = turn.Value ?? turn.Name ?? "";
+                if (text.Length > 500) text = text[..500] + "...";
+                sb.AppendLine($"    <turn speaker=\"{speaker}\">{text}</turn>");
+            }
+            sb.AppendLine("  </recent_turns>");
+        }
+
         sb.AppendLine("</subject>");
         sb.AppendLine();
 
