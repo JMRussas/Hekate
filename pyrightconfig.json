@@ -1,0 +1,21 @@
+{
+  "include": [
+    "orchestration/backend",
+    "hades",
+    "llm-gateway",
+    "Odin/gods"
+  ],
+  "exclude": [
+    "**/test_*.py",
+    "**/_test_*.py",
+    "**/tests/**",
+    "**/__pycache__",
+    "**/node_modules",
+    "**/.worktrees",
+    "Odin/test_*.py"
+  ],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false
+}
