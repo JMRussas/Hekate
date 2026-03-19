@@ -1,0 +1,63 @@
+{
+  "name": "demigods",
+  "description": "Jailed LLM navigation runtime — spawns disposable agents with constrained action sets",
+  "tag": "-wrk",
+  "version": "0.2.0",
+  "dependencies": [
+    "hades",
+    "llm-gateway"
+  ],
+
+  "config": {
+    "default_provider": "gemini",
+    "max_concurrent_runs": 5,
+    "max_steps_per_run": 20,
+    "max_retries_per_pick": 3,
+    "hades_url": "http://localhost:5201",
+    "gateway_url": "http://localhost:5210",
+    "relay": {
+      "sinks": [
+        {"type": "log"}
+      ],
+      "gate": {
+        "max_events_per_second": 100
+      }
+    }
+  },
+
+  "roles": [
+    {
+      "name": "health_checker",
+      "description": "Checks service health, inspects problems, restarts, verifies. One service at a time.",
+      "allowed_god_tools": ["list_services", "service_status", "restart_service", "start_service", "stop_service", "tail_logs"]
+    },
+    {
+      "name": "batch_health_checker",
+      "description": "Fixes all unhealthy services in one pass. Handles multiple failures per run.",
+      "allowed_god_tools": ["list_services", "service_status", "restart_service", "start_service", "stop_service", "tail_logs"]
+    }
+  ],
+
+  "entry_points": {
+    "demigod_mcp": {
+      "command": "python",
+      "args": ["gods/demigod_mcp.py"],
+      "description": "Demigod runner — spawn, track, cancel jailed LLM runs",
+      "tools": ["list_roles", "run_health_check", "spawn_demigod", "get_run", "list_runs", "cancel_run", "status"],
+      "accepts_config": true
+    },
+    "god_mcp": {
+      "command": "python",
+      "args": ["gods/god_mcp.py"],
+      "description": "God tool server — exposes Hades tools, jailed by role",
+      "tools_vary_by_role": true,
+      "accepts_config": true,
+      "accepts_role": true
+    },
+    "cli": {
+      "command": "python",
+      "args": ["-m", "gods.roles.run_demigod"],
+      "description": "One-shot CLI runner for manual/testing use"
+    }
+  }
+}

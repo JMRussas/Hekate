@@ -32,3 +32,6 @@ __pycache__/
 .claude/settings.local.json
 .env
 .worktrees/
+
+# Odin runtime data
+Odin/gods/odin/data/

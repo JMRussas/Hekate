@@ -1,0 +1,59 @@
+{
+  "name": "odin",
+  "description": "The All-Father — system overseer that owns the entire project lifecycle",
+  "port": 5220,
+  "tag": "-eye",
+  "version": "0.1.0",
+  "nssm": {
+    "service_name": "HekateOdin",
+    "command": "python",
+    "args": ["server.py"],
+    "group": "gods"
+  },
+  "dependencies": [
+    "postgres",
+    "llm-gateway"
+  ],
+  "config": {
+    "tick_interval": 30,
+    "max_rounds_per_tick": 4,
+    "max_concurrent": 4,
+    "heartbeat_interval": 30,
+    "llm_provider": "claude",
+    "llm_model": "sonnet",
+    "confidence_thresholds": {
+      "auto_intervene": 0.8,
+      "suggest_only": 0.5
+    },
+    "features": {
+      "project_lifecycle": true,
+      "intelligent_dispatch": true,
+      "failure_reasoning": true,
+      "post_project_review": true,
+      "human_checkpoints": false
+    },
+    "mcp_idle_timeout": 300,
+    "mcp_reap_interval": 30,
+    "mcp_sources": []
+  },
+  "tools": [
+    "get_system_status",
+    "get_project_detail",
+    "get_task_detail",
+    "get_resource_health",
+    "get_provider_status",
+    "get_god_health",
+    "retry_task",
+    "release_task",
+    "skip_task",
+    "reassign_tier",
+    "modify_prompt",
+    "log_observation",
+    "create_project",
+    "plan_project",
+    "start_project",
+    "review_completed_project",
+    "get_project_knowledge",
+    "get_recent_completions"
+  ]
+}
