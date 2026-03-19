@@ -110,14 +110,12 @@ class HermesRunner:
         task_type = row.get("task_type", "code")
         context_json = row.get("context_json")
 
-        # Guard: only execute pending tasks
+        # Guard: only execute pending/queued tasks
         if status not in ("pending", "queued"):
-            return [Emit("worker_event", {
-                "task_id": task_id,
-                "project_id": project_id,
-                "status": "skipped",
-                "reason": f"Task is {status}, expected pending",
-            }, source="hermes")]
+            # Don't emit skipped events for non-pending tasks — this is normal
+            # dedup from replay. Just return silently.
+            logger.debug("Hermes: task %s is %s, skipping (normal dedup)", task_id[:8], status)
+            return None
 
         # Set task → running
         await self.db.execute_write(
