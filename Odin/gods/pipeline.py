@@ -201,6 +201,39 @@ class Pipeline:
 
     async def stop(self):
         self._running = False
+        self.stop_scheduler()
+
+    # ------------------------------------------------------------------
+    # Tick scheduler — auto-inject tick events
+    # ------------------------------------------------------------------
+
+    def start_scheduler(self, interval: float = 10.0):
+        """Start injecting periodic tick events into the relay table."""
+        self._scheduler_running = True
+        self._scheduler_task = asyncio.create_task(
+            self._scheduler_loop(interval),
+            name="tick-scheduler",
+        )
+
+    def stop_scheduler(self):
+        """Stop the tick scheduler."""
+        self._scheduler_running = False
+        task = getattr(self, "_scheduler_task", None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _scheduler_loop(self, interval: float):
+        """Background loop that injects tick events."""
+        try:
+            while self._scheduler_running:
+                await self._emit(Emit(
+                    event_type="tick",
+                    payload={},
+                    source="scheduler",
+                ))
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
 
     async def restore_cursor(self):
         """Restore _last_seen_id from god_registry table."""

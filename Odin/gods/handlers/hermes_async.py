@@ -39,13 +39,19 @@ class HermesRunner:
         *,
         max_concurrent: int = 4,
         default_timeout: int = 600,
+        heartbeat_interval: float = 30.0,
     ):
         self.db = db
         self.max_concurrent = max_concurrent
         self.default_timeout = default_timeout
+        self.heartbeat_interval = heartbeat_interval
 
         # In-flight tracking: task_id → asyncio.Task
         self._tasks: dict[str, asyncio.Task] = {}
+        # Subprocess tracking: task_id → Process (for kill on cancel)
+        self._processes: dict[str, Any] = {}
+        # Heartbeat tasks: task_id → asyncio.Task
+        self._heartbeats: dict[str, asyncio.Task] = {}
 
     @property
     def in_flight(self) -> set[str]:
@@ -193,6 +199,13 @@ class HermesRunner:
         This ALWAYS writes a worker_event to the relay, even on internal errors.
         Tasks must never get stuck in 'running'.
         """
+        # Start heartbeat
+        hb_task = asyncio.create_task(
+            self._heartbeat_loop(task_id, project_id, provider),
+            name=f"heartbeat-{task_id}",
+        )
+        self._heartbeats[task_id] = hb_task
+
         try:
             result = await self._run_cli_background(
                 provider=provider,
@@ -314,6 +327,37 @@ class HermesRunner:
                 "error": error_msg,
             })
 
+        finally:
+            # Always stop heartbeat and clean up process ref
+            self._stop_heartbeat(task_id)
+            self._processes.pop(task_id, None)
+
+    # ------------------------------------------------------------------
+    # Heartbeat
+    # ------------------------------------------------------------------
+
+    async def _heartbeat_loop(self, task_id: str, project_id: str, provider: str):
+        """Emit periodic heartbeat events while a task is running."""
+        start = time.time()
+        try:
+            while True:
+                await asyncio.sleep(self.heartbeat_interval)
+                uptime = time.time() - start
+                await self._write_relay_event("heartbeat", {
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "provider": provider,
+                    "uptime_s": round(uptime, 1),
+                })
+        except asyncio.CancelledError:
+            pass
+
+    def _stop_heartbeat(self, task_id: str):
+        """Cancel heartbeat for a task."""
+        hb = self._heartbeats.pop(task_id, None)
+        if hb and not hb.done():
+            hb.cancel()
+
     # ------------------------------------------------------------------
     # CLI execution (mocked in tests)
     # ------------------------------------------------------------------
@@ -424,10 +468,25 @@ class HermesRunner:
     async def cancel(self, task_id: str):
         """Cancel a running task.
 
-        Writes the failed status directly — don't rely on the CancelledError
-        handler inside _monitor_task, since shielded DB writes inside a
-        cancelled coroutine are unreliable.
+        Kills the subprocess (if tracked), cancels the asyncio.Task,
+        then writes failed status directly from cancel() (not the handler).
         """
+        # Kill subprocess first
+        proc = self._processes.pop(task_id, None)
+        if proc is not None:
+            try:
+                proc.terminate()
+                # Wait briefly for graceful exit
+                await asyncio.sleep(0.5)
+                if proc.returncode is None:
+                    proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+
+        # Stop heartbeat
+        self._stop_heartbeat(task_id)
+
+        # Cancel asyncio.Task
         task = self._tasks.get(task_id)
         if task and not task.done():
             task.cancel()
