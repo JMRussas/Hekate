@@ -297,8 +297,8 @@ async def hermes_execute(event: Event, db) -> list[Emit] | None:
     task_type = row.get("task_type", "code")
     context_json = row.get("context_json")
 
-    # Guard: only execute pending tasks
-    if status != "pending":
+    # Guard: only execute pending or queued tasks
+    if status not in ("pending", "queued"):
         logger.info("Hermes: task %s is %s, skipping", task_id[:8], status)
         return [Emit("worker_event", {
             "task_id": task_id,

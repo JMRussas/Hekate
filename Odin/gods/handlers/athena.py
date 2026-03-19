@@ -141,9 +141,9 @@ async def athena_plan(event: Event, db) -> list[Emit] | None:
         logger.info("Athena: regenerating with gate feedback: %s", gate_feedback[:80])
 
     try:
-        # Load project requirements for review
+        # Load project — check status to prevent re-planning
         project_row = await db.fetchone(
-            "SELECT name, requirements FROM projects WHERE id = $1",
+            "SELECT name, requirements, status FROM projects WHERE id = $1",
             (project_id,),
         )
         if not project_row:
@@ -151,6 +151,26 @@ async def athena_plan(event: Event, db) -> list[Emit] | None:
                 "project_id": project_id,
                 "error": "Project not found",
             }, source="athena")]
+
+        # Guard: only plan draft projects (skip if already planning/planned/executing/completed)
+        status = project_row.get("status", "draft")
+        if status != "draft" and not gate_feedback:
+            logger.info("Athena: project %s already %s, skipping plan", project_id[:8], status)
+            return []
+
+        # Atomic lock: set to 'planning' immediately to prevent concurrent planning
+        await db.execute_write(
+            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4",
+            ("planning", time.time(), project_id, "draft"),
+        )
+        # Verify we got the lock (another Athena may have beat us)
+        lock_row = await db.fetchone(
+            "SELECT status FROM projects WHERE id = $1", (project_id,)
+        )
+        if lock_row and lock_row["status"] != "planning":
+            logger.info("Athena: project %s lock lost (status=%s), skipping",
+                        project_id[:8], lock_row["status"])
+            return []
 
         project_name = project_row["name"]
         requirements = project_row.get("requirements", "")
@@ -188,6 +208,11 @@ async def athena_plan(event: Event, db) -> list[Emit] | None:
 
             # If review passes or we're at max iterations, emit
             if not review.has_gaps or review.confidence >= 0.7 or iteration >= MAX_REVIEW_ITERATIONS:
+                # Mark project as planned immediately to prevent re-planning
+                await db.execute_write(
+                    "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
+                    ("planned", time.time(), project_id),
+                )
                 return [Emit("project_planned", {
                     "project_id": project_id,
                     "plan_id": plan_id,

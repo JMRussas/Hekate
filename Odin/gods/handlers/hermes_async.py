@@ -111,7 +111,7 @@ class HermesRunner:
         context_json = row.get("context_json")
 
         # Guard: only execute pending tasks
-        if status != "pending":
+        if status not in ("pending", "queued"):
             return [Emit("worker_event", {
                 "task_id": task_id,
                 "project_id": project_id,

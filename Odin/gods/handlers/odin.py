@@ -286,6 +286,12 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
         complexity = "medium"
         provider = _select_provider(ttype, complexity, available)
 
+        # Set task to queued immediately to prevent double-dispatch
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, model_tier = $2, updated_at = $3 WHERE id = $4",
+            ("queued", provider, time.time(), tid),
+        )
+
         emits.append(Emit("dispatch_command", {
             "task_id": tid,
             "project_id": project_id,

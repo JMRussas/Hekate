@@ -223,14 +223,22 @@ class Pipeline:
             task.cancel()
 
     async def _scheduler_loop(self, interval: float):
-        """Background loop that injects tick events."""
+        """Background loop that injects tick events. Deduplicates — won't emit
+        if an unprocessed tick already exists ahead of the cursor."""
         try:
             while self._scheduler_running:
-                await self._emit(Emit(
-                    event_type="tick",
-                    payload={},
-                    source="scheduler",
-                ))
+                # Check for unprocessed ticks before emitting another
+                pending_tick = await self.db.fetchone(
+                    "SELECT id FROM god_relay_events "
+                    "WHERE event_type = $1 AND id > $2 LIMIT 1",
+                    ("tick", self._last_seen_id),
+                )
+                if not pending_tick:
+                    await self._emit(Emit(
+                        event_type="tick",
+                        payload={},
+                        source="scheduler",
+                    ))
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass
