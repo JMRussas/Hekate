@@ -64,19 +64,13 @@ async def _generate_l1(
     The conversation_id is used to continue the same conversation in deepen calls.
     """
     # Default: import and call the real planner
+    # NOTE: Do NOT decompose here — decomposition happens once after final review
     from backend.services.planner import PlannerService
     from backend.services.budget import BudgetManager
 
     budget = BudgetManager(db)
     planner = PlannerService(db=db, budget=budget)
     result = await planner.generate(project_id, **kwargs)
-
-    # Decompose into task rows
-    plan_id = result.get("plan_id")
-    if plan_id:
-        from backend.services.decomposer import DecomposerService
-        decomposer = DecomposerService(db=db)
-        await decomposer.decompose(project_id, plan_id)
 
     return result
 
@@ -416,6 +410,22 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
             )
             test_specs = tdd_result.get("test_specs")
             narrate(f"Generated {len(test_specs or [])} test specs")
+
+        # ---------------------------------------------------------------
+        # Step 6: Decompose plan into task rows (once, after all planning)
+        # ---------------------------------------------------------------
+        plan_id = current_plan.get("plan_id")
+        if plan_id:
+            narrate("Decomposing final plan into executable tasks...")
+            try:
+                from backend.services.decomposer import DecomposerService
+                decomposer = DecomposerService(db=db)
+                decomp = await decomposer.decompose(project_id, plan_id)
+                task_count = decomp.get("tasks_created", decomp.get("task_count", 0))
+                narrate(f"Created {task_count} tasks from plan")
+            except Exception as e:
+                logger.warning("Decomposition failed: %s", e)
+                narrate(f"Decomposition failed: {e}")
 
         # ---------------------------------------------------------------
         # Done — emit project_planned
