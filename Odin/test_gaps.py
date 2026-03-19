@@ -147,7 +147,7 @@ class TestEndToEnd:
         # Project should be completed
         row = await full_db.fetchone(
             "SELECT status FROM projects WHERE id = ?", ("proj-1",))
-        assert row[0] in ("completed", "executing"), f"Expected completed, got {row[0]}"
+        assert row["status"] in ("completed", "executing"), f"Expected completed, got {row['status']}"
 
 
 # ===========================================================================
@@ -211,7 +211,7 @@ class TestPromptGuidanceAlignment:
 
         row = await full_db.fetchone(
             "SELECT context_json FROM tasks WHERE id = ?", ("t1",))
-        ctx = json.loads(row[0] or "{}")
+        ctx = json.loads(row["context_json"] or "{}")
         assert "indentation" in ctx.get("prompt_guidance", "").lower()
 
     @pytest.mark.asyncio
@@ -295,8 +295,8 @@ class TestRejectionHandlers:
 
         row = await full_db.fetchone(
             "SELECT status, context_json FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "pending"
-        ctx = json.loads(row[1] or "{}")
+        assert row["status"] == "pending"
+        ctx = json.loads(row["context_json"] or "{}")
         assert "dependency injection" in ctx.get("review_feedback", "").lower()
 
     @pytest.mark.asyncio
@@ -381,7 +381,7 @@ class TestCursorPersistence:
         row = await full_db.fetchone(
             "SELECT last_seen_id FROM god_registry WHERE name = ?", ("pipeline",))
         assert row is not None
-        assert row[0] > 0
+        assert row["last_seen_id"] > 0
 
     @pytest.mark.asyncio
     async def test_cursor_restored_on_init(self, full_db):

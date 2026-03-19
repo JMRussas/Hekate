@@ -291,18 +291,11 @@ async def hermes_execute(event: Event, db) -> list[Emit] | None:
             "task_id": task_id,
         }, source="hermes")]
 
-    if isinstance(row, dict):
-        status = row["status"]
-        title = row["title"]
-        description = row["description"]
-        task_type = row["task_type"]
-        context_json = row["context_json"]
-    else:
-        status = row[4]
-        title = row[1]
-        description = row[2]
-        task_type = row[3]
-        context_json = row[6]
+    status = row["status"]
+    title = row["title"]
+    description = row.get("description", "")
+    task_type = row.get("task_type", "code")
+    context_json = row.get("context_json")
 
     # Guard: only execute pending tasks
     if status != "pending":
@@ -324,9 +317,7 @@ async def hermes_execute(event: Event, db) -> list[Emit] | None:
     proj_row = await db.fetchone(
         "SELECT repo_path FROM projects WHERE id = $1", (project_id,)
     )
-    cwd = (proj_row[0] if proj_row and isinstance(proj_row, (list, tuple))
-           else proj_row.get("repo_path", ".") if proj_row and isinstance(proj_row, dict)
-           else ".")
+    cwd = proj_row.get("repo_path", ".") if proj_row else "."
 
     # Build prompt
     prompt = f"# Task: {title}\n\n{description or ''}"

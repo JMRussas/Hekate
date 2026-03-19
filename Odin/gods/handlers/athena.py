@@ -152,8 +152,8 @@ async def athena_plan(event: Event, db) -> list[Emit] | None:
                 "error": "Project not found",
             }, source="athena")]
 
-        project_name = project_row["name"] if isinstance(project_row, dict) else project_row[0]
-        requirements = project_row["requirements"] if isinstance(project_row, dict) else project_row[1]
+        project_name = project_row["name"]
+        requirements = project_row.get("requirements", "")
 
         # Generate → Review → Regenerate loop
         previous_plan = None

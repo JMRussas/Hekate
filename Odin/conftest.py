@@ -57,12 +57,13 @@ class SqliteDB:
     async def fetchone(self, sql: str, params: tuple | list = ()):
         sql = self._pg_to_sqlite(sql)
         async with self._conn.execute(sql, tuple(params)) as cur:
-            return await cur.fetchone()
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
     async def fetchall(self, sql: str, params: tuple | list = ()) -> list:
         sql = self._pg_to_sqlite(sql)
         async with self._conn.execute(sql, tuple(params)) as cur:
-            return await cur.fetchall()
+            return [dict(r) for r in await cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,7 @@ def fake_db():
 async def sqlite_db():
     """Real in-memory SQLite with god tables for integration tests."""
     conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
 
     # Create all god-related tables
     await conn.executescript("""

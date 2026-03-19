@@ -71,9 +71,7 @@ async def hephaestus_stage(event: Event, db) -> list[Emit] | None:
     # Resolve cwd
     proj_row = await db.fetchone(
         "SELECT repo_path FROM projects WHERE id = $1", (project_id,))
-    cwd = "."
-    if proj_row:
-        cwd = proj_row[0] if isinstance(proj_row, (list, tuple)) else proj_row.get("repo_path", ".")
+    cwd = proj_row.get("repo_path", ".") if proj_row else "."
 
     # Syntax check Python files
     py_files = [f for f in affected_files if f.endswith(".py")]

@@ -154,9 +154,9 @@ class TestMimirVerify:
 
         row = await verify_db.fetchone(
             "SELECT status, retry_count, context_json FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "pending"
-        assert row[1] == 1
-        assert "No tests written" in (row[2] or "")
+        assert row["status"] == "pending"
+        assert row["retry_count"] == 1
+        assert "No tests written" in (row["context_json"] or "")
 
     @pytest.mark.asyncio
     async def test_skips_failed_worker_events(self, verify_db):
@@ -198,7 +198,7 @@ class TestMimirVerify:
         assert human is not None
 
         row = await verify_db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "needs_review"
+        assert row["status"] == "needs_review"
 
 
 # ---------------------------------------------------------------------------

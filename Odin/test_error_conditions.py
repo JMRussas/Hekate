@@ -597,7 +597,7 @@ class TestRecovery:
 
         # Task should be reset
         row = await db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] in ("pending", "needs_review")
+        assert row["status"] in ("pending", "needs_review")
 
     @pytest.mark.asyncio
     async def test_max_retries_escalates_to_human(self, db):
@@ -619,7 +619,7 @@ class TestRecovery:
         assert human is not None
 
         row = await db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "needs_review"
+        assert row["status"] == "needs_review"
 
     @pytest.mark.asyncio
     async def test_verification_rejection_adds_feedback_and_resets(self, db):
@@ -644,9 +644,9 @@ class TestRecovery:
         assert rejected is not None
 
         row = await db.fetchone("SELECT status, retry_count, context_json FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "pending"
-        assert row[1] == 1
-        ctx = json.loads(row[2] or "{}")
+        assert row["status"] == "pending"
+        assert row["retry_count"] == 1
+        ctx = json.loads(row["context_json"] or "{}")
         assert "unit tests" in ctx.get("verification_feedback", "").lower()
 
 

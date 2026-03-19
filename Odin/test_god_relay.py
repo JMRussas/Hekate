@@ -36,11 +36,11 @@ class TestGodEmitRelay:
         row = await sqlite_db.fetchone(
             "SELECT event_type, source, payload, severity FROM god_relay_events"
         )
-        assert row[0] == "dispatch_command"
-        assert row[1] == "god:odin"
-        payload = json.loads(row[2])
+        assert row["event_type"] == "dispatch_command"
+        assert row["source"] == "god:odin"
+        payload = json.loads(row["payload"])
         assert payload["task_id"] == "t1"
-        assert row[3] == "info"
+        assert row["severity"] == "info"
 
     @pytest.mark.asyncio
     async def test_custom_severity(self, sqlite_db):
@@ -50,7 +50,7 @@ class TestGodEmitRelay:
         row = await sqlite_db.fetchone(
             "SELECT severity FROM god_relay_events"
         )
-        assert row[0] == "warning"
+        assert row["severity"] == "warning"
 
     @pytest.mark.asyncio
     async def test_source_prefixed_with_god(self, sqlite_db):
@@ -58,7 +58,7 @@ class TestGodEmitRelay:
         await god.emit_relay("project_planned", {})
 
         row = await sqlite_db.fetchone("SELECT source FROM god_relay_events")
-        assert row[0] == "god:athena"
+        assert row["source"] == "god:athena"
 
 
 class TestGodPollRelay:

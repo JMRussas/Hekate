@@ -115,7 +115,7 @@ class TestOdinStart:
 
         # Check project status updated
         row = await orch_db.fetchone("SELECT status FROM projects WHERE id = ?", ("proj-1",))
-        assert row[0] == "executing"
+        assert row["status"] == "executing"
 
         # Should emit project_started
         started = next((e for e in emits if e.event_type == "project_started"), None)
@@ -280,7 +280,7 @@ class TestOdinLifecycle:
 
         # Check DB updated
         row = await orch_db.fetchone("SELECT status FROM projects WHERE id = ?", ("proj-1",))
-        assert row[0] == "completed"
+        assert row["status"] == "completed"
 
     @pytest.mark.asyncio
     async def test_project_failed_when_deadlocked(self, orch_db):
@@ -436,7 +436,7 @@ class TestOdinStartIdempotency:
 
         # Project should still be executing
         row = await orch_db.fetchone("SELECT status FROM projects WHERE id = ?", ("proj-1",))
-        assert row[0] == "executing"
+        assert row["status"] == "executing"
 
     @pytest.mark.asyncio
     async def test_start_skips_if_already_executing(self, orch_db):
@@ -548,8 +548,8 @@ class TestOdinHandleDiagnosis:
 
         # Task should be reset to pending
         row = await orch_db.fetchone("SELECT status, retry_count FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "pending"
-        assert row[1] == 1  # retry count incremented
+        assert row["status"] == "pending"
+        assert row["retry_count"] == 1  # retry count incremented
 
         # Should emit task_reset
         reset = next((e for e in emits if e.event_type == "task_reset"), None)
@@ -572,8 +572,8 @@ class TestOdinHandleDiagnosis:
         emits = await odin_handle_diagnosis(event, orch_db)
 
         row = await orch_db.fetchone("SELECT status, model_tier FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "pending"
-        assert row[1] == "gemini_cli"
+        assert row["status"] == "pending"
+        assert row["model_tier"] == "gemini_cli"
 
     @pytest.mark.asyncio
     async def test_skip_marks_task_cancelled(self, orch_db):
@@ -591,7 +591,7 @@ class TestOdinHandleDiagnosis:
         emits = await odin_handle_diagnosis(event, orch_db)
 
         row = await orch_db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "cancelled"
+        assert row["status"] == "cancelled"
 
         skipped = next((e for e in emits if e.event_type == "task_skipped"), None)
         assert skipped is not None
@@ -612,7 +612,7 @@ class TestOdinHandleDiagnosis:
         emits = await odin_handle_diagnosis(event, orch_db)
 
         row = await orch_db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "needs_review"
+        assert row["status"] == "needs_review"
 
         human = next((e for e in emits if e.event_type == "needs_human_review"), None)
         assert human is not None
@@ -638,7 +638,7 @@ class TestOdinHandleDiagnosis:
 
         # Should NOT reset — max retries exhausted, should escalate instead
         row = await orch_db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] != "pending"
+        assert row["status"] != "pending"
 
         escalated = next((e for e in emits if e.event_type == "needs_human_review"), None)
         assert escalated is not None
@@ -661,7 +661,7 @@ class TestOdinHandleDiagnosis:
         emits = await odin_handle_diagnosis(event, orch_db)
 
         row = await orch_db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "pending"
+        assert row["status"] == "pending"
 
 
 # ---------------------------------------------------------------------------

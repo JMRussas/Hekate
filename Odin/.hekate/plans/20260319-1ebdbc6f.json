@@ -1,0 +1,435 @@
+{
+  "intent": "Fix all async hermes and pipeline gaps: (1) Track subprocess Process objects and kill on cancel \u2014 store proc in dict, SIGTERM on cancel, SIGKILL after timeout. (2) Add progress heartbeat \u2014 background watchdog emits heartbeat events to relay every 30s for running tasks. (3) Update registration.py to use HermesRunner instead of sync hermes_execute \u2014 instantiate runner in registration, pass DB. (4) Add backpressure \u2014 odin_dispatch checks in-flight count before dispatching, or skips tasks that returned slots_full. (5) Remove duplicate CLI code \u2014 hermes_async._run_cli_background should call hermes._run_cli or share implementation. (6) Parse cost from Claude Code stream-json usage events. (7) Test concurrent DB writes from background tasks. (8) Add tick scheduler \u2014 periodic tick injection into relay table. (9) Retire sync hermes.py \u2014 hermes_async is canonical, update all imports and tests.",
+  "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\Odin",
+  "depth": "full",
+  "candidates": [
+    {
+      "filePath": "test_handler_hermes.py",
+      "typeName": "TestParseStreamEvent",
+      "memberName": "TestParseStreamEvent",
+      "kind": 0,
+      "line": 0,
+      "score": 10,
+      "explanation": "Class \u0027TestParseStreamEvent\u0027 matches: events, parse, stream, test, tests",
+      "matchedKeywords": [
+        "events",
+        "parse",
+        "stream",
+        "test",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_handler_odin.py",
+      "typeName": "TestOdinDispatch",
+      "memberName": "TestOdinDispatch",
+      "kind": 0,
+      "line": 0,
+      "score": 10,
+      "explanation": "Class \u0027TestOdinDispatch\u0027 matches: odin, dispatch, dispatching, test, tests",
+      "matchedKeywords": [
+        "odin",
+        "dispatch",
+        "dispatching",
+        "test",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_demigod_runtime.py",
+      "typeName": "TestRunDemigodLoop",
+      "memberName": "TestRunDemigodLoop",
+      "kind": 0,
+      "line": 0,
+      "score": 10,
+      "explanation": "Class \u0027TestRunDemigodLoop\u0027 matches: running, runner, run, test, tests",
+      "matchedKeywords": [
+        "running",
+        "runner",
+        "run",
+        "test",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_demigod.py",
+      "typeName": "TestRunContext",
+      "memberName": "TestRunContext",
+      "kind": 0,
+      "line": 0,
+      "score": 10,
+      "explanation": "Class \u0027TestRunContext\u0027 matches: running, runner, run, test, tests",
+      "matchedKeywords": [
+        "running",
+        "runner",
+        "run",
+        "test",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_handler_hermes.py",
+      "typeName": "TestParseStreamEvent",
+      "memberName": "test_parses_tool_call",
+      "kind": 1,
+      "line": 0,
+      "score": 8,
+      "explanation": "Function \u0027test_parses_tool_call\u0027 in TestParseStreamEvent references: all, call, test",
+      "matchedKeywords": [
+        "all",
+        "call",
+        "test"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_handler_odin.py",
+      "typeName": "TestOdinTick",
+      "memberName": "TestOdinTick",
+      "kind": 0,
+      "line": 0,
+      "score": 8,
+      "explanation": "Class \u0027TestOdinTick\u0027 matches: odin, test, tick, tests",
+      "matchedKeywords": [
+        "odin",
+        "test",
+        "tick",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_dispatch.py",
+      "typeName": "TestBuildDispatchCommands",
+      "memberName": "TestBuildDispatchCommands",
+      "kind": 0,
+      "line": 0,
+      "score": 8,
+      "explanation": "Class \u0027TestBuildDispatchCommands\u0027 matches: dispatch, dispatching, test, tests",
+      "matchedKeywords": [
+        "dispatch",
+        "dispatching",
+        "test",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_dispatch.py",
+      "typeName": "TestDispatchCommand",
+      "memberName": "TestDispatchCommand",
+      "kind": 0,
+      "line": 0,
+      "score": 8,
+      "explanation": "Class \u0027TestDispatchCommand\u0027 matches: dispatch, dispatching, test, tests",
+      "matchedKeywords": [
+        "dispatch",
+        "dispatching",
+        "test",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_relay.py",
+      "typeName": "TestEventRelay",
+      "memberName": "TestEventRelay",
+      "kind": 0,
+      "line": 0,
+      "score": 8,
+      "explanation": "Class \u0027TestEventRelay\u0027 matches: events, relay, test, tests",
+      "matchedKeywords": [
+        "events",
+        "relay",
+        "test",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_pipeline.py",
+      "typeName": "TestPipelineEmit",
+      "memberName": "TestPipelineEmit",
+      "kind": 0,
+      "line": 0,
+      "score": 8,
+      "explanation": "Class \u0027TestPipelineEmit\u0027 matches: pipeline, emits, test, tests",
+      "matchedKeywords": [
+        "pipeline",
+        "emits",
+        "test",
+        "tests"
+      ],
+      "role": "general",
+      "isTemplate": false
+    }
+  ],
+  "verdict": {
+    "intent": "Fix all async hermes and pipeline gaps: (1) Track subprocess Process objects and kill on cancel \u2014 store proc in dict, SIGTERM on cancel, SIGKILL after timeout. (2) Add progress heartbeat \u2014 background watchdog emits heartbeat events to relay every 30s for running tasks. (3) Update registration.py to use HermesRunner instead of sync hermes_execute \u2014 instantiate runner in registration, pass DB. (4) Add backpressure \u2014 odin_dispatch checks in-flight count before dispatching, or skips tasks that returned slots_full. (5) Remove duplicate CLI code \u2014 hermes_async._run_cli_background should call hermes._run_cli or share implementation. (6) Parse cost from Claude Code stream-json usage events. (7) Test concurrent DB writes from background tasks. (8) Add tick scheduler \u2014 periodic tick injection into relay table. (9) Retire sync hermes.py \u2014 hermes_async is canonical, update all imports and tests.",
+    "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\Odin",
+    "filePath": "test_handler_hermes.py",
+    "trustLevel": "L1 \u2014 standard",
+    "patterns": [
+      {
+        "name": "async",
+        "description": "async",
+        "exampleFiles": [
+          "test_handler_hermes.py"
+        ],
+        "codeSnippet": null,
+        "occurrenceCount": 1
+      }
+    ],
+    "constraints": [],
+    "guidelines": [],
+    "nearestAnalogs": [
+      {
+        "filePath": "test_handler_mimir.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_handler_athena.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_handler_odin.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_error_conditions.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_gaps.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_demigod_runtime.py",
+        "similarity": 0.875,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_gods.py",
+        "similarity": 0.875,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_relay.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_god_relay.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_diagnosis.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      }
+    ],
+    "role": "general",
+    "design": null,
+    "summary": "Role: general. File uses: async. Trust level: L1 \u2014 standard. Allocations detected: 0. Nearest analogs:\n  - test_handler_mimir.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)\n  - test_handler_athena.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)\n  - test_handler_odin.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)"
+  },
+  "impact": [
+    {
+      "symbolName": "TestParseStreamEvent",
+      "usageCount": 1,
+      "affectedFiles": [
+        "test_handler_hermes.py"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    },
+    {
+      "symbolName": "TestOdinDispatch",
+      "usageCount": 1,
+      "affectedFiles": [
+        "test_handler_odin.py"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    },
+    {
+      "symbolName": "TestRunDemigodLoop",
+      "usageCount": 1,
+      "affectedFiles": [
+        "test_demigod_runtime.py"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    }
+  ],
+  "suggestedSteps": [
+    {
+      "description": "Modify TestParseStreamEvent.TestParseStreamEvent",
+      "targetFile": "test_handler_hermes.py",
+      "targetSymbol": "TestParseStreamEvent",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify TestOdinDispatch.TestOdinDispatch",
+      "targetFile": "test_handler_odin.py",
+      "targetSymbol": "TestOdinDispatch",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify TestRunDemigodLoop.TestRunDemigodLoop",
+      "targetFile": "test_demigod_runtime.py",
+      "targetSymbol": "TestRunDemigodLoop",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify TestRunContext.TestRunContext",
+      "targetFile": "test_demigod.py",
+      "targetSymbol": "TestRunContext",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify TestParseStreamEvent.test_parses_tool_call",
+      "targetFile": "test_handler_hermes.py",
+      "targetSymbol": "test_parses_tool_call",
+      "operation": "modify_method",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    }
+  ],
+  "summary": "Plan for: Fix all async hermes and pipeline gaps: (1) Track subprocess Process objects and kill on cancel \u2014 store proc in dict, SIGTERM on cancel, SIGKILL after timeout. (2) Add progress heartbeat \u2014 background watchdog emits heartbeat events to relay every 30s for running tasks. (3) Update registration.py to use HermesRunner instead of sync hermes_execute \u2014 instantiate runner in registration, pass DB. (4) Add backpressure \u2014 odin_dispatch checks in-flight count before dispatching, or skips tasks that returned slots_full. (5) Remove duplicate CLI code \u2014 hermes_async._run_cli_background should call hermes._run_cli or share implementation. (6) Parse cost from Claude Code stream-json usage events. (7) Test concurrent DB writes from background tasks. (8) Add tick scheduler \u2014 periodic tick injection into relay table. (9) Retire sync hermes.py \u2014 hermes_async is canonical, update all imports and tests.. Start at TestParseStreamEvent.TestParseStreamEvent (test_handler_hermes.py). Role: general (trust: L1 \u2014 standard). Impact: 3 usages across 1 role(s).",
+  "callId": null,
+  "planId": "20260319-1ebdbc6f",
+  "status": "draft",
+  "createdAtUtc": "2026-03-19T05:30:29.341774Z",
+  "revision": 0,
+  "gaps": [],
+  "reuseDirectives": [],
+  "signals": {
+    "isCreateNew": true,
+    "analogTarget": null,
+    "roleHint": "test",
+    "patternMatches": [],
+    "hasSignals": true
+  }
+}

@@ -116,8 +116,8 @@ class TestHermesStateTransitions:
         # Task should have been set to running (then completed)
         row = await exec_db.fetchone(
             "SELECT status, output_text, model_used FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "completed"
-        assert row[1] == "Done."
+        assert row["status"] == "completed"
+        assert row["output_text"] == "Done."
 
     @pytest.mark.asyncio
     async def test_emits_worker_completed(self, exec_db):
@@ -164,8 +164,8 @@ class TestHermesStateTransitions:
 
         # Task should be marked failed in DB
         row = await exec_db.fetchone("SELECT status, error FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "failed"
-        assert "crashed" in row[1].lower()
+        assert row["status"] == "failed"
+        assert "crashed" in row["error"].lower()
 
     @pytest.mark.asyncio
     async def test_skips_non_pending_task(self, exec_db):
@@ -391,10 +391,10 @@ class TestProviderRouting:
         row = await exec_db.fetchone(
             "SELECT cost_usd, prompt_tokens, completion_tokens, model_used "
             "FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == 0.15
-        assert row[1] == 5000
-        assert row[2] == 2000
-        assert row[3] == "claude-opus-4"
+        assert row["cost_usd"] == 0.15
+        assert row["prompt_tokens"] == 5000
+        assert row["completion_tokens"] == 2000
+        assert row["model_used"] == "claude-opus-4"
 
 
 # ---------------------------------------------------------------------------

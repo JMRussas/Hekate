@@ -168,7 +168,7 @@ async def odin_start(event: Event, db) -> list[Emit] | None:
             "project_id": project_id,
         }, source="odin")]
 
-    current_status = row[1] if isinstance(row, (list, tuple)) else row["status"]
+    current_status = row["status"]
 
     # Idempotency: if already executing or beyond, skip
     if current_status in ("executing", "completed", "failed"):
@@ -204,7 +204,7 @@ async def odin_tick(event: Event, db) -> list[Emit] | None:
 
     emits: list[Emit] = []
     for row in rows:
-        pid = row[0] if isinstance(row, (list, tuple)) else row["id"]
+        pid = row["id"]
         emits.append(Emit("project_tick", {
             "project_id": pid,
         }, source="odin"))
@@ -276,15 +276,10 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
     )
 
     for task_row in ready[:to_dispatch]:
-        if isinstance(task_row, dict):
-            tid = task_row["id"]
-            ttype = task_row.get("task_type", "code")
-        else:
-            tid = task_row[0]
-            ttype = task_row[1] if len(task_row) > 1 else "code"
+        tid = task_row["id"]
+        ttype = task_row.get("task_type", "code")
 
-        # dict fallback (shouldn't be needed with dict adapter, but safe)
-        if isinstance(tid, type(None)):
+        if not tid:
             continue
 
         # Default complexity to medium — real DB may not have this column
@@ -429,12 +424,8 @@ async def odin_handle_diagnosis(event: Event, db) -> list[Emit] | None:
     if not row:
         return [Emit("odin_error", {"error": f"Task {task_id} not found"}, source="odin")]
 
-    if isinstance(row, dict):
-        retry_count = row["retry_count"] or 0
-        max_retries = row["max_retries"] or 3
-    else:
-        retry_count = row[1] or 0
-        max_retries = row[2] or 3
+    retry_count = (row.get("retry_count") or 0)
+    max_retries = (row.get("max_retries") or 3)
 
     emits: list[Emit] = []
 

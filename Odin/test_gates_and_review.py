@@ -52,7 +52,7 @@ class TestPipelineGates:
         rows = await sqlite_db.fetchall(
             "SELECT event_type FROM god_relay_events WHERE event_type IN ('output', 'gate_passed') ORDER BY created_at"
         )
-        types = [r[0] for r in rows]
+        types = [r["event_type"] for r in rows]
         assert "output" in types
         assert "gate_passed" in types
 
@@ -82,7 +82,7 @@ class TestPipelineGates:
             "SELECT event_type, payload FROM god_relay_events WHERE event_type = 'gate_failed'"
         )
         assert len(rows) == 1
-        payload = json.loads(rows[0][1])
+        payload = json.loads(rows[0]["payload"])
         assert "output is empty" in payload["reason"]
 
     @pytest.mark.asyncio
@@ -275,7 +275,7 @@ class TestNarration:
             "SELECT event_type, payload FROM god_relay_events WHERE event_type = 'narration'"
         )
         assert len(rows) == 1
-        payload = json.loads(rows[0][1])
+        payload = json.loads(rows[0]["payload"])
         assert payload["source"] == "athena"
         assert "L2 rigor" in payload["message"]
 

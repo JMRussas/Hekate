@@ -139,7 +139,7 @@ class TestAsyncHermesLaunch:
             await runner.handle_dispatch(event)
 
         row = await db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "running"
+        assert row["status"] == "running"
 
         await runner.shutdown(timeout=0.1)
 
@@ -266,7 +266,7 @@ class TestAsyncHermesMonitor:
             "SELECT event_type, payload FROM god_relay_events WHERE event_type = ?",
             ("worker_event",))
         assert len(rows) >= 1
-        payload = json.loads(rows[0][0] if len(rows[0]) == 1 else rows[0][1])
+        payload = json.loads(rows[0]["payload"])
         assert payload["status"] == "completed"
         assert payload["task_id"] == "t1"
         assert payload["cost_usd"] == 0.05
@@ -293,7 +293,7 @@ class TestAsyncHermesMonitor:
             "SELECT event_type, payload FROM god_relay_events WHERE event_type = ?",
             ("worker_event",))
         assert len(rows) >= 1
-        payload = json.loads(rows[0][0] if len(rows[0]) == 1 else rows[0][1])
+        payload = json.loads(rows[0]["payload"])
         assert payload["status"] == "failed"
         assert "access violation" in payload["error"]
 
@@ -319,7 +319,7 @@ class TestAsyncHermesMonitor:
             "SELECT payload FROM god_relay_events WHERE event_type = ?",
             ("worker_event",))
         assert len(rows) >= 1
-        payload = json.loads(rows[0][0] if len(rows[0]) == 1 else rows[0][1])
+        payload = json.loads(rows[0]["payload"])
         assert payload["status"] == "failed"
         assert payload["timeout"] is True
 
@@ -348,12 +348,12 @@ class TestAsyncHermesMonitor:
         row = await db.fetchone(
             "SELECT status, output_text, cost_usd, prompt_tokens, completion_tokens, model_used "
             "FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "completed"
-        assert row[1] == "Done."
-        assert row[2] == 0.12
-        assert row[3] == 3000
-        assert row[4] == 1500
-        assert row[5] == "claude-opus-4"
+        assert row["status"] == "completed"
+        assert row["output_text"] == "Done."
+        assert row["cost_usd"] == 0.12
+        assert row["prompt_tokens"] == 3000
+        assert row["completion_tokens"] == 1500
+        assert row["model_used"] == "claude-opus-4"
 
     @pytest.mark.asyncio
     async def test_in_flight_cleared_after_completion(self, db):
@@ -405,7 +405,7 @@ class TestAsyncHermesMonitor:
             "SELECT payload FROM god_relay_events WHERE event_type = ?",
             ("worker_event",))
         assert len(rows) >= 1
-        payload = json.loads(rows[0][0] if len(rows[0]) == 1 else rows[0][1])
+        payload = json.loads(rows[0]["payload"])
         assert payload["status"] == "failed"
         assert "empty" in payload["error"].lower()
 
@@ -586,14 +586,14 @@ class TestAsyncHermesCleanup:
 
         # Task should be marked failed in DB
         row = await db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "failed"
+        assert row["status"] == "failed"
 
         # Should have written failed event to relay
         rows = await db.fetchall(
             "SELECT payload FROM god_relay_events WHERE event_type = ?",
             ("worker_event",))
         assert len(rows) >= 1
-        payload = json.loads(rows[0][0] if len(rows[0]) == 1 else rows[0][1])
+        payload = json.loads(rows[0]["payload"])
         assert payload["status"] == "failed"
         assert "cancel" in payload["error"].lower()
 
@@ -645,14 +645,14 @@ class TestAsyncHermesCleanup:
 
         # Task should never be stuck in running
         row = await db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
-        assert row[0] == "failed"
+        assert row["status"] == "failed"
 
         # Should have written to relay
         rows = await db.fetchall(
             "SELECT payload FROM god_relay_events WHERE event_type = ?",
             ("worker_event",))
         assert len(rows) >= 1
-        payload = json.loads(rows[0][0] if len(rows[0]) == 1 else rows[0][1])
+        payload = json.loads(rows[0]["payload"])
         assert payload["status"] == "failed"
 
     @pytest.mark.asyncio
@@ -765,13 +765,13 @@ class TestAsyncHermesIntegration:
         # worker_event should be in relay
         rows = await db.fetchall(
             "SELECT event_type, source FROM god_relay_events", ())
-        event_types = [r[0] for r in rows]
+        event_types = [r["event_type"] for r in rows]
         assert "worker_event" in event_types
 
         # Payload should be complete
         worker_rows = await db.fetchall(
             "SELECT payload FROM god_relay_events WHERE event_type = ?",
             ("worker_event",))
-        payload = json.loads(worker_rows[0][0] if len(worker_rows[0]) == 1 else worker_rows[0][1])
+        payload = json.loads(worker_rows[0]["payload"])
         assert payload["task_id"] == "t1"
         assert payload["status"] == "completed"

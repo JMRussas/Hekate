@@ -282,7 +282,7 @@ class TestConcurrentDBWrites:
             "SELECT payload FROM god_relay_events WHERE event_type = ?",
             ("worker_event",))
         assert len(rows) == 2
-        task_ids = {json.loads(r[0] if len(r) == 1 else r[1])["task_id"] for r in rows}
+        task_ids = {json.loads(r["payload"])["task_id"] for r in rows}
         assert task_ids == {"t1", "t2"}
 
 

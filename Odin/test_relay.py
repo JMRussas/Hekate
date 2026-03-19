@@ -95,9 +95,9 @@ class TestPostgresSink:
         row = await sqlite_db.fetchone(
             "SELECT event_type, source, payload FROM god_relay_events"
         )
-        assert row[0] == "dispatch_command"
-        assert row[1] == "god:odin"
-        assert json.loads(row[2])["task"] == "t1"
+        assert row["event_type"] == "dispatch_command"
+        assert row["source"] == "god:odin"
+        assert json.loads(row["payload"])["task"] == "t1"
 
     @pytest.mark.asyncio
     async def test_writes_multiple(self, sqlite_db):
@@ -110,7 +110,7 @@ class TestPostgresSink:
         row = await sqlite_db.fetchone(
             "SELECT COUNT(*) FROM god_relay_events"
         )
-        assert row[0] == 5
+        assert row["COUNT(*)"] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +232,7 @@ class TestEventRelay:
         row = await sqlite_db.fetchone(
             "SELECT COUNT(*) FROM god_relay_events"
         )
-        assert row[0] == 1
+        assert row["COUNT(*)"] == 1
 
     def test_from_config_without_db_skips_postgres(self):
         relay = EventRelay.from_config({

@@ -1,0 +1,419 @@
+{
+  "intent": "Make hermes_execute async \u2014 launch CLI subprocess, return immediately, monitor completion via separate coroutine that injects worker_event into relay table. Pipeline must not block during execution. Support parallel tasks across providers. Include: async subprocess launcher, completion monitor, task state tracking for in-flight runs, timeout watchdog, error handling for crashed subprocesses.",
+  "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\Odin",
+  "depth": "full",
+  "candidates": [
+    {
+      "filePath": "test_error_conditions.py",
+      "typeName": "TestHermesErrors",
+      "memberName": "TestHermesErrors",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestHermesErrors\u0027 matches: hermes, error",
+      "matchedKeywords": [
+        "hermes",
+        "error"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "gods/demigod_mcp.py",
+      "typeName": "RunRecord",
+      "memberName": "task",
+      "kind": 2,
+      "line": 0,
+      "score": 4,
+      "explanation": "Field \u0027task\u0027 in RunRecord defines: tasks, task",
+      "matchedKeywords": [
+        "tasks",
+        "task"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "gods/relay.py",
+      "typeName": "EventRelay",
+      "memberName": "EventRelay",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027EventRelay\u0027 matches: event, relay",
+      "matchedKeywords": [
+        "event",
+        "relay"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_relay.py",
+      "typeName": "TestEventRelay",
+      "memberName": "TestEventRelay",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestEventRelay\u0027 matches: event, relay",
+      "matchedKeywords": [
+        "event",
+        "relay"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_gaps.py",
+      "typeName": "TestTimeoutHandling",
+      "memberName": "TestTimeoutHandling",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestTimeoutHandling\u0027 matches: timeout, handling",
+      "matchedKeywords": [
+        "timeout",
+        "handling"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_pipeline.py",
+      "typeName": "TestPipelineErrors",
+      "memberName": "TestPipelineErrors",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestPipelineErrors\u0027 matches: pipeline, error",
+      "matchedKeywords": [
+        "pipeline",
+        "error"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_handler_hermes.py",
+      "typeName": "TestHermesStateTransitions",
+      "memberName": "TestHermesStateTransitions",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestHermesStateTransitions\u0027 matches: hermes, state",
+      "matchedKeywords": [
+        "hermes",
+        "state"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_error_conditions.py",
+      "typeName": "TestHermesErrors",
+      "memberName": "test_nested_session_error",
+      "kind": 1,
+      "line": 0,
+      "score": 3,
+      "explanation": "Function \u0027test_nested_session_error\u0027 in TestHermesErrors references: error",
+      "matchedKeywords": [
+        "error"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_error_conditions.py",
+      "typeName": "TestHermesErrors",
+      "memberName": "test_auth_error",
+      "kind": 1,
+      "line": 0,
+      "score": 3,
+      "explanation": "Function \u0027test_auth_error\u0027 in TestHermesErrors references: error",
+      "matchedKeywords": [
+        "error"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_error_conditions.py",
+      "typeName": "TestHermesErrors",
+      "memberName": "test_rate_limit_error",
+      "kind": 1,
+      "line": 0,
+      "score": 3,
+      "explanation": "Function \u0027test_rate_limit_error\u0027 in TestHermesErrors references: error",
+      "matchedKeywords": [
+        "error"
+      ],
+      "role": "general",
+      "isTemplate": false
+    }
+  ],
+  "verdict": {
+    "intent": "Make hermes_execute async \u2014 launch CLI subprocess, return immediately, monitor completion via separate coroutine that injects worker_event into relay table. Pipeline must not block during execution. Support parallel tasks across providers. Include: async subprocess launcher, completion monitor, task state tracking for in-flight runs, timeout watchdog, error handling for crashed subprocesses.",
+    "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\Odin",
+    "filePath": "test_error_conditions.py",
+    "trustLevel": "L1 \u2014 standard",
+    "patterns": [
+      {
+        "name": "async",
+        "description": "async",
+        "exampleFiles": [
+          "test_error_conditions.py"
+        ],
+        "codeSnippet": null,
+        "occurrenceCount": 1
+      }
+    ],
+    "constraints": [],
+    "guidelines": [],
+    "nearestAnalogs": [
+      {
+        "filePath": "test_gaps.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_handler_mimir.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_handler_odin.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_handler_hermes.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_handler_athena.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_gods.py",
+        "similarity": 0.875,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_demigod_runtime.py",
+        "similarity": 0.875,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_demigod.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_diagnosis.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_god_relay.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      }
+    ],
+    "role": "general",
+    "design": null,
+    "summary": "Role: general. File uses: async. Trust level: L1 \u2014 standard. Allocations detected: 0. Nearest analogs:\n  - test_gaps.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)\n  - test_handler_mimir.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)\n  - test_handler_odin.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)"
+  },
+  "impact": [
+    {
+      "symbolName": "TestHermesErrors",
+      "usageCount": 1,
+      "affectedFiles": [
+        "test_error_conditions.py"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    },
+    {
+      "symbolName": "task",
+      "usageCount": 943,
+      "affectedFiles": [
+        "run_pipeline.py",
+        "test_demigod_runtime.py",
+        "test_dispatch.py"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    },
+    {
+      "symbolName": "EventRelay",
+      "usageCount": 20,
+      "affectedFiles": [
+        "test_relay.py",
+        "gods/demigod_mcp.py",
+        "gods/relay.py"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    }
+  ],
+  "suggestedSteps": [
+    {
+      "description": "Modify TestHermesErrors.TestHermesErrors",
+      "targetFile": "test_error_conditions.py",
+      "targetSymbol": "TestHermesErrors",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Reference RunRecord.task (data type \u2014 may need new code)",
+      "targetFile": "gods/demigod_mcp.py",
+      "targetSymbol": "task",
+      "operation": "reference",
+      "constraints": [],
+      "role": "general",
+      "preGate": {
+        "tool": "where",
+        "args": {
+          "intent": "Reference RunRecord.task (data type \u2014 may need new code)"
+        },
+        "purpose": "Confirm integration point before modifying widely-used symbol"
+      },
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify EventRelay.EventRelay",
+      "targetFile": "gods/relay.py",
+      "targetSymbol": "EventRelay",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": {
+        "tool": "where",
+        "args": {
+          "intent": "Modify EventRelay.EventRelay"
+        },
+        "purpose": "Confirm integration point before modifying widely-used symbol"
+      },
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify TestEventRelay.TestEventRelay",
+      "targetFile": "test_relay.py",
+      "targetSymbol": "TestEventRelay",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify TestTimeoutHandling.TestTimeoutHandling",
+      "targetFile": "test_gaps.py",
+      "targetSymbol": "TestTimeoutHandling",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    }
+  ],
+  "summary": "Plan for: Make hermes_execute async \u2014 launch CLI subprocess, return immediately, monitor completion via separate coroutine that injects worker_event into relay table. Pipeline must not block during execution. Support parallel tasks across providers. Include: async subprocess launcher, completion monitor, task state tracking for in-flight runs, timeout watchdog, error handling for crashed subprocesses.. Start at TestHermesErrors.TestHermesErrors (test_error_conditions.py). Role: general (trust: L1 \u2014 standard). Impact: 964 usages across 1 role(s).",
+  "callId": null,
+  "planId": "20260319-4ab7245b",
+  "status": "draft",
+  "createdAtUtc": "2026-03-19T04:55:19.1761931Z",
+  "revision": 0,
+  "gaps": [],
+  "reuseDirectives": [],
+  "signals": null
+}

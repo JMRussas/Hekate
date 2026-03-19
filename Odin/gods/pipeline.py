@@ -371,7 +371,7 @@ class Pipeline:
                     payload={
                         "handler": reg.name,
                         "event_type": event.event_type,
-                        "error": str(e),
+                        "error": repr(e),
                         "attempt": attempt + 1,
                     },
                     source=reg.name,

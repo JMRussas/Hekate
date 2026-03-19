@@ -243,18 +243,12 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
             "error": f"Task {task_id} not found",
         }, source="mimir")]
 
-    if isinstance(row, dict):
-        title = row["title"]
-        description = row["description"]
-        output_text = row["output_text"]
-        retry_count = row["retry_count"] or 0
-        max_retries = row["max_retries"] or 3
-        context_json = row["context_json"] or "{}"
-    else:
-        title, description, output_text = row[0], row[1], row[2]
-        retry_count = row[3] or 0
-        max_retries = row[4] or 3
-        context_json = row[5] or "{}"
+    title = row["title"]
+    description = row.get("description", "")
+    output_text = row.get("output_text")
+    retry_count = (row.get("retry_count") or 0)
+    max_retries = (row.get("max_retries") or 3)
+    context_json = row.get("context_json") or "{}"
 
     # Quick heuristic check first
     quality = _check_output_quality(output_text)
@@ -392,8 +386,8 @@ async def mimir_review(event: Event, db) -> list[Emit] | None:
     if not row:
         return [Emit("mimir_error", {"error": f"Task {task_id} not found"}, source="mimir")]
 
-    title = row[0] if isinstance(row, (list, tuple)) else row["title"]
-    output_text = row[1] if isinstance(row, (list, tuple)) else row["output_text"]
+    title = row["title"]
+    output_text = row.get("output_text")
 
     try:
         result = await _call_reviewer(
@@ -445,8 +439,8 @@ async def mimir_handle_review_rejection(event: Event, db) -> list[Emit] | None:
     if not row:
         return [Emit("mimir_error", {"error": f"Task {task_id} not found"}, source="mimir")]
 
-    existing_ctx = row[0] if isinstance(row, (list, tuple)) else row.get("context_json", "{}")
-    retry_count = (row[1] if isinstance(row, (list, tuple)) else row.get("retry_count", 0)) or 0
+    existing_ctx = row.get("context_json", "{}")
+    retry_count = (row.get("retry_count") or 0)
 
     try:
         ctx = json.loads(existing_ctx) if isinstance(existing_ctx, str) else (existing_ctx or {})
