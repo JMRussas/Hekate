@@ -98,7 +98,7 @@ async def _call_verifier(
     )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{gateway_url}/chat", json={
+        resp = await client.post(f"{gateway_url}/v1/chat", json={
             "messages": [{"role": "user", "content": prompt}],
             "model": "gemini",  # Use cheap model for verification
         })
@@ -135,7 +135,7 @@ async def _call_reviewer(
     )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{gateway_url}/chat", json={
+        resp = await client.post(f"{gateway_url}/v1/chat", json={
             "messages": [{"role": "user", "content": prompt}],
             "model": "gemini",
         })
@@ -170,7 +170,7 @@ async def _call_knowledge_extractor(
     )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{gateway_url}/chat", json={
+        resp = await client.post(f"{gateway_url}/v1/chat", json={
             "messages": [{"role": "user", "content": prompt}],
             "model": "gemini",
         })
