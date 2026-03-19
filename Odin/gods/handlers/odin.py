@@ -292,10 +292,12 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
         complexity = "medium"
         provider = _select_provider(ttype, complexity, available)
 
-        # Set task to queued immediately to prevent double-dispatch
+        # Record provider selection but keep status pending —
+        # hermes sets to running when it actually starts the CLI.
+        # This avoids tasks getting stuck in "queued" if hermes can't start them.
         await db.execute_write(
-            "UPDATE tasks SET status = $1, model_tier = $2, updated_at = $3 WHERE id = $4",
-            ("queued", provider, time.time(), tid),
+            "UPDATE tasks SET model_tier = $1, updated_at = $2 WHERE id = $3",
+            (provider, time.time(), tid),
         )
 
         emits.append(Emit("dispatch_command", {
@@ -403,6 +405,13 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
                 emits.append(Emit("project_tick", {
                     "project_id": project_id,
                 }, source="odin"))
+
+    # Always emit a project_tick after any task_verified — ensures dispatch
+    # re-runs to pick up queued tasks that were blocked by concurrency limits
+    if not any(e.event_type == "project_tick" for e in emits):
+        emits.append(Emit("project_tick", {
+            "project_id": project_id,
+        }, source="odin"))
 
     return emits or None
 
