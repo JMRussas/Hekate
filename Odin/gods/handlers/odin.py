@@ -356,6 +356,25 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
 
         return emits
 
+    # Unblock tasks whose dependencies are now satisfied — MUST run before deadlock check
+    blocked_tasks = await db.fetchall(
+        "SELECT t.id FROM tasks t "
+        "WHERE t.project_id = $1 AND t.status = $2 "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM task_deps d "
+        "  LEFT JOIN tasks dep ON dep.id = d.depends_on "
+        "  WHERE d.task_id = t.id AND dep.status != $3"
+        ")",
+        (project_id, "blocked", "completed"),
+    )
+    for bt in blocked_tasks:
+        bid = bt["id"] if isinstance(bt, dict) else bt[0]
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+            ("pending", time.time(), bid),
+        )
+        logger.info("Odin: unblocked task %s (deps satisfied)", bid[:8])
+
     # Check for deadlock: no pending/running/queued, but some blocked or needs_review
     active = await db.fetchone(
         "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND status IN ($2, $3, $4)",
@@ -405,25 +424,6 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
                 emits.append(Emit("project_tick", {
                     "project_id": project_id,
                 }, source="odin"))
-
-    # Unblock tasks whose dependencies are now satisfied
-    blocked_tasks = await db.fetchall(
-        "SELECT t.id FROM tasks t "
-        "WHERE t.project_id = $1 AND t.status = $2 "
-        "AND NOT EXISTS ("
-        "  SELECT 1 FROM task_deps d "
-        "  LEFT JOIN tasks dep ON dep.id = d.depends_on "
-        "  WHERE d.task_id = t.id AND dep.status != $3"
-        ")",
-        (project_id, "blocked", "completed"),
-    )
-    for bt in blocked_tasks:
-        bid = bt["id"] if isinstance(bt, dict) else bt[0]
-        await db.execute_write(
-            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
-            ("pending", time.time(), bid),
-        )
-        logger.info("Odin: unblocked task %s (deps satisfied)", bid[:8])
 
     # Always emit a project_tick after any task_verified — ensures dispatch
     # re-runs to pick up newly unblocked tasks
