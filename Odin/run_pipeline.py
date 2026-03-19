@@ -69,12 +69,13 @@ class SqliteDB:
     async def fetchone(self, sql: str, params: tuple = ()):
         sql = self._translate(sql)
         async with self._conn.execute(sql, params) as cur:
-            return await cur.fetchone()
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
     async def fetchall(self, sql: str, params: tuple = ()):
         sql = self._translate(sql)
         async with self._conn.execute(sql, params) as cur:
-            return await cur.fetchall()
+            return [dict(r) for r in await cur.fetchall()]
 
     async def execute_many_write(self, statements: list[tuple[str, tuple | list]]):
         """Execute multiple write statements atomically."""
