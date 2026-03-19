@@ -176,14 +176,36 @@ async def _generate_tdd_tests(
 # ---------------------------------------------------------------------------
 
 def _parse_tasks(plan_data: dict) -> list[TaskSpec]:
-    """Convert raw plan dict tasks into TaskSpec objects for validation."""
+    """Convert raw plan/result dict into TaskSpec objects for validation.
+
+    Handles multiple formats:
+      - {"tasks": [...]} — flat task list
+      - {"plan": {"phases": [{"tasks": [...]}]}} — planner result with phases
+      - {"phases": [{"tasks": [...]}]} — plan JSON directly
+    """
+    raw_tasks = []
+
+    # Try flat task list
+    if plan_data.get("tasks"):
+        raw_tasks = plan_data["tasks"]
+    else:
+        # Try nested phases (planner output)
+        plan = plan_data.get("plan", plan_data)
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except (json.JSONDecodeError, TypeError):
+                plan = {}
+        for phase in plan.get("phases", []):
+            raw_tasks.extend(phase.get("tasks", []))
+
     specs = []
-    for t in plan_data.get("tasks", []):
+    for i, t in enumerate(raw_tasks):
         specs.append(TaskSpec(
-            id=t.get("id", ""),
+            id=t.get("id", f"task-{i}"),
             title=t.get("title", ""),
             task_type=t.get("task_type", "code"),
-            wave=t.get("wave", 0),
+            wave=t.get("wave", i // 3),  # infer wave from position if not set
             description=t.get("description"),
             affected_files=t.get("affected_files"),
             depends_on=t.get("depends_on"),
