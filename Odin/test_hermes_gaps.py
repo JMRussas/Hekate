@@ -321,14 +321,18 @@ class TestTickScheduler:
 
     @pytest.mark.asyncio
     async def test_scheduler_ticks_are_in_relay(self, db):
-        """Scheduler-injected ticks should appear in the relay table."""
+        """Scheduler-injected ticks should appear in the relay table.
+        With dedup, cursor must advance between ticks (via pipeline.tick())."""
         from gods.pipeline import Pipeline
 
         pipeline = Pipeline(db)
         pipeline.register("tick", lambda e, d: None)  # dummy handler
 
         pipeline.start_scheduler(interval=0.1)
-        await asyncio.sleep(0.35)
+        # Process first tick to advance cursor, allowing second tick
+        await asyncio.sleep(0.15)
+        await pipeline.tick()
+        await asyncio.sleep(0.15)
         pipeline.stop_scheduler()
 
         rows = await db.fetchall(

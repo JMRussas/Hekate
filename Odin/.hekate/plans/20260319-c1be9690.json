@@ -1,0 +1,435 @@
+{
+  "intent": "Build a plan level system (L1-L5) with rule engine for the gods pipeline. Each level adds detail: L1=rough tasks, L2=specs\u002Bfiles\u002Bdeps, L3=implementation details, L4=exact changes\u002Bsignatures, L5=executable spec (tool applies directly). Rule engine validates completeness at each level before advancing. TDD phase is configurable (default on). Narration configurable (default on). Planning depth configurable (auto/L1-L5). Rule checks between every level transition. This replaces the current single-shot athena_plan with a multi-level planning pipeline.",
+  "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\Odin",
+  "depth": "full",
+  "candidates": [
+    {
+      "filePath": "test_handler_athena.py",
+      "typeName": "TestAthenaPlan",
+      "memberName": "TestAthenaPlan",
+      "kind": 0,
+      "line": 0,
+      "score": 6,
+      "explanation": "Class \u0027TestAthenaPlan\u0027 matches: plan, planning, athena",
+      "matchedKeywords": [
+        "plan",
+        "planning",
+        "athena"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "gods/review.py",
+      "typeName": "PlanReview",
+      "memberName": "PlanReview",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027PlanReview\u0027 matches: plan, planning",
+      "matchedKeywords": [
+        "plan",
+        "planning"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_review.py",
+      "typeName": "TestReviewPlan",
+      "memberName": "TestReviewPlan",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestReviewPlan\u0027 matches: plan, planning",
+      "matchedKeywords": [
+        "plan",
+        "planning"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "gods/god_mcp.py",
+      "typeName": "GodConfig",
+      "memberName": "GodConfig",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027GodConfig\u0027 matches: gods, configurable",
+      "matchedKeywords": [
+        "gods",
+        "configurable"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_gods.py",
+      "typeName": "TestGetGodConfig",
+      "memberName": "TestGetGodConfig",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestGetGodConfig\u0027 matches: gods, configurable",
+      "matchedKeywords": [
+        "gods",
+        "configurable"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_demigod_runtime.py",
+      "typeName": "TestMultiGodIntegration",
+      "memberName": "TestMultiGodIntegration",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestMultiGodIntegration\u0027 matches: gods, multi",
+      "matchedKeywords": [
+        "gods",
+        "multi"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_demigod_runtime.py",
+      "typeName": "TestGodConfig",
+      "memberName": "TestGodConfig",
+      "kind": 0,
+      "line": 0,
+      "score": 4,
+      "explanation": "Class \u0027TestGodConfig\u0027 matches: gods, configurable",
+      "matchedKeywords": [
+        "gods",
+        "configurable"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_pipeline.py",
+      "typeName": "TestPipelineChain",
+      "memberName": "athena_plan",
+      "kind": 1,
+      "line": 0,
+      "score": 3,
+      "explanation": "Function \u0027athena_plan\u0027 in TestPipelineChain references: plan, athena",
+      "matchedKeywords": [
+        "plan",
+        "athena"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "test_demigod_runtime.py",
+      "typeName": "TestMultiGodIntegration",
+      "memberName": "test_fan_out_to_multiple_gods",
+      "kind": 1,
+      "line": 0,
+      "score": 3,
+      "explanation": "Function \u0027test_fan_out_to_multiple_gods\u0027 in TestMultiGodIntegration references: gods",
+      "matchedKeywords": [
+        "gods"
+      ],
+      "role": "general",
+      "isTemplate": false
+    },
+    {
+      "filePath": "gods/pipeline.py",
+      "typeName": "Pipeline",
+      "memberName": "on_narration",
+      "kind": 2,
+      "line": 0,
+      "score": 2.5,
+      "explanation": "Field \u0027on_narration\u0027 in Pipeline defines: narration",
+      "matchedKeywords": [
+        "narration"
+      ],
+      "role": "general",
+      "isTemplate": false
+    }
+  ],
+  "verdict": {
+    "intent": "Build a plan level system (L1-L5) with rule engine for the gods pipeline. Each level adds detail: L1=rough tasks, L2=specs\u002Bfiles\u002Bdeps, L3=implementation details, L4=exact changes\u002Bsignatures, L5=executable spec (tool applies directly). Rule engine validates completeness at each level before advancing. TDD phase is configurable (default on). Narration configurable (default on). Planning depth configurable (auto/L1-L5). Rule checks between every level transition. This replaces the current single-shot athena_plan with a multi-level planning pipeline.",
+    "project": "c:\\Users\\jruss\\Documents\\GitHub\\Hekate\\Odin",
+    "filePath": "test_handler_athena.py",
+    "trustLevel": "L1 \u2014 standard",
+    "patterns": [
+      {
+        "name": "async",
+        "description": "async",
+        "exampleFiles": [
+          "test_handler_athena.py"
+        ],
+        "codeSnippet": null,
+        "occurrenceCount": 1
+      }
+    ],
+    "constraints": [],
+    "guidelines": [],
+    "nearestAnalogs": [
+      {
+        "filePath": "test_handler_odin.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_error_conditions.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_handler_mimir.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_handler_hermes.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_gaps.py",
+        "similarity": 1,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_demigod_runtime.py",
+        "similarity": 0.875,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_gods.py",
+        "similarity": 0.875,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:module-functions",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_god_relay.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_repair.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      },
+      {
+        "filePath": "test_dispatch.py",
+        "similarity": 0.857,
+        "sharedTraits": [
+          "pattern:async",
+          "has:classes",
+          "has:imports",
+          "has:decorators",
+          "has:tests",
+          "uses:async"
+        ]
+      }
+    ],
+    "role": "general",
+    "design": null,
+    "summary": "Role: general. File uses: async. Trust level: L1 \u2014 standard. Allocations detected: 0. Nearest analogs:\n  - test_handler_odin.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)\n  - test_error_conditions.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)\n  - test_handler_mimir.py (pattern:async\u002Bhas:classes\u002Bhas:module-functions, 100% similar)"
+  },
+  "impact": [
+    {
+      "symbolName": "TestAthenaPlan",
+      "usageCount": 11,
+      "affectedFiles": [
+        "test_handler_athena.py",
+        ".hekate/plans/20260319-d151fa94.json"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    },
+    {
+      "symbolName": "PlanReview",
+      "usageCount": 22,
+      "affectedFiles": [
+        "test_review.py",
+        "gods/review.py",
+        "gods/handlers/athena.py",
+        "gods/STATUS.md",
+        ".hekate/plans/20260319-d151fa94.json"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    },
+    {
+      "symbolName": "TestReviewPlan",
+      "usageCount": 10,
+      "affectedFiles": [
+        "test_review.py",
+        ".hekate/plans/20260319-d151fa94.json"
+      ],
+      "affectedRoles": [
+        "general"
+      ]
+    }
+  ],
+  "suggestedSteps": [
+    {
+      "description": "Modify TestAthenaPlan.TestAthenaPlan",
+      "targetFile": "test_handler_athena.py",
+      "targetSymbol": "TestAthenaPlan",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": {
+        "tool": "where",
+        "args": {
+          "intent": "Modify TestAthenaPlan.TestAthenaPlan"
+        },
+        "purpose": "Confirm integration point before modifying widely-used symbol"
+      },
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify PlanReview.PlanReview",
+      "targetFile": "gods/review.py",
+      "targetSymbol": "PlanReview",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": {
+        "tool": "where",
+        "args": {
+          "intent": "Modify PlanReview.PlanReview"
+        },
+        "purpose": "Confirm integration point before modifying widely-used symbol"
+      },
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify TestReviewPlan.TestReviewPlan",
+      "targetFile": "test_review.py",
+      "targetSymbol": "TestReviewPlan",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": {
+        "tool": "where",
+        "args": {
+          "intent": "Modify TestReviewPlan.TestReviewPlan"
+        },
+        "purpose": "Confirm integration point before modifying widely-used symbol"
+      },
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify GodConfig.GodConfig",
+      "targetFile": "gods/god_mcp.py",
+      "targetSymbol": "GodConfig",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    },
+    {
+      "description": "Modify TestGetGodConfig.TestGetGodConfig",
+      "targetFile": "test_gods.py",
+      "targetSymbol": "TestGetGodConfig",
+      "operation": "modify_type",
+      "constraints": [],
+      "role": "general",
+      "preGate": null,
+      "postGate": null,
+      "reuseDirectives": []
+    }
+  ],
+  "summary": "Plan for: Build a plan level system (L1-L5) with rule engine for the gods pipeline. Each level adds detail: L1=rough tasks, L2=specs\u002Bfiles\u002Bdeps, L3=implementation details, L4=exact changes\u002Bsignatures, L5=executable spec (tool applies directly). Rule engine validates completeness at each level before advancing. TDD phase is configurable (default on). Narration configurable (default on). Planning depth configurable (auto/L1-L5). Rule checks between every level transition. This replaces the current single-shot athena_plan with a multi-level planning pipeline.. Start at TestAthenaPlan.TestAthenaPlan (test_handler_athena.py). Role: general (trust: L1 \u2014 standard). Impact: 43 usages across 1 role(s).",
+  "callId": null,
+  "planId": "20260319-c1be9690",
+  "status": "draft",
+  "createdAtUtc": "2026-03-19T17:03:50.8164979Z",
+  "revision": 0,
+  "gaps": [],
+  "reuseDirectives": [],
+  "signals": {
+    "isCreateNew": false,
+    "analogTarget": null,
+    "roleHint": "app",
+    "patternMatches": [],
+    "hasSignals": true
+  }
+}
