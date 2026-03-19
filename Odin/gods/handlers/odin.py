@@ -24,6 +24,18 @@ logger = logging.getLogger("gods.handlers.odin")
 # Terminal statuses — needs_review is NOT terminal (task still needs work)
 _TERMINAL = ("completed", "failed", "cancelled")
 
+
+def _val(row, key, default=None):
+    """Extract a value from a row (dict or tuple). Handles aggregates."""
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[0]
+    except (IndexError, KeyError):
+        return default
+
 # Statuses that satisfy dependency requirements
 _DEP_SATISFIED = ("completed",)
 
@@ -225,11 +237,11 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
 
     # Find current wave (lowest wave with non-terminal, non-needs_review tasks)
     wave_row = await db.fetchone(
-        "SELECT MIN(wave) FROM tasks "
+        "SELECT MIN(wave) AS min_wave FROM tasks "
         "WHERE project_id = $1 AND status NOT IN ($2, $3, $4)",
         (project_id, *_TERMINAL),
     )
-    current_wave = wave_row[0] if wave_row and wave_row[0] is not None else None
+    current_wave = _val(wave_row, "min_wave")
     if current_wave is None:
         return emits or None
 
@@ -249,10 +261,10 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
 
     # Count running for concurrency limits
     running_row = await db.fetchone(
-        "SELECT COUNT(*) FROM tasks WHERE project_id = $1 AND status IN ($2, $3)",
+        "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND status IN ($2, $3)",
         (project_id, "running", "queued"),
     )
-    running_count = running_row[0] if running_row else 0
+    running_count = _val(running_row, "cnt", 0)
 
     # Compute parallelism with max_concurrent from event
     from gods.odin.dispatch import compute_wave_parallelism
@@ -270,6 +282,10 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
         else:
             tid = task_row[0]
             ttype = task_row[1] if len(task_row) > 1 else "code"
+
+        # dict fallback (shouldn't be needed with dict adapter, but safe)
+        if isinstance(tid, type(None)):
+            continue
 
         # Default complexity to medium — real DB may not have this column
         complexity = "medium"
@@ -298,18 +314,18 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
 
     # Count remaining non-terminal tasks (needs_review counts as non-terminal)
     remaining = await db.fetchone(
-        "SELECT COUNT(*) FROM tasks WHERE project_id = $1 AND status NOT IN ($2, $3, $4)",
+        "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND status NOT IN ($2, $3, $4)",
         (project_id, *_TERMINAL),
     )
-    remaining_count = remaining[0] if remaining else 0
+    remaining_count = _val(remaining, "cnt", 0)
 
     if remaining_count == 0:
         # All tasks are terminal — check for failures
         failed = await db.fetchone(
-            "SELECT COUNT(*) FROM tasks WHERE project_id = $1 AND status = $2",
+            "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND status = $2",
             (project_id, "failed"),
         )
-        failed_count = failed[0] if failed else 0
+        failed_count = _val(failed, "cnt", 0)
 
         if failed_count > 0:
             await db.execute_write(
@@ -333,17 +349,17 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
 
     # Check for deadlock: no pending/running/queued, but some blocked or needs_review
     active = await db.fetchone(
-        "SELECT COUNT(*) FROM tasks WHERE project_id = $1 AND status IN ($2, $3, $4)",
+        "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND status IN ($2, $3, $4)",
         (project_id, "pending", "queued", "running"),
     )
-    active_count = active[0] if active else 0
+    active_count = _val(active, "cnt", 0)
 
     if active_count == 0:
         blocked = await db.fetchone(
-            "SELECT COUNT(*) FROM tasks WHERE project_id = $1 AND status = $2",
+            "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND status = $2",
             (project_id, "blocked"),
         )
-        blocked_count = blocked[0] if blocked else 0
+        blocked_count = _val(blocked, "cnt", 0)
         if blocked_count > 0:
             await db.execute_write(
                 "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
@@ -362,15 +378,15 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
             "SELECT wave FROM tasks WHERE id = $1", (task_id,)
         )
         if task_row:
-            verified_wave = task_row[0] if isinstance(task_row, (list, tuple)) else task_row["wave"]
+            verified_wave = _val(task_row, "wave")
 
             # Count non-terminal tasks remaining in this wave
             wave_remaining = await db.fetchone(
-                "SELECT COUNT(*) FROM tasks WHERE project_id = $1 AND wave = $2 "
+                "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND wave = $2 "
                 "AND status NOT IN ($3, $4, $5)",
                 (project_id, verified_wave, *_TERMINAL),
             )
-            if wave_remaining and wave_remaining[0] == 0:
+            if _val(wave_remaining, "cnt", 1) == 0:
                 emits.append(Emit("wave_complete", {
                     "project_id": project_id,
                     "wave": verified_wave,
@@ -467,7 +483,7 @@ async def odin_handle_diagnosis(event: Event, db) -> list[Emit] | None:
         ctx_row = await db.fetchone(
             "SELECT context_json FROM tasks WHERE id = $1", (task_id,))
         try:
-            existing = ctx_row[0] if ctx_row else "{}"
+            existing = _val(ctx_row, "context_json", "{}")
             ctx = json.loads(existing) if isinstance(existing, str) else (existing or {})
         except (json.JSONDecodeError, TypeError):
             ctx = {}
