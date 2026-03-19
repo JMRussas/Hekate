@@ -137,8 +137,10 @@ class HermesRunner:
             "SELECT repo_path FROM projects WHERE id = $1", (project_id,))
         cwd = "."
         if proj_row:
-            cwd = (proj_row[0] if isinstance(proj_row, (list, tuple))
-                   else proj_row.get("repo_path", ".")) or "."
+            try:
+                cwd = proj_row[0] or "."
+            except (IndexError, TypeError):
+                cwd = proj_row.get("repo_path", ".") if isinstance(proj_row, dict) else "."
 
         # Build prompt
         prompt = f"# Task: {title}\n\n{description or ''}"
