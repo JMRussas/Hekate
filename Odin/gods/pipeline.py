@@ -235,6 +235,19 @@ class Pipeline:
         except asyncio.CancelledError:
             pass
 
+    async def reset(self):
+        """Reset pipeline state — clear relay table, reset cursor to 0."""
+        self._last_seen_id = 0
+        try:
+            await self.db.execute_write("DELETE FROM god_relay_events")
+            await self.db.execute_write(
+                "INSERT OR REPLACE INTO god_registry (name, last_seen_id, last_heartbeat) "
+                "VALUES ($1, $2, $3)",
+                (self.source_name, 0, time.time()),
+            )
+        except Exception as e:
+            logger.warning("Pipeline: reset failed: %s", e)
+
     async def restore_cursor(self):
         """Restore _last_seen_id from god_registry table."""
         try:
@@ -272,16 +285,26 @@ class Pipeline:
         if not events:
             return
 
-        # Deduplicate: for tick/project_tick events, only process the latest
-        # per (event_type, project_id) to prevent tick storms
-        dedup_types = {"tick", "project_tick"}
+        # Deduplicate to prevent event floods:
+        # - tick/project_tick: keep latest per (type, project_id)
+        # - dispatch_command: keep latest per task_id
+        # - worker_event with status=skipped: keep latest per task_id
+        dedup_by_project = {"tick", "project_tick"}
+        dedup_by_task = {"dispatch_command"}
         seen: dict[tuple, Event] = {}
         unique_events: list[Event] = []
 
         for event in events:
-            if event.event_type in dedup_types:
+            if event.event_type in dedup_by_project:
                 key = (event.event_type, event.payload.get("project_id", ""))
-                seen[key] = event  # keep the latest
+                seen[key] = event
+            elif event.event_type in dedup_by_task:
+                key = (event.event_type, event.payload.get("task_id", ""))
+                seen[key] = event
+            elif (event.event_type == "worker_event"
+                  and event.payload.get("status") == "skipped"):
+                key = ("worker_skipped", event.payload.get("task_id", ""))
+                seen[key] = event
             else:
                 unique_events.append(event)
 

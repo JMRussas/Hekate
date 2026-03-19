@@ -187,6 +187,12 @@ async def run(args):
     logger.info("Pipeline ready — %d handlers registered, hermes max_concurrent=%d",
                 len(pipeline._handlers), args.max_concurrent)
 
+    # Handle --reset
+    if args.reset:
+        logger.info("Resetting pipeline state...")
+        await pipeline.reset()
+        logger.info("Pipeline reset complete — cursor at 0, relay cleared")
+
     # Handle --create or --inject
     if args.create:
         pid = await create_test_project(db, args.create)
@@ -231,6 +237,7 @@ def main():
     parser.add_argument("--inject", type=str, help="Inject project_created for this project ID")
     parser.add_argument("--once", action="store_true", help="Run a single tick and exit")
     parser.add_argument("--db", type=str, help="Path to orchestration.db")
+    parser.add_argument("--reset", action="store_true", help="Clear relay table and reset cursor before starting")
     parser.add_argument("--max-concurrent", type=int, default=4, help="Max parallel CLI tasks")
     parser.add_argument("--tick-interval", type=float, default=5.0, help="Tick scheduler interval (seconds)")
     args = parser.parse_args()
