@@ -321,8 +321,16 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
             "reason": f"Verification service error: {e}",
         }, source="mimir")]
 
-    # Guard: ensure result is a dict (LLM might return array or string)
-    if not isinstance(result, dict):
+    # Normalize result — LLM might return array, string, or nested structure
+    if isinstance(result, list) and len(result) > 0:
+        result = result[0] if isinstance(result[0], dict) else {"verdict": "human_needed", "feedback": str(result)[:200]}
+    elif isinstance(result, str):
+        lower = result.lower()
+        if any(w in lower for w in ["passed", "satisf", "correct", "done", "complet"]):
+            result = {"verdict": "passed", "confidence": 0.7, "feedback": result[:200]}
+        else:
+            result = {"verdict": "human_needed", "confidence": 0.0, "feedback": result[:200]}
+    elif not isinstance(result, dict):
         result = {"verdict": "human_needed", "confidence": 0.0, "feedback": str(result)[:200]}
 
     verdict = result.get("verdict", "human_needed")
@@ -427,7 +435,9 @@ async def mimir_review(event: Event, db) -> list[Emit] | None:
             "feedback": f"Review skipped: {e}",
         }, source="mimir")]
 
-    if not isinstance(result, dict):
+    if isinstance(result, list) and len(result) > 0:
+        result = result[0] if isinstance(result[0], dict) else {"verdict": "approved", "feedback": str(result)[:200]}
+    elif not isinstance(result, dict):
         result = {"verdict": "approved", "feedback": str(result)[:200]}
 
     verdict = result.get("verdict", "approved")
