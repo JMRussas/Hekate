@@ -309,6 +309,8 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
             task_description=description or "",
             output_text=output_text or "",
         )
+        logger.info("Mimir: verifier returned type=%s value=%s",
+                     type(result).__name__, str(result)[:200])
     except Exception as e:
         logger.error("Mimir: verifier failed for task %s: %s", task_id[:8], e)
         await db.execute_write(
