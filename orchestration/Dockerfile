@@ -2,7 +2,7 @@
 # Builds the React frontend, then bundles everything into a Python image.
 
 # --- Stage 1: Build frontend ---
-FROM node:20-alpine AS frontend
+FROM node:22-alpine AS frontend
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci

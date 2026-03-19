@@ -29,7 +29,7 @@
       "local": "http://localhost:11434",
       "server": "http://192.168.1.154:11434"
     },
-    "default_model": "qwen2.5-coder:14b",
+    "default_model": "qwen3.5:latest",
     "embed_model": "nomic-embed-text",
     "embed_timeout": 30.0,
     "generate_timeout": 120.0
@@ -87,7 +87,7 @@
           "name": "daily",
           "duration_hours": 24,
           "metric": "requests",
-          "limit": 1000
+          "limit": 2000
         },
         {
           "name": "per_minute",

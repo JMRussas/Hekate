@@ -51,8 +51,17 @@ if CONFIG_PATH.exists():
 def cfg(path: str, default=None):
     """Get a config value by dot-notation path.
 
+    Checks environment variable override first: dots replaced with underscores,
+    uppercased. E.g., "ollama.server" checks OLLAMA_SERVER env var.
+
     Example: cfg("anthropic.models.haiku") -> "claude-haiku-4-5-20251001"
     """
+    # Check env var override (e.g., "ollama.server" -> OLLAMA_SERVER)
+    env_key = path.replace(".", "_").upper()
+    env_val = os.environ.get(env_key)
+    if env_val is not None:
+        return env_val
+
     keys = path.split(".")
     val = _config
     for key in keys:
@@ -93,8 +102,12 @@ OLLAMA_GENERATE_TIMEOUT = cfg("ollama.generate_timeout", 120.0)
 COMFYUI_HOSTS = cfg("comfyui.hosts", {"local": "http://localhost:8188"})
 COMFYUI_DEFAULT_CHECKPOINT = cfg("comfyui.default_checkpoint", "sd_xl_base_1.0.safetensors")
 
-# RAG
-RAG_DATABASES = cfg("rag.databases", {})
+# RAG — resolve relative paths against PROJECT_ROOT
+_raw_rag_dbs = cfg("rag.databases", {})
+RAG_DATABASES = {
+    name: str((PROJECT_ROOT / path).resolve()) if not os.path.isabs(path) else path
+    for name, path in _raw_rag_dbs.items()
+} if isinstance(_raw_rag_dbs, dict) else {}
 RAG_EMBED_DIMENSIONS = cfg("rag.embed_dimensions", 768)
 RAG_DIAGNOSTIC_INGEST_PATH = cfg("rag.diagnostic_ingest_path", "")
 
@@ -167,8 +180,8 @@ HEKATE_MCP_DEFAULT_PROJECT = cfg("hekate_mcp.default_project", "")
 # Resource check
 RESOURCE_CHECK_INTERVAL = cfg("resource_check_interval_sec", 30)
 
-# Auth
-AUTH_SECRET_KEY = cfg("auth.secret_key", "")
+# Auth — env var takes precedence over config.json
+AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY") or cfg("auth.secret_key", "")
 AUTH_ALGORITHM = cfg("auth.algorithm", "HS256")
 AUTH_ACCESS_TOKEN_EXPIRE_MINUTES = cfg("auth.access_token_expire_minutes", 30)
 AUTH_REFRESH_TOKEN_EXPIRE_DAYS = cfg("auth.refresh_token_expire_days", 7)
