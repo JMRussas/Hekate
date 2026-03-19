@@ -435,6 +435,20 @@ class TestSuggestTargetLevel:
         )
         assert level == PlanLevel.L3
 
+    def test_typescript_with_compiler_suggests_l5(self):
+        level = suggest_target_level(
+            task_type="code", complexity="simple",
+            has_roslyn=False, has_jedi=False, has_ts_compiler=True, task_count=1,
+        )
+        assert level == PlanLevel.L5
+
+    def test_typescript_medium_suggests_l5(self):
+        level = suggest_target_level(
+            task_type="code", complexity="medium",
+            has_roslyn=False, has_jedi=False, has_ts_compiler=True, task_count=3,
+        )
+        assert level == PlanLevel.L5
+
     def test_medium_without_tooling_suggests_l4(self):
         level = suggest_target_level(
             task_type="code", complexity="medium",

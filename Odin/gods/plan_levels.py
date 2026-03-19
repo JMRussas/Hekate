@@ -249,19 +249,25 @@ def suggest_target_level(
     complexity: str = "medium",
     has_roslyn: bool = False,
     has_jedi: bool = False,
+    has_ts_compiler: bool = False,
     task_count: int = 1,
 ) -> PlanLevel:
     """Suggest the target planning depth based on task characteristics.
 
-    Language tooling (Roslyn for C#, Jedi for Python) enables L5 —
-    the plan becomes an executable spec that a tool applies directly.
+    Language tooling enables L5 — the plan becomes an executable spec:
+      - C#: Roslyn (HekateMcp.Server, port 5110)
+      - Python: Jedi 0.19.2 (HekatePythonWorker, port 9200)
+      - TypeScript: TS Compiler API (HekateTypeScriptWorker, port 9202)
+      - C++: partial only (L3 max, no Clang)
+
+    See gods/TOOLING.md for full matrix.
     """
     # Research and docs don't need deep planning
     if task_type in ("research", "documentation", "analysis"):
         return PlanLevel.L2
 
     # Language tooling available — can go to L5
-    has_tooling = has_roslyn or has_jedi
+    has_tooling = has_roslyn or has_jedi or has_ts_compiler
     if has_tooling and complexity in ("simple", "medium"):
         return PlanLevel.L5
 
