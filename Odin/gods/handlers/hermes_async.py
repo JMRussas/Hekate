@@ -369,11 +369,13 @@ class HermesRunner:
         cmd, stdin_text = _build_cli_command(provider, prompt, cwd)
         narration: list[dict] = []
 
-        # Clean env — remove CLAUDECODE to avoid nested session detection
+        # Clean env for subprocess execution
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        # Ensure Gemini CLI can find OAuth tokens (file-based, not Windows Credential Manager)
+        env["GEMINI_FORCE_FILE_STORAGE"] = "true"
 
         logger.debug("Hermes: launching CLI cmd=%s cwd=%s provider=%s prompt_len=%d",
-                     cmd[:3], cwd, provider, len(prompt))
+                     cmd, cwd, provider, len(prompt))
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
