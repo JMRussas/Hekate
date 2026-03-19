@@ -183,10 +183,16 @@ async def odin_start(event: Event, db) -> list[Emit] | None:
 
     logger.info("Odin: project %s → executing", project_id[:8])
 
-    return [Emit("project_started", {
-        "project_id": project_id,
-        "plan_id": event.payload.get("plan_id"),
-    }, source="odin")]
+    return [
+        Emit("project_started", {
+            "project_id": project_id,
+            "plan_id": event.payload.get("plan_id"),
+        }, source="odin"),
+        # Immediately trigger dispatch — no tick scheduler needed
+        Emit("project_tick", {
+            "project_id": project_id,
+        }, source="odin"),
+    ]
 
 
 # ---------------------------------------------------------------------------
