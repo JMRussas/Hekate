@@ -234,8 +234,9 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
         return emits or None
 
     # Find ready tasks: pending, in current wave, all deps completed
+    # Note: real DB may not have 'complexity' column — use COALESCE
     ready = await db.fetchall(
-        "SELECT t.id, t.task_type, t.complexity, t.priority "
+        "SELECT t.id, t.task_type, t.priority "
         "FROM tasks t "
         "LEFT JOIN task_deps d ON d.task_id = t.id "
         "LEFT JOIN tasks dep ON dep.id = d.depends_on "
@@ -264,10 +265,14 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
 
     for task_row in ready[:to_dispatch]:
         if isinstance(task_row, dict):
-            tid, ttype, complexity = task_row["id"], task_row["task_type"], task_row["complexity"]
+            tid = task_row["id"]
+            ttype = task_row.get("task_type", "code")
         else:
-            tid, ttype, complexity = task_row[0], task_row[1], task_row[2]
+            tid = task_row[0]
+            ttype = task_row[1] if len(task_row) > 1 else "code"
 
+        # Default complexity to medium — real DB may not have this column
+        complexity = "medium"
         provider = _select_provider(ttype, complexity, available)
 
         emits.append(Emit("dispatch_command", {

@@ -210,10 +210,13 @@ class Pipeline:
                 (self.source_name,),
             )
             if row:
-                self._last_seen_id = row[0] if isinstance(row, (list, tuple)) else row.get("last_seen_id", 0)
+                val = row[0] if isinstance(row, (list, tuple)) else row["last_seen_id"]
+                self._last_seen_id = int(val) if val else 0
                 logger.info("Pipeline: restored cursor to %d", self._last_seen_id)
-        except Exception:
-            pass  # Table may not exist yet
+            else:
+                logger.info("Pipeline: no saved cursor found, starting from 0")
+        except Exception as e:
+            logger.warning("Pipeline: cursor restore failed: %s", e)
 
     async def _persist_cursor(self):
         """Persist _last_seen_id to god_registry table."""

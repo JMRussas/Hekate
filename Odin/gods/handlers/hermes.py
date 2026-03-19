@@ -333,10 +333,11 @@ async def hermes_execute(event: Event, db) -> list[Emit] | None:
     if context_json and context_json != "{}":
         try:
             ctx = json.loads(context_json) if isinstance(context_json, str) else context_json
-            if ctx.get("verification_feedback"):
-                prompt += f"\n\n# Previous feedback:\n{ctx['verification_feedback']}"
-            if ctx.get("prompt_guidance"):
-                prompt += f"\n\n# Guidance:\n{ctx['prompt_guidance']}"
+            if isinstance(ctx, dict):
+                if ctx.get("verification_feedback"):
+                    prompt += f"\n\n# Previous feedback:\n{ctx['verification_feedback']}"
+                if ctx.get("prompt_guidance"):
+                    prompt += f"\n\n# Guidance:\n{ctx['prompt_guidance']}"
         except (json.JSONDecodeError, TypeError):
             pass
 
