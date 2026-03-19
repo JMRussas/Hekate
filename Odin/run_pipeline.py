@@ -207,24 +207,25 @@ async def run(args):
         await pipeline.tick()
         logger.info("Tick complete")
     else:
-        # Continuous mode with tick scheduler
-        pipeline.start_scheduler(interval=args.tick_interval)
-        logger.info("Starting pipeline loop (tick every %.1fs, Ctrl+C to stop)...",
-                     args.tick_interval)
+        # Event-driven mode — no tick scheduler
+        # Pipeline processes events as they appear in the relay table.
+        # Handlers emit events that trigger other handlers. No polling ticks.
+        # Heartbeat every 60s just to catch stuck tasks.
+        logger.info("Starting pipeline (event-driven, no tick scheduler)...")
         try:
             tick_count = 0
             while True:
                 await pipeline.tick()
                 tick_count += 1
                 in_flight = len(hermes.in_flight)
-                if tick_count % 30 == 0 or in_flight > 0:
-                    logger.info("Pipeline alive — tick %d, cursor %d, in-flight %d/%d",
+                if tick_count % 60 == 0:
+                    logger.info("Pipeline heartbeat — tick %d, cursor %d, in-flight %d/%d",
                                 tick_count, pipeline._last_seen_id,
                                 in_flight, args.max_concurrent)
-                await asyncio.sleep(1.0)
+                # Wait longer — LLM calls take 30-120s, no point polling every 1s
+                await asyncio.sleep(5.0)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
-            pipeline.stop_scheduler()
             await hermes.shutdown(timeout=30.0)
             logger.info("Pipeline stopped")
 
