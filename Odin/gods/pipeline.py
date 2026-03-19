@@ -202,6 +202,30 @@ class Pipeline:
     async def stop(self):
         self._running = False
 
+    async def restore_cursor(self):
+        """Restore _last_seen_id from god_registry table."""
+        try:
+            row = await self.db.fetchone(
+                "SELECT last_seen_id FROM god_registry WHERE name = $1",
+                (self.source_name,),
+            )
+            if row:
+                self._last_seen_id = row[0] if isinstance(row, (list, tuple)) else row.get("last_seen_id", 0)
+                logger.info("Pipeline: restored cursor to %d", self._last_seen_id)
+        except Exception:
+            pass  # Table may not exist yet
+
+    async def _persist_cursor(self):
+        """Persist _last_seen_id to god_registry table."""
+        try:
+            await self.db.execute_write(
+                "INSERT OR REPLACE INTO god_registry (name, last_seen_id, last_heartbeat) "
+                "VALUES ($1, $2, $3)",
+                (self.source_name, self._last_seen_id, time.time()),
+            )
+        except Exception:
+            pass  # Table may not exist yet
+
     async def tick(self):
         self._tick_count += 1
         subscribed = list({r.event_type for r in self._handlers})
@@ -214,6 +238,9 @@ class Pipeline:
 
         for event in events:
             await self._dispatch(event)
+
+        # Persist cursor after processing
+        await self._persist_cursor()
 
     # ------------------------------------------------------------------
     # Dispatch with gate enforcement

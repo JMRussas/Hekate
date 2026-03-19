@@ -11,6 +11,7 @@ Receives dispatch_command events and:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -378,6 +379,15 @@ async def hermes_execute(event: Event, db) -> list[Emit] | None:
             }, source="hermes"))
             return emits
 
+        # Run TDD gate for code tasks
+        tdd_result = await hermes_tdd_gate(
+            task_id=task_id,
+            output_text=output,
+            task_type=task_type,
+            db=db,
+        )
+        tdd_warning = None if tdd_result["passed"] else tdd_result["reason"]
+
         # Store result
         await db.execute_write(
             "UPDATE tasks SET status = $1, output_text = $2, cost_usd = $3, "
@@ -387,7 +397,7 @@ async def hermes_execute(event: Event, db) -> list[Emit] | None:
              model_used, time.time(), time.time(), task_id),
         )
 
-        emits.append(Emit("worker_event", {
+        worker_payload = {
             "task_id": task_id,
             "project_id": project_id,
             "status": "completed",
@@ -395,6 +405,29 @@ async def hermes_execute(event: Event, db) -> list[Emit] | None:
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "model_used": model_used,
+        }
+        if tdd_warning:
+            worker_payload["tdd_warning"] = tdd_warning
+
+        emits.append(Emit("worker_event", worker_payload, source="hermes"))
+
+        return emits
+
+    except asyncio.TimeoutError as e:
+        error_msg = f"Timeout: {e}" if str(e) else "CLI execution timed out"
+        logger.error("Hermes: task %s timed out", task_id[:8])
+
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
+            ("failed", error_msg, time.time(), task_id),
+        )
+
+        emits.append(Emit("worker_event", {
+            "task_id": task_id,
+            "project_id": project_id,
+            "status": "failed",
+            "error": error_msg,
+            "timeout": True,
         }, source="hermes"))
 
         return emits

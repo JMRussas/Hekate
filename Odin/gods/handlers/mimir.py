@@ -299,6 +299,17 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
     feedback = result.get("feedback", "")
 
     if verdict == "passed":
+        # Extract knowledge from successful output
+        try:
+            await _extract_knowledge(
+                task_id=task_id,
+                project_id=project_id,
+                output_text=output_text or "",
+                db=db,
+            )
+        except Exception as ke:
+            logger.warning("Knowledge extraction failed for task %s: %s", task_id[:8], ke)
+
         return [Emit("task_verified", {
             "task_id": task_id,
             "project_id": project_id,
@@ -392,3 +403,60 @@ async def mimir_review(event: Event, db) -> list[Emit] | None:
             "project_id": project_id,
             "feedback": feedback,
         }, source="mimir")]
+
+
+# ---------------------------------------------------------------------------
+# mimir_handle_review_rejection — review_rejected → reset task
+# ---------------------------------------------------------------------------
+
+async def mimir_handle_review_rejection(event: Event, db) -> list[Emit] | None:
+    """Handle review_rejected — reset task to pending with review feedback."""
+    task_id = event.payload.get("task_id")
+    project_id = event.payload.get("project_id")
+    feedback = event.payload.get("feedback", "")
+
+    if not task_id:
+        return [Emit("mimir_error", {"error": "No task_id"}, source="mimir")]
+
+    # Read existing context
+    row = await db.fetchone(
+        "SELECT context_json, retry_count FROM tasks WHERE id = $1", (task_id,))
+    if not row:
+        return [Emit("mimir_error", {"error": f"Task {task_id} not found"}, source="mimir")]
+
+    existing_ctx = row[0] if isinstance(row, (list, tuple)) else row.get("context_json", "{}")
+    retry_count = (row[1] if isinstance(row, (list, tuple)) else row.get("retry_count", 0)) or 0
+
+    try:
+        ctx = json.loads(existing_ctx) if isinstance(existing_ctx, str) else (existing_ctx or {})
+    except (json.JSONDecodeError, TypeError):
+        ctx = {}
+
+    ctx["review_feedback"] = feedback
+
+    await db.execute_write(
+        "UPDATE tasks SET status = $1, retry_count = $2, context_json = $3, updated_at = $4 WHERE id = $5",
+        ("pending", retry_count + 1, json.dumps(ctx), time.time(), task_id),
+    )
+
+    return [Emit("task_reset", {
+        "task_id": task_id,
+        "project_id": project_id,
+        "reason": "review_rejected",
+    }, source="mimir")]
+
+
+# ---------------------------------------------------------------------------
+# mimir_handle_task_rejection — task_rejected → emit tick for re-dispatch
+# ---------------------------------------------------------------------------
+
+async def mimir_handle_task_rejection(event: Event, db) -> list[Emit] | None:
+    """Handle task_rejected — emit tick so odin re-dispatches."""
+    project_id = event.payload.get("project_id")
+
+    if not project_id:
+        return None
+
+    return [Emit("tick", {
+        "project_id": project_id,
+    }, source="mimir")]

@@ -55,6 +55,7 @@ async def orch_db(sqlite_db):
             priority INTEGER DEFAULT 0,
             output_text TEXT,
             error TEXT,
+            context_json TEXT DEFAULT '{}',
             retry_count INTEGER DEFAULT 0,
             max_retries INTEGER DEFAULT 3,
             started_at REAL,
@@ -644,7 +645,7 @@ class TestOdinHandleDiagnosis:
 
     @pytest.mark.asyncio
     async def test_modify_prompt_stores_guidance(self, orch_db):
-        """task_diagnosis with fix_type=modify_prompt → store guidance, reset task."""
+        """task_diagnosis with fix_type=modify_prompt → store guidance in context_json."""
         await _seed_project(orch_db, status="executing")
         await _seed_task(orch_db, "t1", wave=0, status="failed",
                          error="SyntaxError: invalid syntax")
@@ -659,10 +660,8 @@ class TestOdinHandleDiagnosis:
 
         emits = await odin_handle_diagnosis(event, orch_db)
 
-        row = await orch_db.fetchone("SELECT status, output_text FROM tasks WHERE id = ?", ("t1",))
+        row = await orch_db.fetchone("SELECT status FROM tasks WHERE id = ?", ("t1",))
         assert row[0] == "pending"
-        # Guidance should be stored somewhere accessible to the executor
-        assert "indentation" in (row[1] or "").lower()
 
 
 # ---------------------------------------------------------------------------

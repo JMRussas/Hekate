@@ -10,6 +10,7 @@ Handlers:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -457,10 +458,19 @@ async def odin_handle_diagnosis(event: Event, db) -> list[Emit] | None:
 
     elif fix_type == "modify_prompt":
         guidance = event.payload.get("prompt_guidance", "")
+        # Read existing context_json, merge guidance into it
+        ctx_row = await db.fetchone(
+            "SELECT context_json FROM tasks WHERE id = $1", (task_id,))
+        try:
+            existing = ctx_row[0] if ctx_row else "{}"
+            ctx = json.loads(existing) if isinstance(existing, str) else (existing or {})
+        except (json.JSONDecodeError, TypeError):
+            ctx = {}
+        ctx["prompt_guidance"] = guidance
         await db.execute_write(
             "UPDATE tasks SET status = $1, retry_count = $2, error = NULL, "
-            "output_text = $3, updated_at = $4 WHERE id = $5",
-            ("pending", retry_count + 1, guidance, time.time(), task_id),
+            "context_json = $3, updated_at = $4 WHERE id = $5",
+            ("pending", retry_count + 1, json.dumps(ctx), time.time(), task_id),
         )
         emits.append(Emit("task_reset", {
             "task_id": task_id,
