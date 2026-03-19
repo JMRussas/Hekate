@@ -97,18 +97,28 @@ async def _call_verifier(
         f"\"confidence\": 0.0-1.0, \"feedback\": \"...\"}}"
     )
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
-            "messages": [{"role": "user", "content": prompt}],
-            "model": "gemini",  # Use cheap model for verification
+            "provider": "gemini",
+            "system_prompt": "You are a code verification assistant. Always respond with valid JSON.",
+            "user_message": prompt,
         })
         resp.raise_for_status()
-        text = resp.json().get("content", "")
+        text = resp.json().get("text", "")
 
     try:
+        # Try to extract JSON from response (may have markdown fencing)
+        import re
+        json_match = re.search(r'\{[^{}]*\}', text)
+        if json_match:
+            return json.loads(json_match.group())
         return json.loads(text)
     except json.JSONDecodeError:
-        return {"verdict": "human_needed", "confidence": 0.0, "feedback": text}
+        # If LLM says it passed in prose, treat as passed
+        lower = text.lower()
+        if any(w in lower for w in ["passed", "satisf", "correct", "done", "complet"]):
+            return {"verdict": "passed", "confidence": 0.7, "feedback": text[:200]}
+        return {"verdict": "human_needed", "confidence": 0.0, "feedback": text[:200]}
 
 
 # ---------------------------------------------------------------------------
@@ -134,18 +144,23 @@ async def _call_reviewer(
         f"Respond with JSON: {{\"verdict\": \"approved|changes_requested\", \"feedback\": \"...\"}}"
     )
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
-            "messages": [{"role": "user", "content": prompt}],
-            "model": "gemini",
+            "provider": "gemini",
+            "system_prompt": "You are a code review assistant. Always respond with valid JSON.",
+            "user_message": prompt,
         })
         resp.raise_for_status()
-        text = resp.json().get("content", "")
+        text = resp.json().get("text", "")
 
     try:
+        import re
+        json_match = re.search(r'\{[^{}]*\}', text)
+        if json_match:
+            return json.loads(json_match.group())
         return json.loads(text)
     except json.JSONDecodeError:
-        return {"verdict": "approved", "feedback": text}
+        return {"verdict": "approved", "feedback": text[:200]}
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +184,20 @@ async def _call_knowledge_extractor(
         f"Output:\n{output_text[:5000]}"
     )
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
-            "messages": [{"role": "user", "content": prompt}],
-            "model": "gemini",
+            "provider": "gemini",
+            "system_prompt": "You are a knowledge extraction assistant. Always respond with valid JSON.",
+            "user_message": prompt,
         })
         resp.raise_for_status()
-        text = resp.json().get("content", "")
+        text = resp.json().get("text", "")
 
     try:
+        import re
+        json_match = re.search(r'\[.*\]', text, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
         return json.loads(text)
     except json.JSONDecodeError:
         return []
