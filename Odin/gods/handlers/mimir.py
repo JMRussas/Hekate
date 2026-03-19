@@ -391,6 +391,8 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
             ctx = json.loads(context_json) if isinstance(context_json, str) else context_json
         except (json.JSONDecodeError, TypeError):
             ctx = {}
+        if not isinstance(ctx, dict):
+            ctx = {}
         ctx["verification_feedback"] = feedback
 
         await db.execute_write(
