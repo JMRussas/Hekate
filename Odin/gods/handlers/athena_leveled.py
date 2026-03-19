@@ -103,12 +103,14 @@ async def _deepen_plan(
     if review_feedback:
         comments.append({"author": "plan_reviewer", "content": review_feedback})
 
+    # Note: conversation_id is for future multi-turn support.
+    # Current PlannerService doesn't support it — strip from kwargs.
+    gen_kwargs = {k: v for k, v in kwargs.items() if k != "conversation_id"}
     result = await planner.generate(
         project_id,
         comments=comments or None,
         previous_plan=current_plan,
-        conversation_id=conversation_id,
-        **kwargs,
+        **gen_kwargs,
     )
     return result
 
