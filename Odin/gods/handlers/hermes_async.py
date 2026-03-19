@@ -376,7 +376,7 @@ class HermesRunner:
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,  # Don't capture stderr — prevents buffer deadlock
             cwd=cwd,
             env=env,
             limit=10 * 1024 * 1024,
@@ -415,6 +415,12 @@ class HermesRunner:
                                 result_text = data.get("result", "")
                                 if result_text:
                                     output_lines.append(result_text)
+                            elif data.get("type") == "assistant":
+                                # Also capture assistant text blocks
+                                msg = data.get("message", {})
+                                for content in msg.get("content", []):
+                                    if content.get("type") == "text":
+                                        output_lines.append(content.get("text", ""))
                         except (ValueError, KeyError):
                             output_lines.append(decoded)
                     else:
@@ -424,10 +430,9 @@ class HermesRunner:
             raise
 
         await proc.wait()
-        stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
 
         if proc.returncode != 0 and not output_lines:
-            raise RuntimeError(f"CLI exited {proc.returncode}: {stderr[:500]}")
+            raise RuntimeError(f"CLI exited with code {proc.returncode}")
 
         return {
             "output": "\n".join(output_lines),
