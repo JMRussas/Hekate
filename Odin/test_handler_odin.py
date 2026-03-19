@@ -403,8 +403,8 @@ class TestWaveProgression:
         wave_done = next((e for e in emits if e.event_type == "wave_complete"), None)
         assert wave_done is not None
 
-        # wave_complete should also emit a tick to dispatch the next wave
-        tick = next((e for e in emits if e.event_type == "tick"), None)
+        # wave_complete should also emit a project_tick to dispatch the next wave
+        tick = next((e for e in emits if e.event_type == "project_tick"), None)
         assert tick is not None
         assert tick.payload["project_id"] == "proj-1"
 
@@ -470,7 +470,7 @@ class TestOdinTick:
 
         emits = await odin_tick(event, orch_db)
 
-        ticks = [e for e in emits if e.event_type == "tick"]
+        ticks = [e for e in emits if e.event_type == "project_tick"]
         tick_projects = {e.payload["project_id"] for e in ticks}
         assert tick_projects == {"p1", "p2"}
 

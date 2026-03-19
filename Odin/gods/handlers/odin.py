@@ -193,7 +193,7 @@ async def odin_tick(event: Event, db) -> list[Emit] | None:
     emits: list[Emit] = []
     for row in rows:
         pid = row[0] if isinstance(row, (list, tuple)) else row["id"]
-        emits.append(Emit("tick", {
+        emits.append(Emit("project_tick", {
             "project_id": pid,
         }, source="odin"))
 
@@ -376,8 +376,8 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
                     "wave": verified_wave,
                 }, source="odin"))
 
-                # Also emit a tick to trigger dispatch for the next wave
-                emits.append(Emit("tick", {
+                # Also emit a project_tick to trigger dispatch for the next wave
+                emits.append(Emit("project_tick", {
                     "project_id": project_id,
                 }, source="odin"))
 

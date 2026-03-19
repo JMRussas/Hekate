@@ -45,11 +45,22 @@ async def _generate_plan(
 
     budget = BudgetManager(db)
     planner = PlannerService(db=db, budget=budget)
-    return await planner.generate(
+    result = await planner.generate(
         project_id,
         comments=comments,
         previous_plan=previous_plan,
     )
+
+    # Decompose plan into executable task rows
+    plan_id = result.get("plan_id")
+    if plan_id:
+        from backend.services.decomposer import DecomposerService
+        decomposer = DecomposerService(db=db)
+        decomp = await decomposer.decompose(project_id, plan_id)
+        result["task_count"] = decomp.get("task_count", 0)
+        logger.info("Athena: decomposed plan %s → %d tasks", plan_id[:8], result["task_count"])
+
+    return result
 
 
 async def _review_plan(

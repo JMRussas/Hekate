@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -380,12 +381,16 @@ class HermesRunner:
         cmd, stdin_text = _build_cli_command(provider, prompt, cwd)
         narration: list[dict] = []
 
+        # Clean env — remove CLAUDECODE to avoid nested session detection
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=env,
             limit=10 * 1024 * 1024,
         )
 

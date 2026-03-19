@@ -45,8 +45,8 @@ def register_all_handlers(
 
     # Odin — orchestration
     pipeline.register("project_planned", odin_start)
-    pipeline.register("tick", odin_dispatch, filter=lambda e: "project_id" in e.payload)
-    pipeline.register("tick", odin_tick, filter=lambda e: "project_id" not in e.payload)
+    pipeline.register("project_tick", odin_dispatch)
+    pipeline.register("tick", odin_tick)
     pipeline.register("task_verified", odin_lifecycle)
     pipeline.register("task_diagnosis", odin_handle_diagnosis)
 
