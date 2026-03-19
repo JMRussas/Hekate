@@ -293,6 +293,11 @@ class Pipeline:
         if not events:
             return
 
+        logger.debug("Pipeline tick #%d: %d events (cursor=%d), types: %s",
+                     self._tick_count, len(events),
+                     self._last_seen_id,
+                     {e.event_type for e in events})
+
         # Deduplicate to prevent event floods:
         # - tick/project_tick: keep latest per (type, project_id)
         # - dispatch_command: keep latest per task_id

@@ -241,7 +241,14 @@ def main():
     parser.add_argument("--reset", action="store_true", help="Clear relay table and reset cursor before starting")
     parser.add_argument("--max-concurrent", type=int, default=4, help="Max parallel CLI tasks")
     parser.add_argument("--tick-interval", type=float, default=5.0, help="Tick scheduler interval (seconds)")
+    parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging for all gods modules")
     args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger("gods").setLevel(logging.DEBUG)
+        logging.getLogger("gods.handlers").setLevel(logging.DEBUG)
+        logging.getLogger("pipeline").setLevel(logging.DEBUG)
+        logger.info("DEBUG mode enabled — verbose logging for all gods modules")
 
     if args.db:
         global DB_PATH

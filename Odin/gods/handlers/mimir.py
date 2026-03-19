@@ -97,6 +97,9 @@ async def _call_verifier(
         f"\"confidence\": 0.0-1.0, \"feedback\": \"...\"}}"
     )
 
+    logger.debug("Mimir._call_verifier: sending to %s/v1/chat (prompt=%d chars, output=%d chars)",
+                 gateway_url, len(prompt), len(output_text))
+
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
             "provider": "gemini",
@@ -104,17 +107,23 @@ async def _call_verifier(
             "user_message": prompt,
         })
         resp.raise_for_status()
-        text = resp.json().get("text", "")
+        resp_data = resp.json()
+        text = resp_data.get("text", "")
+        logger.debug("Mimir._call_verifier: gateway returned status=%d, text_len=%d, text=%s",
+                     resp.status_code, len(text), text[:300])
 
     try:
-        # Try to extract JSON from response (may have markdown fencing)
         import re
         json_match = re.search(r'\{[^{}]*\}', text)
         if json_match:
-            return json.loads(json_match.group())
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # If LLM says it passed in prose, treat as passed
+            parsed = json.loads(json_match.group())
+            logger.debug("Mimir._call_verifier: parsed JSON from regex: %s", parsed)
+            return parsed
+        parsed = json.loads(text)
+        logger.debug("Mimir._call_verifier: parsed JSON directly: %s", parsed)
+        return parsed
+    except json.JSONDecodeError as e:
+        logger.debug("Mimir._call_verifier: JSON parse failed (%s), checking prose. Raw: %s", e, text[:200])
         lower = text.lower()
         if any(w in lower for w in ["passed", "satisf", "correct", "done", "complet"]):
             return {"verdict": "passed", "confidence": 0.7, "feedback": text[:200]}
@@ -269,6 +278,9 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
     retry_count = (row.get("retry_count") or 0)
     max_retries = (row.get("max_retries") or 3)
     context_json = row.get("context_json") or "{}"
+
+    logger.debug("Mimir: verifying task %s | title=%s | output_len=%d | retries=%d/%d",
+                 task_id[:8], title[:30], len(output_text or ""), retry_count, max_retries)
 
     # Quick heuristic check first
     quality = _check_output_quality(output_text)

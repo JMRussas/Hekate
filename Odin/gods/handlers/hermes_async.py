@@ -372,6 +372,9 @@ class HermesRunner:
         # Clean env — remove CLAUDECODE to avoid nested session detection
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+        logger.debug("Hermes: launching CLI cmd=%s cwd=%s provider=%s prompt_len=%d",
+                     cmd[:3], cwd, provider, len(prompt))
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -430,6 +433,9 @@ class HermesRunner:
             raise
 
         await proc.wait()
+
+        logger.debug("Hermes: CLI exited code=%d output_lines=%d narration_events=%d",
+                     proc.returncode or 0, len(output_lines), len(narration))
 
         if proc.returncode != 0 and not output_lines:
             raise RuntimeError(f"CLI exited with code {proc.returncode}")
