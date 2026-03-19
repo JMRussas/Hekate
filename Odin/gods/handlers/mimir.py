@@ -282,6 +282,25 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
     logger.debug("Mimir: verifying task %s | title=%s | output_len=%d | retries=%d/%d",
                  task_id[:8], title[:30], len(output_text or ""), retry_count, max_retries)
 
+    # Check if task was "already done" — valid completion
+    if output_text and any(phrase in output_text.lower() for phrase in [
+        "already exists", "already done", "already in place", "already has",
+        "already present", "already defined", "already implemented",
+        "nothing to do", "no changes needed", "file already",
+    ]):
+        logger.info("Mimir: task %s output indicates work already done — passing", task_id[:8])
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, verification_status = $2, "
+            "verification_notes = $3, updated_at = $4 WHERE id = $5",
+            ("completed", "passed", "Work already done", time.time(), task_id),
+        )
+        return [Emit("task_verified", {
+            "task_id": task_id,
+            "project_id": project_id,
+            "confidence": 0.8,
+            "already_done": True,
+        }, source="mimir")]
+
     # Quick heuristic check first
     quality = _check_output_quality(output_text)
     if not quality["passed"]:
