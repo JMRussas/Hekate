@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -272,11 +273,31 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
             }, source="athena"))
 
     try:
-        # Determine target level
+        # Check which tooling services are actually running
+        from gods.tooling import check_tooling_availability
+        try:
+            tooling = await check_tooling_availability()
+            tooling_flags = {
+                "has_roslyn": tooling.has_roslyn,
+                "has_jedi": tooling.has_jedi,
+                "has_ts_compiler": tooling.has_ts_compiler,
+            }
+        except Exception as e:
+            logger.warning("Tooling availability check failed: %s", e)
+            tooling_flags = {"has_roslyn": False, "has_jedi": False, "has_ts_compiler": False}
+
+        narrate(f"Available tooling: Roslyn={tooling_flags['has_roslyn']}, "
+                f"Jedi={tooling_flags['has_jedi']}, TS={tooling_flags['has_ts_compiler']}")
+
+        # Determine target level — pass ALL tooling, model decides what's relevant
         if config.target_level == "auto":
-            target = suggest_target_level(task_type="code", complexity="medium")
+            target = suggest_target_level(
+                task_type="code", complexity="medium", **tooling_flags,
+            )
         else:
             target = PlanLevel.from_str(config.target_level)
+
+        narrate(f"Target planning depth: {target.name}")
 
         # ---------------------------------------------------------------
         # Step 1: L1 Generate (Model A, first turn)
@@ -324,6 +345,7 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
 
             narrate(f"Deepening plan to {next_level.name}...")
 
+            level_reached = False
             for retry in range(MAX_RULE_RETRIES + 1):
                 deepened = await _deepen_plan(
                     project_id, current_plan, next_level,
@@ -339,13 +361,17 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
                 if rule_result.passed:
                     narrate(f"{next_level.name} plan passed rule check")
                     current_level = next_level
+                    level_reached = True
                     break
                 else:
                     narrate(f"{next_level.name} rule check failed: {rule_result.reason}")
                     if retry >= MAX_RULE_RETRIES:
-                        # Can't reach this level, stop deepening
                         narrate(f"Could not reach {next_level.name}, proceeding at {current_level.name}")
                         break
+
+            if not level_reached:
+                # Can't go deeper — stop the while loop
+                break
 
         # ---------------------------------------------------------------
         # Step 4: Thorough review (Model B, fresh prompt)
