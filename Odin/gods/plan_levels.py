@@ -248,24 +248,30 @@ def suggest_target_level(
     task_type: str = "code",
     complexity: str = "medium",
     has_roslyn: bool = False,
+    has_jedi: bool = False,
     task_count: int = 1,
 ) -> PlanLevel:
-    """Suggest the target planning depth based on task characteristics."""
+    """Suggest the target planning depth based on task characteristics.
+
+    Language tooling (Roslyn for C#, Jedi for Python) enables L5 —
+    the plan becomes an executable spec that a tool applies directly.
+    """
     # Research and docs don't need deep planning
     if task_type in ("research", "documentation", "analysis"):
         return PlanLevel.L2
 
-    # C# with Roslyn — can go to L5
-    if has_roslyn and complexity in ("simple", "medium"):
+    # Language tooling available — can go to L5
+    has_tooling = has_roslyn or has_jedi
+    if has_tooling and complexity in ("simple", "medium"):
         return PlanLevel.L5
 
-    # Simple code — L4 (exact changes are practical)
+    # Known patterns, simple — L4 (exact changes are practical)
     if complexity == "simple" and task_count <= 3:
         return PlanLevel.L4
 
-    # Medium code — L3 (implementation details, but LLM handles exact code)
-    if complexity == "medium":
-        return PlanLevel.L3
+    # Medium code without tooling — L4 (still push for exact changes)
+    if complexity == "medium" and task_count <= 5:
+        return PlanLevel.L4
 
-    # Complex code — L3 (don't over-specify, LLM needs room)
+    # Complex or large — L3 (LLM needs room to explore)
     return PlanLevel.L3

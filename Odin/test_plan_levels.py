@@ -395,34 +395,63 @@ class TestSuggestTargetLevel:
     def test_simple_code_suggests_l4(self):
         level = suggest_target_level(
             task_type="code", complexity="simple",
-            has_roslyn=False, task_count=1,
+            has_roslyn=False, has_jedi=False, task_count=1,
         )
-        assert level >= PlanLevel.L3
+        assert level == PlanLevel.L4
 
     def test_complex_code_suggests_l3(self):
         level = suggest_target_level(
             task_type="code", complexity="complex",
-            has_roslyn=False, task_count=5,
+            has_roslyn=False, has_jedi=False, task_count=5,
         )
         assert level == PlanLevel.L3
 
     def test_csharp_with_roslyn_suggests_l5(self):
         level = suggest_target_level(
             task_type="code", complexity="simple",
-            has_roslyn=True, task_count=1,
+            has_roslyn=True, has_jedi=False, task_count=1,
         )
         assert level == PlanLevel.L5
+
+    def test_python_with_jedi_suggests_l5(self):
+        level = suggest_target_level(
+            task_type="code", complexity="simple",
+            has_roslyn=False, has_jedi=True, task_count=1,
+        )
+        assert level == PlanLevel.L5
+
+    def test_python_jedi_medium_suggests_l5(self):
+        level = suggest_target_level(
+            task_type="code", complexity="medium",
+            has_roslyn=False, has_jedi=True, task_count=3,
+        )
+        assert level == PlanLevel.L5
+
+    def test_python_jedi_complex_suggests_l3(self):
+        """Complex tasks should stay at L3 even with tooling — LLM needs room."""
+        level = suggest_target_level(
+            task_type="code", complexity="complex",
+            has_roslyn=False, has_jedi=True, task_count=5,
+        )
+        assert level == PlanLevel.L3
+
+    def test_medium_without_tooling_suggests_l4(self):
+        level = suggest_target_level(
+            task_type="code", complexity="medium",
+            has_roslyn=False, has_jedi=False, task_count=3,
+        )
+        assert level == PlanLevel.L4
 
     def test_research_suggests_l2(self):
         level = suggest_target_level(
             task_type="research", complexity="medium",
-            has_roslyn=False, task_count=3,
+            has_roslyn=False, has_jedi=False, task_count=3,
         )
         assert level <= PlanLevel.L2
 
     def test_documentation_suggests_l2(self):
         level = suggest_target_level(
             task_type="documentation", complexity="simple",
-            has_roslyn=False, task_count=1,
+            has_roslyn=False, has_jedi=False, task_count=1,
         )
         assert level <= PlanLevel.L2
