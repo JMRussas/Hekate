@@ -1,10 +1,14 @@
-"""Seed 5 test projects into the orchestration DB.
+"""Seed test projects into the orchestration DB.
 
-Run this, then start the pipeline:
-    python seed_test_projects.py
+Usage:
+    python seed_test_projects.py           # Seed all 5
+    python seed_test_projects.py 1         # Seed project 1 only
+    python seed_test_projects.py 1 3 5     # Seed projects 1, 3, and 5
+    python seed_test_projects.py --list    # Show available projects
+    python seed_test_projects.py --clean   # Remove all test projects
+
+Then run the pipeline:
     python run_pipeline.py --max-concurrent 2
-
-The pipeline will plan, dispatch, execute, and verify all 5 projects.
 """
 
 import asyncio
@@ -35,6 +39,11 @@ class SqliteDB:
     async def execute_write(self, sql, params=()):
         await self._conn.execute(self._tr(sql), params)
         await self._conn.commit()
+
+    async def fetchall(self, sql, params=()):
+        self._conn.row_factory = aiosqlite.Row
+        async with self._conn.execute(self._tr(sql), params) as cur:
+            return [dict(r) for r in await cur.fetchall()]
 
 
 TEST_PROJECTS = [
@@ -95,7 +104,7 @@ TEST_PROJECTS = [
 ]
 
 
-async def seed():
+async def seed(project_nums: list[int] | None = None, clean: bool = False):
     db_path = os.path.abspath(DB_PATH)
     if not os.path.exists(db_path):
         print(f"DB not found: {db_path}")
@@ -116,9 +125,38 @@ async def seed():
         )
     """)
 
-    repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if clean:
+        # Remove all test projects and their tasks/events
+        existing = await db.fetchall(
+            "SELECT id, name FROM projects WHERE name LIKE 'Pipeline Test%'"
+        )
+        for row in existing:
+            pid = row["id"]
+            await db.execute_write("DELETE FROM tasks WHERE project_id = ?", (pid,))
+            await db.execute_write("DELETE FROM task_deps WHERE task_id IN "
+                                   "(SELECT id FROM tasks WHERE project_id = ?)", (pid,))
+            await db.execute_write("DELETE FROM projects WHERE id = ?", (pid,))
+        # Clean relay events from test runs
+        await db.execute_write("DELETE FROM god_relay_events")
+        # Reset cursor
+        await db.execute_write(
+            "DELETE FROM god_registry WHERE name = 'pipeline_cursor'"
+        )
+        print(f"Cleaned {len(existing)} test projects and all relay events.")
+        await conn.close()
+        return
 
-    for i, proj in enumerate(TEST_PROJECTS, 1):
+    # Which projects to seed
+    if project_nums is None:
+        to_seed = list(enumerate(TEST_PROJECTS, 1))
+    else:
+        to_seed = [(n, TEST_PROJECTS[n - 1]) for n in project_nums
+                    if 1 <= n <= len(TEST_PROJECTS)]
+
+    repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    created = []
+
+    for i, proj in to_seed:
         pid = uuid.uuid4().hex[:12]
         now = time.time()
 
@@ -137,7 +175,8 @@ async def seed():
              "info", now),
         )
 
-        print(f"  [{i}/5] Created: {proj['name']} (id={pid})")
+        print(f"  [{i}/{len(TEST_PROJECTS)}] Created: {proj['name']} (id={pid})")
+        created.append(pid)
 
     # Inject a global tick to kick off dispatch after planning
     await db.execute_write(
@@ -148,19 +187,35 @@ async def seed():
 
     await conn.close()
     print()
-    print("All 5 projects seeded. Run the pipeline:")
-    print("  cd Odin")
+    print(f"Seeded {len(created)} project(s). Run the pipeline:")
     print("  python run_pipeline.py --max-concurrent 2")
-    print()
-    print("The pipeline will:")
-    print("  1. Athena plans each project (via Gemini)")
-    print("  2. Odin starts them and dispatches tasks")
-    print("  3. Hermes executes via Claude Code CLI (async, parallel)")
-    print("  4. Mimir verifies output")
-    print("  5. Odin checks wave/project completion")
 
 
 if __name__ == "__main__":
-    print("Seeding 5 test projects...")
+    args = sys.argv[1:]
+
+    if "--list" in args:
+        print("Available test projects:")
+        for i, proj in enumerate(TEST_PROJECTS, 1):
+            print(f"  {i}. {proj['name']}")
+        sys.exit(0)
+
+    if "--clean" in args:
+        asyncio.run(seed(clean=True))
+        sys.exit(0)
+
+    # Parse project numbers
+    nums = []
+    for a in args:
+        try:
+            nums.append(int(a))
+        except ValueError:
+            pass
+
+    if nums:
+        print(f"Seeding project(s): {', '.join(str(n) for n in nums)}")
+    else:
+        print("Seeding all 5 test projects...")
+
     print()
-    asyncio.run(seed())
+    asyncio.run(seed(project_nums=nums or None))

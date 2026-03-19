@@ -1,0 +1,8 @@
+{
+  "include": ["gods"],
+  "exclude": ["test_*.py", "_test_*.py", "**/__pycache__"],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false
+}
