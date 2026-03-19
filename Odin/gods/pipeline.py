@@ -272,7 +272,23 @@ class Pipeline:
         if not events:
             return
 
+        # Deduplicate: for tick/project_tick events, only process the latest
+        # per (event_type, project_id) to prevent tick storms
+        dedup_types = {"tick", "project_tick"}
+        seen: dict[tuple, Event] = {}
+        unique_events: list[Event] = []
+
         for event in events:
+            if event.event_type in dedup_types:
+                key = (event.event_type, event.payload.get("project_id", ""))
+                seen[key] = event  # keep the latest
+            else:
+                unique_events.append(event)
+
+        # Add deduplicated ticks back
+        unique_events.extend(seen.values())
+
+        for event in unique_events:
             await self._dispatch(event)
 
         # Persist cursor after processing

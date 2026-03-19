@@ -57,7 +57,7 @@ async def _generate_plan(
         from backend.services.decomposer import DecomposerService
         decomposer = DecomposerService(db=db)
         decomp = await decomposer.decompose(project_id, plan_id)
-        result["task_count"] = decomp.get("task_count", 0)
+        result["task_count"] = decomp.get("tasks_created", decomp.get("task_count", 0))
         logger.info("Athena: decomposed plan %s → %d tasks", plan_id[:8], result["task_count"])
 
     return result
