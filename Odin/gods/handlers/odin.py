@@ -406,8 +406,27 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
                     "project_id": project_id,
                 }, source="odin"))
 
+    # Unblock tasks whose dependencies are now satisfied
+    blocked_tasks = await db.fetchall(
+        "SELECT t.id FROM tasks t "
+        "WHERE t.project_id = $1 AND t.status = $2 "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM task_deps d "
+        "  LEFT JOIN tasks dep ON dep.id = d.depends_on "
+        "  WHERE d.task_id = t.id AND dep.status != $3"
+        ")",
+        (project_id, "blocked", "completed"),
+    )
+    for bt in blocked_tasks:
+        bid = bt["id"] if isinstance(bt, dict) else bt[0]
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+            ("pending", time.time(), bid),
+        )
+        logger.info("Odin: unblocked task %s (deps satisfied)", bid[:8])
+
     # Always emit a project_tick after any task_verified — ensures dispatch
-    # re-runs to pick up queued tasks that were blocked by concurrency limits
+    # re-runs to pick up newly unblocked tasks
     if not any(e.event_type == "project_tick" for e in emits):
         emits.append(Emit("project_tick", {
             "project_id": project_id,
