@@ -175,12 +175,16 @@ async def run(args):
 
     await ensure_tables(db)
 
-    # Build pipeline
+    # Build pipeline with async hermes
     pipeline = Pipeline(db)
-    register_all_handlers(pipeline)
+    hermes = register_all_handlers(
+        pipeline,
+        max_concurrent=args.max_concurrent,
+    )
     await pipeline.restore_cursor()
 
-    logger.info("Pipeline ready — %d handlers registered", len(pipeline._handlers))
+    logger.info("Pipeline ready — %d handlers registered, hermes max_concurrent=%d",
+                len(pipeline._handlers), args.max_concurrent)
 
     # Handle --create or --inject
     if args.create:
@@ -196,18 +200,25 @@ async def run(args):
         await pipeline.tick()
         logger.info("Tick complete")
     else:
-        # Continuous mode
-        logger.info("Starting pipeline loop (Ctrl+C to stop)...")
+        # Continuous mode with tick scheduler
+        pipeline.start_scheduler(interval=args.tick_interval)
+        logger.info("Starting pipeline loop (tick every %.1fs, Ctrl+C to stop)...",
+                     args.tick_interval)
         try:
             tick_count = 0
             while True:
                 await pipeline.tick()
                 tick_count += 1
-                if tick_count % 60 == 0:
-                    logger.info("Pipeline alive — %d ticks, cursor at %d",
-                                tick_count, pipeline._last_seen_id)
+                in_flight = len(hermes.in_flight)
+                if tick_count % 30 == 0 or in_flight > 0:
+                    logger.info("Pipeline alive — tick %d, cursor %d, in-flight %d/%d",
+                                tick_count, pipeline._last_seen_id,
+                                in_flight, args.max_concurrent)
                 await asyncio.sleep(1.0)
         except KeyboardInterrupt:
+            logger.info("Shutting down...")
+            pipeline.stop_scheduler()
+            await hermes.shutdown(timeout=30.0)
             logger.info("Pipeline stopped")
 
     await conn.close()
@@ -219,6 +230,8 @@ def main():
     parser.add_argument("--inject", type=str, help="Inject project_created for this project ID")
     parser.add_argument("--once", action="store_true", help="Run a single tick and exit")
     parser.add_argument("--db", type=str, help="Path to orchestration.db")
+    parser.add_argument("--max-concurrent", type=int, default=4, help="Max parallel CLI tasks")
+    parser.add_argument("--tick-interval", type=float, default=5.0, help="Tick scheduler interval (seconds)")
     args = parser.parse_args()
 
     if args.db:
