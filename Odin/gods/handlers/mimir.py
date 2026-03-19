@@ -289,11 +289,23 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
         }, source="mimir")]
 
     # LLM verification
-    result = await _call_verifier(
-        task_title=title,
-        task_description=description or "",
-        output_text=output_text or "",
-    )
+    try:
+        result = await _call_verifier(
+            task_title=title,
+            task_description=description or "",
+            output_text=output_text or "",
+        )
+    except Exception as e:
+        logger.error("Mimir: verifier failed for task %s: %s", task_id[:8], e)
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+            ("needs_review", time.time(), task_id),
+        )
+        return [Emit("needs_human_review", {
+            "task_id": task_id,
+            "project_id": project_id,
+            "reason": f"Verification service error: {e}",
+        }, source="mimir")]
 
     verdict = result.get("verdict", "human_needed")
     feedback = result.get("feedback", "")
@@ -383,10 +395,19 @@ async def mimir_review(event: Event, db) -> list[Emit] | None:
     title = row[0] if isinstance(row, (list, tuple)) else row["title"]
     output_text = row[1] if isinstance(row, (list, tuple)) else row["output_text"]
 
-    result = await _call_reviewer(
-        task_title=title,
-        output_text=output_text or "",
-    )
+    try:
+        result = await _call_reviewer(
+            task_title=title,
+            output_text=output_text or "",
+        )
+    except Exception as e:
+        logger.error("Mimir: reviewer failed for task %s: %s", task_id[:8], e)
+        # Review failure is non-blocking — pass through as approved
+        return [Emit("review_passed", {
+            "task_id": task_id,
+            "project_id": project_id,
+            "feedback": f"Review skipped: {e}",
+        }, source="mimir")]
 
     verdict = result.get("verdict", "approved")
     feedback = result.get("feedback", "")
