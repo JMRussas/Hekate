@@ -18,9 +18,9 @@
 
 set -e
 
-PYTHON="C:\Users\jruss\AppData\Local\Programs\Python\Python311\python.exe"
-SOURCE="C:\Users\jruss\Documents\GitHub\Hekate"
-DEPLOY="C:\Hekate"
+PYTHON="/c/Users/jruss/AppData/Local/Programs/Python/Python311/python.exe"
+SOURCE="/c/Users/jruss/Documents/GitHub/Hekate"
+DEPLOY="/c/Hekate"
 SERVICE="HekateEngine"
 PORT=5200
 HEALTH_URL="http://localhost:${PORT}/api/health"
@@ -209,7 +209,7 @@ fi
 # Clean up smoke test
 "$PYTHON" -c "
 import sqlite3, time
-conn = sqlite3.connect('${DEPLOY}/orchestration/data/orchestration.db')
+conn = sqlite3.connect('/c/Hekate/orchestration/data/orchestration.db')
 conn.execute('DELETE FROM tasks WHERE project_id = ?', ('${smoke_id}',))
 conn.execute('DELETE FROM projects WHERE id = ?', ('${smoke_id}',))
 conn.execute('DELETE FROM god_relay_events WHERE payload LIKE ?', ('%${smoke_id}%',))
