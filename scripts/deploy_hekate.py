@@ -154,12 +154,27 @@ else:
 log("Restarting service...")
 
 r = subprocess.run(["nssm", "restart", SERVICE], capture_output=True, text=True)
-if r.returncode == 0:
+if r.returncode == 0 and "completed successfully" in (r.stdout + r.stderr).lower():
     print("  Service restarted")
 else:
-    print(f"  nssm returned: {r.stderr.strip()}")
-    print(f"  Try running from admin: nssm restart {SERVICE}")
-    input("  Press Enter after restarting manually...")
+    # Kill the old process directly, NSSM will respawn with new code
+    print("  nssm restart failed — killing process directly")
+    kill_r = subprocess.run(
+        ["taskkill", "/F", "/FI", f"SERVICES eq {SERVICE}"],
+        capture_output=True, text=True,
+    )
+    if kill_r.returncode != 0:
+        # Try killing by port
+        import re
+        netstat = subprocess.run(["netstat", "-ano"], capture_output=True, text=True)
+        for line in netstat.stdout.split("\n"):
+            if f":{PORT} " in line and "LISTENING" in line:
+                pid = line.strip().split()[-1]
+                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+                print(f"  Killed PID {pid} on port {PORT}")
+                break
+    print("  Waiting for NSSM to respawn...")
+    time.sleep(5)
 
 # =========================================================================
 # Step 7: Health check
