@@ -22,6 +22,9 @@ PYTHON="/c/Users/jruss/AppData/Local/Programs/Python/Python311/python.exe"
 SOURCE="/c/Users/jruss/Documents/GitHub/Hekate"
 DEPLOY="/c/Hekate"
 SERVICE="HekateEngine"
+
+# NSSM must run from DEPLOY dir (LocalSystem can't access user folders)
+# This script: tests in SOURCE, syncs to DEPLOY, NSSM runs from DEPLOY
 PORT=5200
 HEALTH_URL="http://localhost:${PORT}/api/health"
 API_URL="http://localhost:${PORT}/api"
