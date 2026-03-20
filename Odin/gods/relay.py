@@ -37,6 +37,7 @@ import asyncio
 import json
 import logging
 import time
+from gods import safe_json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -398,7 +399,7 @@ async def poll_events(
         payload = {}
         if payload_str:
             try:
-                payload = json.loads(payload_str) if isinstance(payload_str, str) else payload_str
+                payload = safe_json.loads(payload_str, {}) if isinstance(payload_str, str) else payload_str
             except (json.JSONDecodeError, TypeError):
                 payload = {"raw": str(payload_str)}
 

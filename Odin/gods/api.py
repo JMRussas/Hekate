@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from gods.engine import HekateEngine, create_engine, _init_engine
+from gods import safe_json
 
 logger = logging.getLogger("gods.api")
 

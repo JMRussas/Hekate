@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from gods.pipeline import Event, Emit
+from gods import safe_json
 
 logger = logging.getLogger("gods.handlers.odin")
 
@@ -515,7 +516,7 @@ async def odin_handle_diagnosis(event: Event, db) -> list[Emit] | None:
             "SELECT context_json FROM tasks WHERE id = $1", (task_id,))
         try:
             existing = _val(ctx_row, "context_json", "{}")
-            ctx = json.loads(existing) if isinstance(existing, str) else (existing or {})
+            ctx = safe_json.loads_dict(existing) if isinstance(existing, str) else (existing or {})
         except (json.JSONDecodeError, TypeError):
             ctx = {}
         ctx["prompt_guidance"] = guidance

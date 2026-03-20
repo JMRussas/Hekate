@@ -19,6 +19,7 @@ import time
 from typing import Any
 
 from gods.pipeline import Event, Emit
+from gods import safe_json
 
 logger = logging.getLogger("gods.handlers.mimir")
 
@@ -318,7 +319,7 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
 
         # Reset for retry
         try:
-            ctx = json.loads(context_json) if isinstance(context_json, str) else context_json
+            ctx = safe_json.loads_dict(context_json) if isinstance(context_json, str) else context_json
         except (json.JSONDecodeError, TypeError):
             ctx = {}
         ctx["verification_feedback"] = quality["reason"]
@@ -407,7 +408,7 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
 
         # Reset for retry with feedback
         try:
-            ctx = json.loads(context_json) if isinstance(context_json, str) else context_json
+            ctx = safe_json.loads_dict(context_json) if isinstance(context_json, str) else context_json
         except (json.JSONDecodeError, TypeError):
             ctx = {}
         if not isinstance(ctx, dict):
@@ -521,7 +522,7 @@ async def mimir_handle_review_rejection(event: Event, db) -> list[Emit] | None:
     retry_count = (row.get("retry_count") or 0)
 
     try:
-        ctx = json.loads(existing_ctx) if isinstance(existing_ctx, str) else (existing_ctx or {})
+        ctx = safe_json.loads_dict(existing_ctx) if isinstance(existing_ctx, str) else (existing_ctx or {})
     except (json.JSONDecodeError, TypeError):
         ctx = {}
     if not isinstance(ctx, dict):

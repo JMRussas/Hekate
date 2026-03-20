@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 from gods.pipeline import Event, Emit
+from gods import safe_json
 
 logger = logging.getLogger("gods.handlers.hermes_async")
 
@@ -132,7 +133,7 @@ class HermesRunner:
         prompt = f"# Task: {title}\n\n{description or ''}"
         if context_json and context_json != "{}":
             try:
-                ctx = json.loads(context_json) if isinstance(context_json, str) else context_json
+                ctx = safe_json.loads_dict(context_json) if isinstance(context_json, str) else context_json
                 if isinstance(ctx, dict):
                     if ctx.get("verification_feedback"):
                         prompt += f"\n\n# Previous feedback:\n{ctx['verification_feedback']}"

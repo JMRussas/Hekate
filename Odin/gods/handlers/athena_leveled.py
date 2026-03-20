@@ -28,6 +28,7 @@ import time
 from typing import Any
 
 from gods.pipeline import Event, Emit
+from gods import safe_json
 from gods.plan_levels import (
     PlanLevel,
     TaskSpec,
@@ -375,7 +376,7 @@ def _load_config(config_json: str | None) -> PlanConfig:
     if not config_json:
         return PlanConfig()
     try:
-        raw = json.loads(config_json)
+        raw = safe_json.loads_dict(config_json)
         return PlanConfig(
             tdd=raw.get("tdd", True),
             narration=raw.get("narration", True),
