@@ -62,14 +62,27 @@ async def _call_gateway(
 ) -> str:
     """Call LLM Gateway, return text response."""
     import httpx
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(f"{gateway_url}/v1/chat", json={
-            "provider": provider,
-            "system_prompt": system_prompt,
-            "user_message": user_message,
-        })
-        resp.raise_for_status()
-        return resp.json().get("text", "")
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(f"{gateway_url}/v1/chat", json={
+                "provider": provider,
+                "system_prompt": system_prompt,
+                "user_message": user_message,
+            })
+            resp.raise_for_status()
+            return resp.json().get("text", "")
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(
+            f"LLM Gateway returned HTTP {e.response.status_code}: {e.response.text[:200]}"
+        ) from e
+    except httpx.ConnectError as e:
+        raise RuntimeError(
+            f"Cannot connect to LLM Gateway at {gateway_url}: {e}"
+        ) from e
+    except TimeoutError as e:
+        raise RuntimeError(
+            f"LLM Gateway request timed out after {timeout}s"
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +317,7 @@ async def _decompose_plan(
 
     for task in all_tasks:
         await db.execute_write(
-            "INSERT INTO tasks (id, project_id, plan_id, title, description, "
+            "INSERT OR IGNORE INTO tasks (id, project_id, plan_id, title, description, "
             "task_type, wave, status, created_at, updated_at) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             (task["id"], project_id, plan_id, task["title"],
@@ -342,7 +355,7 @@ def _parse_tasks(plan_data: dict) -> list[TaskSpec]:
         plan = plan_data.get("plan", plan_data)
         if isinstance(plan, str):
             try:
-                plan = json.loads(plan)
+                plan = safe_json.loads(plan, {})
             except (json.JSONDecodeError, TypeError):
                 plan = {}
         for phase in plan.get("phases", []):

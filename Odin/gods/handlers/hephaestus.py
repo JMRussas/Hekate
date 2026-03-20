@@ -30,8 +30,19 @@ async def _git_add(files: list[str], cwd: str) -> bool:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    await proc.wait()
-    return proc.returncode == 0
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except asyncio.TimeoutError:
+        logger.error("Hephaestus: git add timed out after 30s for %d files in %s", len(files), cwd)
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        return False
+    if proc.returncode != 0:
+        logger.error("Hephaestus: git add failed (rc=%d) stderr=%s", proc.returncode, (stderr or b"").decode(errors="replace")[:200])
+        return False
+    return True
 
 
 async def _syntax_check(files: list[str], cwd: str = ".") -> dict:

@@ -284,8 +284,21 @@ class Pipeline:
         except Exception:
             pass  # Table may not exist yet
 
+    async def _cleanup_old_events(self):
+        """Delete god_relay_events older than 7 days."""
+        try:
+            cutoff = time.time() - (7 * 86400)
+            await self.db.execute_write(
+                "DELETE FROM god_relay_events WHERE created_at < $1",
+                (cutoff,),
+            )
+        except Exception as e:
+            logger.warning("Pipeline: cleanup of old events failed: %s", e)
+
     async def tick(self):
         self._tick_count += 1
+        if self._tick_count % 100 == 0:
+            await self._cleanup_old_events()
         subscribed = list({r.event_type for r in self._handlers})
         if not subscribed:
             return

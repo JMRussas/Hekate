@@ -226,6 +226,7 @@ class HermesRunner:
 
             # Check for empty output
             if not output or not output.strip():
+                logger.warning("Hermes: task %s produced empty output", task_id[:8])
                 await self.db.execute_write(
                     "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
                     ("failed", "Empty output from CLI", time.time(), task_id),

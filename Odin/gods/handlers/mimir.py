@@ -239,13 +239,23 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
 
     # Fetch task
     row = await db.fetchone(
-        "SELECT title, description, output_text, retry_count, max_retries, context_json "
-        "FROM tasks WHERE id = $1",
+        "SELECT title, description, output_text, retry_count, max_retries, context_json, "
+        "verification_status FROM tasks WHERE id = $1",
         (task_id,),
     )
     if not row:
         return [Emit("mimir_error", {
             "error": f"Task {task_id} not found",
+        }, source="mimir")]
+
+    # Idempotency guard — if already verified, skip
+    if row.get("verification_status") == "passed":
+        logger.info("Task already verified, skipping")
+        return [Emit("task_verified", {
+            "task_id": task_id,
+            "project_id": project_id,
+            "confidence": 1.0,
+            "already_verified": True,
         }, source="mimir")]
 
     title = row["title"]
@@ -323,7 +333,7 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
         # If verification service is down/slow but task has output, trust hermes
         # Don't block the pipeline on verification infrastructure issues
         if output_text and len(output_text.strip()) > 20:
-            logger.info("Mimir: task %s has output, passing despite verification failure", task_id[:8])
+            logger.info("Mimir: task %s passing with LOW confidence (0.5) — verification service unavailable", task_id[:8])
             result = {"verdict": "passed", "confidence": 0.5, "feedback": f"Verification skipped: {type(e).__name__}"}
         else:
             await db.execute_write(

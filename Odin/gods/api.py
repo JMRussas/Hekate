@@ -287,6 +287,7 @@ def create_app(
     @app.get("/api/services")
     async def list_services():
         """Check which providers/services are available."""
+        import asyncio
         import httpx
         services = []
         checks = [
@@ -299,7 +300,14 @@ def create_app(
                 async with httpx.AsyncClient(timeout=3.0) as c:
                     r = await c.get(url)
                     services.append({"name": name, "status": "running" if r.status_code < 500 else "error", "url": url})
-            except Exception:
+            except httpx.ConnectError:
+                logger.debug("Service %s unreachable (connect error)", name)
+                services.append({"name": name, "status": "stopped", "url": url})
+            except asyncio.TimeoutError:
+                logger.debug("Service %s unreachable (timeout)", name)
+                services.append({"name": name, "status": "stopped", "url": url})
+            except Exception as e:
+                logger.debug("Service %s unreachable: %s", name, e)
                 services.append({"name": name, "status": "stopped", "url": url})
         return services
 

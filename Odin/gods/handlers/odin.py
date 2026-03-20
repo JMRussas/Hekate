@@ -61,7 +61,7 @@ async def _get_provider_availability(
             }
     except Exception as e:
         logger.warning("Provider availability check failed: %s", e)
-        return {"claude_code": True, "gemini_cli": True, "ollama": True}
+        return {"claude_code": False, "gemini_cli": False, "ollama": False}
 
 
 async def _diagnose_failed_tasks(
@@ -358,23 +358,21 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
         return emits
 
     # Unblock tasks whose dependencies are now satisfied — MUST run before deadlock check
-    blocked_tasks = await db.fetchall(
-        "SELECT t.id FROM tasks t "
-        "WHERE t.project_id = $1 AND t.status = $2 "
+    # Single atomic UPDATE avoids read-then-write race condition
+    now = time.time()
+    unblock_result = await db.execute_write(
+        "UPDATE tasks SET status = $1, updated_at = $2 "
+        "WHERE project_id = $3 AND status = $4 "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM task_deps d "
         "  LEFT JOIN tasks dep ON dep.id = d.depends_on "
-        "  WHERE d.task_id = t.id AND dep.status != $3"
+        "  WHERE d.task_id = tasks.id AND dep.status != $5"
         ")",
-        (project_id, "blocked", "completed"),
+        ("pending", now, project_id, "blocked", "completed"),
     )
-    for bt in blocked_tasks:
-        bid = bt["id"] if isinstance(bt, dict) else bt[0]
-        await db.execute_write(
-            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
-            ("pending", time.time(), bid),
-        )
-        logger.info("Odin: unblocked task %s (deps satisfied)", bid[:8])
+    unblocked_count = getattr(unblock_result, "rowcount", 0) if unblock_result else 0
+    if unblocked_count:
+        logger.info("Odin: unblocked %d task(s) for project %s", unblocked_count, project_id[:8])
 
     # Check for deadlock: no pending/running/queued, but some blocked or needs_review
     active = await db.fetchone(
