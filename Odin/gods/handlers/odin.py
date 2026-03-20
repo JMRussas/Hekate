@@ -60,7 +60,7 @@ async def _get_provider_availability(
                 "ollama": data.get("ollama", {}).get("available", False),
             }
     except Exception as e:
-        logger.warning("Provider availability check failed: %s", e)
+        logger.warning("Provider availability check failed (%s) - assuming all providers down (fail-conservative)", e)
         return {"claude_code": False, "gemini_cli": False, "ollama": False}
 
 

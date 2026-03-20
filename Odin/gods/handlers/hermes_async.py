@@ -200,6 +200,7 @@ class HermesRunner:
         self._heartbeats[task_id] = hb_task
 
         try:
+            t0 = time.time()
             result = await self._run_cli_background(
                 provider=provider,
                 prompt=prompt,
@@ -207,6 +208,7 @@ class HermesRunner:
                 task_id=task_id,
                 project_id=project_id,
             )
+            elapsed = time.time() - t0
 
             output = result.get("output", "")
             cost = result.get("cost_usd", 0.0)
@@ -270,7 +272,7 @@ class HermesRunner:
 
             await self._write_relay_event("worker_event", payload)
 
-            logger.info("Hermes: task %s completed (cost=$%.4f)", task_id[:8], cost)
+            logger.info("Hermes: task %s completed in %.1fs (cost=$%.4f)", task_id[:8], elapsed, cost)
 
         except asyncio.TimeoutError as e:
             error_msg = f"Timeout: {e}" if str(e) else "CLI execution timed out"

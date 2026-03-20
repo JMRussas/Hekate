@@ -162,6 +162,8 @@ async def _deepen_plan(
         PlanLevel.L5: "Add: full code body for each change.",
     }
 
+    if not isinstance(current_plan, dict):
+        current_plan = {}
     plan_data = current_plan.get("plan", current_plan)
     plan_json = json.dumps(plan_data, indent=2)
 
