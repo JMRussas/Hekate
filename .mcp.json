@@ -21,6 +21,14 @@
       "env": {
         "HADES_URL": "http://localhost:5201"
       }
+    },
+    "prometheus": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["Odin/gods/prometheus_mcp.py"],
+      "env": {
+        "HEKATE_ENGINE_URL": "http://localhost:5200"
+      }
     }
   }
 }
