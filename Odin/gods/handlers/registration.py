@@ -9,8 +9,7 @@ from __future__ import annotations
 from gods.pipeline import Pipeline
 from gods.handlers.hermes_async import HermesRunner
 
-from gods.handlers.athena import athena_reassess
-from gods.handlers.athena_leveled import athena_plan_leveled
+from gods.handlers.athena_leveled import athena_plan_leveled, athena_reassess_standalone
 from gods.handlers.odin import (
     odin_start, odin_tick, odin_dispatch,
     odin_lifecycle, odin_handle_diagnosis,
@@ -42,7 +41,7 @@ def register_all_handlers(
 
     # Athena — planning
     pipeline.register("project_created", athena_plan_leveled)
-    pipeline.register("wave_complete", athena_reassess)
+    pipeline.register("wave_complete", athena_reassess_standalone)
 
     # Odin — orchestration
     pipeline.register("project_planned", odin_start)

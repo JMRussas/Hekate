@@ -48,7 +48,31 @@ MAX_REVIEW_CYCLES = 2
 
 
 # ---------------------------------------------------------------------------
-# Internal functions — patched in tests
+# Gateway call helper
+# ---------------------------------------------------------------------------
+
+async def _call_gateway(
+    *,
+    provider: str = "gemini",
+    system_prompt: str,
+    user_message: str,
+    gateway_url: str = "http://localhost:5210",
+    timeout: float = 120.0,
+) -> str:
+    """Call LLM Gateway, return text response."""
+    import httpx
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(f"{gateway_url}/v1/chat", json={
+            "provider": provider,
+            "system_prompt": system_prompt,
+            "user_message": user_message,
+        })
+        resp.raise_for_status()
+        return resp.json().get("text", "")
+
+
+# ---------------------------------------------------------------------------
+# Internal functions — patched in tests, call gateway directly (no monolith)
 # ---------------------------------------------------------------------------
 
 async def _generate_l1(
@@ -58,21 +82,43 @@ async def _generate_l1(
     db,
     **kwargs,
 ) -> dict:
-    """Generate L1 plan (Model A, first turn).
+    """Generate L1 plan via LLM gateway. No monolith imports.
 
-    Returns: {"plan_id": str, "tasks": [...], "conversation_id": str}
-    The conversation_id is used to continue the same conversation in deepen calls.
+    Returns: {"plan_id": str, "plan": dict}
     """
-    # Default: import and call the real planner
-    # NOTE: Do NOT decompose here — decomposition happens once after final review
-    from backend.services.planner import PlannerService
-    from backend.services.budget import BudgetManager
+    import uuid
+    from gods.providers.response_validator import extract_json
 
-    budget = BudgetManager(db)
-    planner = PlannerService(db=db, budget=budget)
-    result = await planner.generate(project_id, **kwargs)
+    system_prompt = (
+        "You are a software project planner. Generate a structured plan as JSON.\n\n"
+        "Output format:\n"
+        '{"summary": "...", "phases": [{"name": "...", "tasks": ['
+        '{"title": "...", "description": "...", "task_type": "code|research|test", '
+        '"depends_on": []}]}]}\n\n'
+        "Rules:\n"
+        "- Break work into small, focused tasks (2-5 minutes each)\n"
+        "- Group related tasks into phases\n"
+        "- Set depends_on as array of task indices within the same phase\n"
+        "- task_type: 'code' for implementation, 'research' for analysis, 'test' for testing\n"
+    )
 
-    return result
+    text = await _call_gateway(
+        system_prompt=system_prompt,
+        user_message=f"Project: {project_name}\n\nRequirements:\n{requirements}",
+    )
+
+    plan = extract_json(text)
+    if plan is None:
+        plan = {"summary": "Could not parse plan", "phases": []}
+
+    plan_id = uuid.uuid4().hex[:12]
+    await db.execute_write(
+        "INSERT OR REPLACE INTO plans (id, project_id, plan_json, created_at) "
+        "VALUES ($1, $2, $3, $4)",
+        (plan_id, project_id, json.dumps(plan), time.time()),
+    )
+
+    return {"plan_id": plan_id, "plan": plan}
 
 
 async def _deepen_plan(
@@ -86,33 +132,51 @@ async def _deepen_plan(
     review_feedback: str | None = None,
     **kwargs,
 ) -> dict:
-    """Deepen plan to next level (Model A, continued conversation).
+    """Deepen plan to next level via LLM gateway. No monolith imports.
 
-    Takes the current plan and adds detail for the target level.
-    Uses conversation_id to continue Model A's conversation.
-
-    Returns: {"plan_id": str, "tasks": [...], "conversation_id": str}
+    Returns: {"plan_id": str, "plan": dict, "conversation_id": str}
     """
-    from backend.services.planner import PlannerService
-    from backend.services.budget import BudgetManager
+    import uuid
+    from gods.providers.response_validator import extract_json
 
-    budget = BudgetManager(db)
-    planner = PlannerService(db=db, budget=budget)
+    level_descriptions = {
+        PlanLevel.L2: "Add: detailed description, affected_files list, depends_on, complexity (simple/medium/complex) for each task.",
+        PlanLevel.L3: "Add: implementation_notes, test_strategy, edge_cases list for each task.",
+        PlanLevel.L4: "Add: exact changes list with {file, action, name, signature, returns} for each task.",
+        PlanLevel.L5: "Add: full code body for each change.",
+    }
 
-    comments = []
-    if review_feedback:
-        comments.append({"author": "plan_reviewer", "content": review_feedback})
+    plan_data = current_plan.get("plan", current_plan)
+    plan_json = json.dumps(plan_data, indent=2)
 
-    # Note: conversation_id is for future multi-turn support.
-    # Current PlannerService doesn't support it — strip from kwargs.
-    gen_kwargs = {k: v for k, v in kwargs.items() if k != "conversation_id"}
-    result = await planner.generate(
-        project_id,
-        comments=comments or None,
-        previous_plan=current_plan,
-        **gen_kwargs,
+    system_prompt = (
+        f"You are deepening a software plan to {target_level.name}.\n\n"
+        f"Current plan:\n{plan_json[:3000]}\n\n"
+        f"Deepen to {target_level.name}: {level_descriptions.get(target_level, '')}\n\n"
+        "Return the COMPLETE updated plan as JSON in the same format.\n"
     )
-    return result
+
+    user_message = f"Requirements:\n{requirements}"
+    if review_feedback:
+        user_message += f"\n\nReview feedback to address:\n{review_feedback}"
+
+    text = await _call_gateway(
+        system_prompt=system_prompt,
+        user_message=user_message,
+    )
+
+    plan = extract_json(text)
+    if plan is None:
+        plan = plan_data
+
+    plan_id = current_plan.get("plan_id", uuid.uuid4().hex[:12])
+    await db.execute_write(
+        "INSERT OR REPLACE INTO plans (id, project_id, plan_json, level, created_at) "
+        "VALUES ($1, $2, $3, $4, $5)",
+        (plan_id, project_id, json.dumps(plan), target_level.name, time.time()),
+    )
+
+    return {"plan_id": plan_id, "plan": plan, "conversation_id": conversation_id}
 
 
 async def _thorough_review(
@@ -122,25 +186,40 @@ async def _thorough_review(
     level: PlanLevel = PlanLevel.L3,
     **kwargs,
 ) -> dict:
-    """Thorough review by Model B (fresh prompt, no shared context).
+    """Thorough review by Model B via gateway. No monolith imports.
 
-    Returns: {"approved": bool, "confidence": float, "feedback": str}
+    Returns: {"approved": bool, "confidence": float, "feedback": str, "gaps": list}
     """
-    from gods.review import review_plan
-    from backend.services.llm_router import call_llm
+    from gods.providers.response_validator import validate_verdict
 
-    review = await review_plan(
-        plan, requirements, project_name,
-        call_llm=call_llm,
-        provider="gemini" if kwargs.get("generator_provider") != "gemini" else "claude",
-        **{k: v for k, v in kwargs.items() if k != "generator_provider"},
+    plan_data = plan.get("plan", plan)
+    plan_json = json.dumps(plan_data, indent=2)
+
+    system_prompt = (
+        "You are reviewing a software execution plan. Be critical.\n\n"
+        "Questions to answer:\n"
+        "1. Does every requirement have at least one task?\n"
+        "2. Are there gaps — things implied but no task covers?\n"
+        "3. Are dependencies correct?\n"
+        "4. Are tasks too large or too small?\n"
+        "5. Is this the right approach?\n\n"
+        'Respond with JSON: {"verdict": "passed|gaps_found", "confidence": 0.0-1.0, '
+        '"feedback": "specific feedback", "gaps": ["gap1", "gap2"]}\n'
     )
 
+    text = await _call_gateway(
+        system_prompt=system_prompt,
+        user_message=f"Project: {project_name}\n\nRequirements:\n{requirements}\n\nPlan:\n{plan_json[:4000]}",
+        provider="gemini",
+    )
+
+    result = validate_verdict(text)
+
     return {
-        "approved": not review.has_gaps or review.confidence >= 0.7,
-        "confidence": review.confidence,
-        "feedback": review.feedback,
-        "gaps": review.gaps,
+        "approved": result.get("verdict") == "passed",
+        "confidence": result.get("confidence", 0.5),
+        "feedback": result.get("feedback", ""),
+        "gaps": result.get("gaps", []),
     }
 
 
@@ -150,27 +229,90 @@ async def _generate_tdd_tests(
     project_name: str = "",
     **kwargs,
 ) -> dict:
-    """Generate TDD test specs for the plan.
+    """Generate TDD test specs. No monolith imports.
 
     Returns: {"test_specs": [{"task_id": str, "test_file": str, "test_cases": [...]}]}
     """
-    from backend.services.llm_router import call_llm
+    tasks = []
+    plan_data = plan.get("plan", plan)
+    for phase in plan_data.get("phases", []):
+        tasks.extend(phase.get("tasks", []))
+    if not tasks:
+        tasks = plan_data.get("tasks", [])
 
-    tasks = plan.get("tasks", [])
     code_tasks = [t for t in tasks if t.get("task_type") == "code"]
 
     test_specs = []
-    for task in code_tasks:
+    for i, task in enumerate(code_tasks):
+        title_slug = task.get("title", f"task_{i}").lower().replace(" ", "_")[:30]
         test_specs.append({
-            "task_id": task["id"],
-            "test_file": f"tests/test_{task['id']}.py",
+            "task_id": task.get("id", f"task-{i}"),
+            "test_file": f"tests/test_{title_slug}.py",
             "test_cases": [
-                f"test_{task['title'].lower().replace(' ', '_')}_happy_path",
-                f"test_{task['title'].lower().replace(' ', '_')}_edge_cases",
+                f"test_{title_slug}_happy_path",
+                f"test_{title_slug}_edge_cases",
             ],
         })
 
     return {"test_specs": test_specs}
+
+
+async def _decompose_plan(
+    project_id: str,
+    plan: dict,
+    plan_id: str,
+    db,
+) -> int:
+    """Decompose plan into task rows. No monolith imports.
+
+    Returns the number of tasks created.
+    """
+    import uuid
+
+    now = time.time()
+    all_tasks: list[dict] = []
+    wave = 0
+
+    for phase in plan.get("phases", []):
+        phase_tasks = phase.get("tasks", [])
+        offset = len(all_tasks)
+
+        for i, task in enumerate(phase_tasks):
+            task_id = uuid.uuid4().hex[:12]
+            deps = []
+            for dep_idx in task.get("depends_on", []):
+                if isinstance(dep_idx, int) and 0 <= dep_idx < len(all_tasks):
+                    deps.append(all_tasks[dep_idx]["id"])
+
+            status = "pending" if wave == 0 and not deps else "blocked"
+
+            all_tasks.append({
+                "id": task_id,
+                "title": task.get("title", f"Task {i}"),
+                "description": task.get("description", ""),
+                "task_type": task.get("task_type", "code"),
+                "wave": wave,
+                "deps": deps,
+                "status": status,
+            })
+        wave += 1
+
+    for task in all_tasks:
+        await db.execute_write(
+            "INSERT INTO tasks (id, project_id, plan_id, title, description, "
+            "task_type, wave, status, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            (task["id"], project_id, plan_id, task["title"],
+             task["description"], task["task_type"], task["wave"],
+             task["status"], now, now),
+        )
+        for dep_id in task["deps"]:
+            await db.execute_write(
+                "INSERT OR IGNORE INTO task_deps (task_id, depends_on) VALUES ($1, $2)",
+                (task["id"], dep_id),
+            )
+
+    return len(all_tasks)
 
 
 # ---------------------------------------------------------------------------
@@ -442,10 +584,9 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
         if plan_id:
             narrate("Decomposing final plan into executable tasks...")
             try:
-                from backend.services.decomposer import DecomposerService
-                decomposer = DecomposerService(db=db)
-                decomp = await decomposer.decompose(project_id, plan_id)
-                task_count = decomp.get("tasks_created", decomp.get("task_count", 0))
+                task_count = await _decompose_plan(
+                    project_id, current_plan.get("plan", current_plan), plan_id, db,
+                )
                 narrate(f"Created {task_count} tasks from plan")
             except Exception as e:
                 logger.warning("Decomposition failed: %s", e)
@@ -481,3 +622,58 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
             "project_id": project_id,
             "error": str(e),
         }, source="athena", severity="error")]
+
+
+# ---------------------------------------------------------------------------
+# athena_reassess_standalone — wave reassessment (no monolith imports)
+# ---------------------------------------------------------------------------
+
+async def athena_reassess_standalone(event: Event, db) -> list[Emit] | None:
+    """Handle wave_complete → reassess via gateway → emit wave_assessed.
+
+    No monolith imports. Calls LLM gateway directly.
+    """
+    from gods.providers.response_validator import extract_json
+
+    project_id = event.payload.get("project_id")
+    wave = event.payload.get("wave", 0)
+
+    try:
+        # Get completed task summaries
+        tasks = await db.fetchall(
+            "SELECT title, status, substr(output_text, 1, 500) as output_summary "
+            "FROM tasks WHERE project_id = $1 AND wave = $2",
+            (project_id, wave),
+        )
+
+        task_outcomes = json.dumps([dict(t) for t in tasks], indent=2) if tasks else "[]"
+
+        text = await _call_gateway(
+            system_prompt=(
+                "You are evaluating a completed wave of tasks. Decide next steps.\n\n"
+                'Respond with JSON: {"outcome": "continue|replan|escalate_to_human", '
+                '"rationale": "why"}\n\n'
+                "- continue: remaining tasks look good, proceed\n"
+                "- replan: results suggest the plan needs revision\n"
+                "- escalate_to_human: something unexpected happened\n"
+            ),
+            user_message=f"Wave {wave} completed.\n\nTask outcomes:\n{task_outcomes}",
+        )
+
+        result = extract_json(text) or {"outcome": "continue", "rationale": "Default: continue"}
+
+        return [Emit("wave_assessed", {
+            "project_id": project_id,
+            "wave": wave,
+            "outcome": result.get("outcome", "continue"),
+            "rationale": result.get("rationale", ""),
+        }, source="athena")]
+
+    except Exception as e:
+        logger.error("Athena: reassessment failed for %s wave %d: %s", project_id, wave, e)
+        return [Emit("wave_assessed", {
+            "project_id": project_id,
+            "wave": wave,
+            "outcome": "continue",
+            "rationale": f"Reassessment failed ({e}), continuing",
+        }, source="athena")]
