@@ -325,9 +325,15 @@ class Pipeline:
         unique_events.extend(seen.values())
 
         for event in unique_events:
-            await self._dispatch(event)
+            try:
+                await self._dispatch(event)
+            except Exception as e:
+                logger.error("Pipeline: dispatch failed for %s: %s: %s",
+                             event.event_type, type(e).__name__, e)
+            # Advance cursor after EACH event — never replay a processed event
+            if hasattr(event, 'id') and event.id and event.id > self._last_seen_id:
+                self._last_seen_id = event.id
 
-        # Persist cursor after processing
         await self._persist_cursor()
 
     # ------------------------------------------------------------------

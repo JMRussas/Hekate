@@ -524,6 +524,8 @@ async def mimir_handle_review_rejection(event: Event, db) -> list[Emit] | None:
         ctx = json.loads(existing_ctx) if isinstance(existing_ctx, str) else (existing_ctx or {})
     except (json.JSONDecodeError, TypeError):
         ctx = {}
+    if not isinstance(ctx, dict):
+        ctx = {}
 
     ctx["review_feedback"] = feedback
 
