@@ -224,12 +224,20 @@ class HekateEngine:
         logger.info("Hekate engine stopped")
 
     async def _tick_loop(self):
-        """Background tick loop."""
+        """Background tick loop. Never crashes — logs errors and continues."""
+        consecutive_errors = 0
         while self.running:
             try:
                 await self.pipeline.tick()
+                consecutive_errors = 0
             except Exception as e:
-                logger.error("Pipeline tick error: %s", e)
+                consecutive_errors += 1
+                logger.error("Pipeline tick error (#%d): %s: %s",
+                             consecutive_errors, type(e).__name__, e)
+                if consecutive_errors >= 10:
+                    logger.error("Pipeline: 10 consecutive errors — backing off to 30s")
+                    await asyncio.sleep(30.0)
+                    consecutive_errors = 0
             await asyncio.sleep(5.0)
 
     # ------------------------------------------------------------------

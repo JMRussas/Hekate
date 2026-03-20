@@ -294,10 +294,52 @@ def create_app(
         return services
 
     # ------------------------------------------------------------------
+    # Catch-all routes the dashboard expects but we haven't implemented
+    # ------------------------------------------------------------------
+
+    @app.post("/api/projects/{project_id}/plan")
+    async def generate_plan_stub(project_id: str):
+        """Stub — planning happens automatically via pipeline."""
+        return {"message": "Planning is automatic. Use /execute to trigger."}
+
+    @app.get("/api/projects/{project_id}/plans")
+    async def list_plans(project_id: str):
+        e: HekateEngine = app.state.engine
+        plans = await e.db.fetchall(
+            "SELECT id, project_id, version, model_used, cost_usd, plan_json, status, created_at "
+            "FROM plans WHERE project_id = $1 ORDER BY created_at DESC",
+            (project_id,),
+        )
+        return plans or []
+
+    @app.get("/api/projects/{project_id}/coverage")
+    async def get_coverage(project_id: str):
+        return {"total": 0, "covered": 0, "uncovered": []}
+
+    @app.get("/api/checkpoints/project/{project_id}")
+    async def list_checkpoints(project_id: str):
+        return []
+
+    @app.get("/api/projects/{project_id}/git-status")
+    async def get_git_status(project_id: str):
+        return None
+
+    @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    async def catch_all(path: str):
+        """Catch unimplemented routes — return 501 instead of crashing."""
+        return JSONResponse(
+            status_code=501,
+            content={"detail": f"Not implemented: /api/{path}"},
+        )
+
+    # ------------------------------------------------------------------
     # Static files (frontend dist/)
     # ------------------------------------------------------------------
 
-    if frontend_dist and os.path.isdir(frontend_dist):
-        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+    if frontend_dist:
+        if os.path.isdir(frontend_dist):
+            app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+        else:
+            logger.warning("Frontend dist not found at %s — API only mode", frontend_dist)
 
     return app
