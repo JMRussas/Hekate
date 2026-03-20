@@ -21,7 +21,7 @@ SERVICE = "HekateEngine"
 PORT = 5200
 HEALTH_URL = f"http://localhost:{PORT}/api/health"
 API_URL = f"http://localhost:{PORT}/api"
-DB_PATH = os.path.join(DEPLOY, "orchestration", "data", "orchestration.db")
+PG_DSN = "postgresql://postgres:postgres@localhost:5433/orchestration"
 
 step = 0
 
@@ -229,14 +229,14 @@ if status == 200:
                     payload = json.loads(e["payload"]) if isinstance(e["payload"], str) else e["payload"]
                     fail(f"Planning failed: {payload.get('error', 'unknown')}")
 
-# Cleanup
-import sqlite3
-conn = sqlite3.connect(DB_PATH)
-conn.execute("DELETE FROM tasks WHERE project_id = ?", (smoke_id,))
-conn.execute("DELETE FROM projects WHERE id = ?", (smoke_id,))
-conn.execute("DELETE FROM god_relay_events WHERE payload LIKE ?", (f"%{smoke_id}%",))
-conn.commit()
-conn.close()
+# Cleanup via API
+try:
+    urllib.request.urlopen(
+        urllib.request.Request(f"{API_URL}/projects/{smoke_id}", method="DELETE"),
+        timeout=5,
+    )
+except Exception:
+    pass
 print("  Smoke test cleaned up")
 
 # =========================================================================

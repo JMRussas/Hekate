@@ -216,17 +216,9 @@ else
     echo "  Smoke test status: $smoke_status"
 fi
 
-# Clean up smoke test
-"$PYTHON" -c "
-import sqlite3, time
-conn = sqlite3.connect('C:/Hekate/orchestration/data/orchestration.db')
-conn.execute('DELETE FROM tasks WHERE project_id = ?', ('${smoke_id}',))
-conn.execute('DELETE FROM projects WHERE id = ?', ('${smoke_id}',))
-conn.execute('DELETE FROM god_relay_events WHERE payload LIKE ?', ('%${smoke_id}%',))
-conn.commit()
-conn.close()
-print('  Smoke test cleaned up')
-"
+# Clean up smoke test via API
+curl -s -X DELETE "${API_URL}/projects/${smoke_id}" > /dev/null 2>&1 || true
+echo "  Smoke test cleaned up"
 
 # =============================================================================
 # Step 9: Report
