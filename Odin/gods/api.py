@@ -233,6 +233,15 @@ def create_app(
     # Events (for SSE / polling)
     # ------------------------------------------------------------------
 
+    @app.get("/api/events/stream")
+    async def stream_all_events(since: int = 0, limit: int = 50):
+        """Poll for new events across all projects."""
+        e: HekateEngine = app.state.engine
+        events = []
+        async for event in e.stream_events(since_id=since, max_events=limit):
+            events.append(event)
+        return events
+
     @app.get("/api/events/{project_id}")
     async def get_events(project_id: str, since: int = 0, limit: int = 100):
         e: HekateEngine = app.state.engine
