@@ -116,11 +116,27 @@ def create_app(
     @app.post("/api/projects")
     async def create_project(req: CreateProjectRequest):
         e: HekateEngine = app.state.engine
+
+        # Translate monolith config fields to engine config
+        config = dict(req.config) if req.config else {}
+        if "planning_rigor" in config or hasattr(req, "planning_rigor"):
+            rigor = config.pop("planning_rigor", getattr(req, "planning_rigor", "L2"))
+            config.setdefault("target_level", rigor)
+        if "execution_mode" in config:
+            config.pop("execution_mode")  # Not used by engine
+        config.setdefault("tdd", True)
+        config.setdefault("narration", True)
+
+        # Require repo_path for code projects — warn if missing
+        repo_path = req.repo_path
+        if not repo_path:
+            logger.warning("Project '%s' created without repo_path — CLI will run in default directory", req.name)
+
         project_id = await e.create_project(
             name=req.name,
             requirements=req.requirements,
-            config=req.config,
-            repo_path=req.repo_path,
+            config=config,
+            repo_path=repo_path,
         )
         return await e.get_project_status(project_id)
 
