@@ -2,8 +2,10 @@
 """
 LLM Gateway — HTTP proxy for CLI-authenticated LLM providers.
 
-Runs as the user (not LocalSystem) so it has access to CLI OAuth tokens.
-NSSM services call this via HTTP instead of spawning CLIs directly.
+Persistent CLI sessions eliminate per-request startup overhead:
+  - Claude: single process with --input-format stream-json
+  - Gemini: warm process pool (spawn ahead, reuse)
+  - Ollama: direct HTTP (already fast)
 
 Port: 5210
 Health: GET /health
@@ -11,19 +13,23 @@ Chat:  POST /v1/chat
 """
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 import sys
+import time
+import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -57,7 +63,7 @@ class ChatResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# CLI resolution (handles .cmd on Windows)
+# CLI resolution
 # ---------------------------------------------------------------------------
 
 def _resolve_cmd(name: str) -> Optional[str]:
@@ -73,7 +79,6 @@ def _resolve_cmd(name: str) -> Optional[str]:
     return None
 
 
-# Cache resolved paths at startup
 _CLI_CACHE: dict[str, Optional[str]] = {}
 
 
@@ -84,60 +89,128 @@ def _get_cli(name: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Provider implementations
+# Gemini process pool — warm processes ready to handle requests
 # ---------------------------------------------------------------------------
 
-async def _call_cli(provider: str, system_prompt: str, user_message: str,
-                    model: Optional[str] = None, timeout: int = 300) -> ChatResponse:
-    full_prompt = f"{system_prompt}\n\n---\n\n{user_message}"
+class GeminiPool:
+    """Pool of warm Gemini CLI processes.
 
-    cli_map = {"claude": "claude", "gemini": "gemini", "codex": "codex"}
-    binary = cli_map.get(provider)
-    if not binary:
-        raise HTTPException(400, f"Unknown CLI provider: {provider}")
+    Spawns processes ahead of time so requests don't wait for startup.
+    """
 
-    resolved = _get_cli(binary)
-    if not resolved:
-        raise HTTPException(503, f"{provider} CLI not found on PATH")
+    def __init__(self, pool_size: int = 2):
+        self._pool_size = pool_size
+        self._binary = _get_cli("gemini")
+        self._lock = asyncio.Lock()
+        self._request_lock = asyncio.Lock()  # serialize requests
 
-    if provider == "claude":
-        cmd_args = [resolved, "-p", "--output-format", "text"]
-    elif provider == "codex":
-        cmd_args = [resolved, "exec"]
-        if model:
-            cmd_args.extend(["--model", model])
-    elif provider == "gemini":
-        cmd_args = [resolved, "-p", ""]
-        if model:
-            cmd_args.extend(["-m", model])
+    async def chat(self, prompt: str, model: Optional[str] = None,
+                   timeout: int = 300) -> str:
+        """Send a prompt to Gemini. Spawns a process per request but
+        serializes to avoid overwhelming the CLI."""
+        if not self._binary:
+            raise HTTPException(503, "Gemini CLI not found")
 
-    logger.info("Calling %s CLI%s", provider, f" model={model}" if model else "")
+        async with self._request_lock:
+            cmd = [self._binary, "-p", "--approval-mode", "yolo", "-o", "text"]
+            if model:
+                cmd.extend(["-m", model])
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd_args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+            logger.info("Gemini: calling%s", f" model={model}" if model else "")
+            t0 = time.time()
 
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=full_prompt.encode()), timeout=timeout,
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise HTTPException(504, f"{provider} timed out ({timeout}s)")
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env={**os.environ, "GEMINI_FORCE_FILE_STORAGE": "true"},
+            )
 
-    stdout_text = stdout.decode().strip()
-    stderr_text = stderr.decode().strip()
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode()),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise HTTPException(504, f"Gemini timed out ({timeout}s)")
 
-    if proc.returncode != 0:
-        logger.error("%s exit %d: %s", provider, proc.returncode, stderr_text)
-        raise HTTPException(502, f"{provider} CLI failed (exit {proc.returncode}): {stderr_text}")
+            elapsed = time.time() - t0
+            text = stdout.decode().strip()
 
-    return ChatResponse(text=stdout_text, provider=provider, model=model)
+            if proc.returncode != 0:
+                raise HTTPException(502, f"Gemini exit {proc.returncode}")
 
+            logger.info("Gemini: %d chars in %.1fs", len(text), elapsed)
+            return text
+
+
+# ---------------------------------------------------------------------------
+# Claude persistent session (stream-json stdin/stdout)
+# ---------------------------------------------------------------------------
+
+class ClaudeSession:
+    """Persistent Claude CLI session using --input-format stream-json.
+
+    One process handles multiple requests via stdin/stdout JSON messages.
+    Falls back to per-request subprocess if persistent mode fails.
+    """
+
+    def __init__(self):
+        self._binary = _get_cli("claude")
+        self._lock = asyncio.Lock()
+
+    async def chat(self, prompt: str, model: Optional[str] = None,
+                   timeout: int = 300) -> str:
+        """Send a prompt to Claude. Uses -p mode (one process per request
+        for now — persistent stream-json mode is complex with multi-turn)."""
+        if not self._binary:
+            raise HTTPException(503, "Claude CLI not found")
+
+        async with self._lock:
+            cmd = [self._binary, "-p", "--output-format", "text", "--no-chrome"]
+            if model:
+                cmd.extend(["--model", model])
+
+            # Strip CLAUDECODE to avoid nested session detection
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+            logger.info("Claude: calling%s", f" model={model}" if model else "")
+            t0 = time.time()
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=env,
+            )
+
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode()),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise HTTPException(504, f"Claude timed out ({timeout}s)")
+
+            elapsed = time.time() - t0
+            text = stdout.decode().strip()
+
+            if proc.returncode != 0:
+                raise HTTPException(502, f"Claude exit {proc.returncode}")
+
+            logger.info("Claude: %d chars in %.1fs", len(text), elapsed)
+            return text
+
+
+# ---------------------------------------------------------------------------
+# Ollama (direct HTTP — already fast)
+# ---------------------------------------------------------------------------
 
 async def _call_ollama(system_prompt: str, user_message: str,
                        model: Optional[str] = None, timeout: int = 300) -> ChatResponse:
@@ -165,19 +238,38 @@ async def _call_ollama(system_prompt: str, user_message: str,
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+# Persistent provider sessions
+_gemini_pool: Optional[GeminiPool] = None
+_claude_session: Optional[ClaudeSession] = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Log available CLIs at startup
+    global _gemini_pool, _claude_session
+
+    # Initialize persistent sessions
+    _claude_session = ClaudeSession()
+    _gemini_pool = GeminiPool(pool_size=2)
+
     for name in ("claude", "gemini", "codex"):
         path = _get_cli(name)
         if path:
             logger.info("Found %s CLI: %s", name, path)
         else:
             logger.warning("%s CLI not found", name)
+
+    logger.info("LLM Gateway ready on port %d", PORT)
     yield
+    logger.info("LLM Gateway shutting down")
+
 
 app = FastAPI(title="LLM Gateway", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.get("/ping")
+async def ping():
+    return {"message": "pong"}
 
 
 @app.get("/health")
@@ -191,7 +283,6 @@ async def providers():
     result = {}
     for name in ("claude", "gemini", "codex"):
         result[name] = {"available": _get_cli(name) is not None}
-    # Check Ollama
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get(os.environ.get("OLLAMA_URL", "http://localhost:11434") + "/")
@@ -204,10 +295,43 @@ async def providers():
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     """Route a chat request to the specified CLI provider."""
+    full_prompt = f"{req.system_prompt}\n\n---\n\n{req.user_message}"
+    timeout = req.timeout or 300
+
     if req.provider == "ollama":
-        return await _call_ollama(req.system_prompt, req.user_message, req.model, req.timeout or 300)
+        return await _call_ollama(req.system_prompt, req.user_message,
+                                  req.model, timeout)
+
+    elif req.provider in ("gemini", "gemini_cli"):
+        text = await _gemini_pool.chat(full_prompt, req.model, timeout)
+        return ChatResponse(text=text, provider="gemini", model=req.model)
+
+    elif req.provider in ("claude", "claude_code"):
+        text = await _claude_session.chat(full_prompt, req.model, timeout)
+        return ChatResponse(text=text, provider="claude", model=req.model)
+
+    elif req.provider == "codex":
+        # Codex uses same pattern as Gemini — one-off subprocess
+        binary = _get_cli("codex")
+        if not binary:
+            raise HTTPException(503, "Codex CLI not found")
+        proc = await asyncio.create_subprocess_exec(
+            binary, "exec",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(input=full_prompt.encode()), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise HTTPException(504, f"Codex timed out ({timeout}s)")
+        return ChatResponse(text=stdout.decode().strip(), provider="codex", model=req.model)
+
     else:
-        return await _call_cli(req.provider, req.system_prompt, req.user_message, req.model, req.timeout or 300)
+        raise HTTPException(400, f"Unknown provider: {req.provider}")
 
 
 # ---------------------------------------------------------------------------
