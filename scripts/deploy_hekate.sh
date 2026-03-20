@@ -132,13 +132,20 @@ fi
 # =============================================================================
 log "Restarting ${SERVICE}..."
 
-if nssm restart "$SERVICE" 2>&1; then
+# bash from PowerShell doesn't inherit admin — use cmd.exe or powershell.exe
+if cmd.exe /c "nssm restart ${SERVICE}" 2>&1; then
     echo "  Service restarted"
 else
-    warn "Could not restart via nssm — trying stop/start"
-    nssm stop "$SERVICE" 2>/dev/null
-    sleep 2
-    nssm start "$SERVICE" 2>/dev/null || fail "Could not start service (need admin?)"
+    warn "cmd.exe nssm failed — trying powershell"
+    if powershell.exe -Command "nssm restart ${SERVICE}" 2>&1; then
+        echo "  Service restarted via powershell"
+    else
+        echo ""
+        echo -e "${YELLOW}  Could not restart NSSM service automatically.${NC}"
+        echo -e "${YELLOW}  Run from admin PowerShell: nssm restart ${SERVICE}${NC}"
+        echo ""
+        read -p "  Press Enter after restarting the service manually..."
+    fi
 fi
 
 # =============================================================================
