@@ -485,18 +485,20 @@ async def mimir_review(event: Event, db) -> list[Emit] | None:
     verdict = result.get("verdict", "approved")
     feedback = result.get("feedback", "")
 
-    if verdict == "approved":
-        return [Emit("review_passed", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "feedback": feedback,
-        }, source="mimir")]
-    else:
-        return [Emit("review_rejected", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "feedback": feedback,
-        }, source="mimir")]
+    # Review is advisory — never rejects. Feedback stored for reference.
+    # A human decides if feedback warrants reopening the task.
+    if feedback:
+        await db.execute_write(
+            "UPDATE tasks SET verification_notes = $1, updated_at = $2 WHERE id = $3",
+            (feedback[:500], time.time(), task_id),
+        )
+
+    return [Emit("review_passed", {
+        "task_id": task_id,
+        "project_id": project_id,
+        "verdict": verdict,
+        "feedback": feedback,
+    }, source="mimir")]
 
 
 # ---------------------------------------------------------------------------
