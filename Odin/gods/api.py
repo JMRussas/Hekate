@@ -312,6 +312,40 @@ def create_app(
         )
         return plans or []
 
+    @app.post("/api/projects/{project_id}/plans/{plan_id}/approve")
+    async def approve_plan(project_id: str, plan_id: str):
+        """Approve a plan and trigger execution."""
+        e: HekateEngine = app.state.engine
+
+        # Update plan status
+        await e.db.execute_write(
+            "UPDATE plans SET status = $1 WHERE id = $2 AND project_id = $3",
+            ("approved", plan_id, project_id),
+        )
+
+        # Get plan JSON for decomposition
+        plan_row = await e.db.fetchone(
+            "SELECT plan_json FROM plans WHERE id = $1", (plan_id,),
+        )
+        if not plan_row:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        plan = json.loads(plan_row["plan_json"]) if isinstance(plan_row["plan_json"], str) else plan_row["plan_json"]
+
+        # Decompose into tasks
+        task_count = await e.decompose_plan(project_id, plan, plan_id=plan_id)
+
+        # Emit project_created to trigger pipeline execution
+        await e.db.execute_write(
+            "INSERT INTO god_relay_events (event_type, source, payload, severity, created_at) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            ("project_created", "api",
+             json.dumps({"project_id": project_id}),
+             "info", time.time()),
+        )
+
+        return {"tasks_created": task_count, "plan_id": plan_id, "status": "approved"}
+
     @app.get("/api/projects/{project_id}/coverage")
     async def get_coverage(project_id: str):
         return {"total": 0, "covered": 0, "uncovered": []}
