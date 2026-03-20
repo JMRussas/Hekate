@@ -224,12 +224,40 @@ class HekateEngine:
         logger.info("Hekate engine stopped")
 
     async def _tick_loop(self):
-        """Background tick loop. Never crashes — logs errors and continues."""
+        """Background tick loop. Never crashes — logs errors and continues.
+
+        Every 12 ticks (~60s) injects project_tick events for all executing
+        projects as a safety net. This ensures dispatch re-runs even if the
+        event chain breaks.
+        """
         consecutive_errors = 0
+        tick_count = 0
         while self.running:
             try:
                 await self.pipeline.tick()
                 consecutive_errors = 0
+
+                # Safety net: inject project_ticks every ~60s
+                tick_count += 1
+                if tick_count % 12 == 0:
+                    try:
+                        rows = await self.db.fetchall(
+                            "SELECT id FROM projects WHERE status = $1",
+                            ("executing",),
+                        )
+                        for row in rows:
+                            pid = row["id"] if isinstance(row, dict) else row[0]
+                            await self.db.execute_write(
+                                "INSERT INTO god_relay_events "
+                                "(event_type, source, payload, severity, created_at) "
+                                "VALUES ($1, $2, $3, $4, $5)",
+                                ("project_tick", "heartbeat",
+                                 json.dumps({"project_id": pid}),
+                                 "info", time.time()),
+                            )
+                    except Exception:
+                        pass  # Non-critical
+
             except Exception as e:
                 consecutive_errors += 1
                 logger.error("Pipeline tick error (#%d): %s: %s",
