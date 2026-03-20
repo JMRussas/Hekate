@@ -101,7 +101,7 @@ async def _call_verifier(
     logger.debug("Mimir._call_verifier: sending to %s/v1/chat (prompt=%d chars, output=%d chars)",
                  gateway_url, len(prompt), len(output_text))
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
             "provider": "gemini",
             "system_prompt": "You are a code verification assistant. Always respond with valid JSON.",
@@ -154,7 +154,7 @@ async def _call_reviewer(
         f"Respond with JSON: {{\"verdict\": \"approved|changes_requested\", \"feedback\": \"...\"}}"
     )
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
             "provider": "gemini",
             "system_prompt": "You are a code review assistant. Always respond with valid JSON.",
@@ -194,7 +194,7 @@ async def _call_knowledge_extractor(
         f"Output:\n{output_text[:5000]}"
     )
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
             "provider": "gemini",
             "system_prompt": "You are a knowledge extraction assistant. Always respond with valid JSON.",
