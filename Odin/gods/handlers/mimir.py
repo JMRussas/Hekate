@@ -20,6 +20,7 @@ from typing import Any
 
 from gods.pipeline import Event, Emit
 from gods import safe_json
+from gods.providers.response_validator import validate_verdict, validate_review, extract_json
 
 logger = logging.getLogger("gods.handlers.mimir")
 
@@ -113,22 +114,9 @@ async def _call_verifier(
         logger.debug("Mimir._call_verifier: gateway returned status=%d, text_len=%d, text=%s",
                      resp.status_code, len(text), text[:300])
 
-    try:
-        import re
-        json_match = re.search(r'\{[^{}]*\}', text)
-        if json_match:
-            parsed = json.loads(json_match.group())
-            logger.debug("Mimir._call_verifier: parsed JSON from regex: %s", parsed)
-            return parsed
-        parsed = json.loads(text)
-        logger.debug("Mimir._call_verifier: parsed JSON directly: %s", parsed)
-        return parsed
-    except json.JSONDecodeError as e:
-        logger.debug("Mimir._call_verifier: JSON parse failed (%s), checking prose. Raw: %s", e, text[:200])
-        lower = text.lower()
-        if any(w in lower for w in ["passed", "satisf", "correct", "done", "complet"]):
-            return {"verdict": "passed", "confidence": 0.7, "feedback": text[:200]}
-        return {"verdict": "human_needed", "confidence": 0.0, "feedback": text[:200]}
+    result = validate_verdict(text)
+    logger.debug("Mimir._call_verifier: validated verdict: %s", result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -163,14 +151,7 @@ async def _call_reviewer(
         resp.raise_for_status()
         text = resp.json().get("text", "")
 
-    try:
-        import re
-        json_match = re.search(r'\{[^{}]*\}', text)
-        if json_match:
-            return json.loads(json_match.group())
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"verdict": "approved", "feedback": text[:200]}
+    return validate_review(text)
 
 
 # ---------------------------------------------------------------------------
@@ -203,14 +184,8 @@ async def _call_knowledge_extractor(
         resp.raise_for_status()
         text = resp.json().get("text", "")
 
-    try:
-        import re
-        json_match = re.search(r'\[.*\]', text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return []
+    result = extract_json(text)
+    return result if isinstance(result, list) else []
 
 
 async def _extract_knowledge(

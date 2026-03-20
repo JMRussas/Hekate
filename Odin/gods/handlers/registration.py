@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from gods.pipeline import Pipeline
 from gods.handlers.hermes_async import HermesRunner
+from gods.providers.base import ProviderRegistry
 
 from gods.handlers.athena_leveled import athena_plan_leveled, athena_reassess_standalone
 from gods.handlers.odin import (
@@ -32,9 +33,14 @@ def register_all_handlers(
 
     Returns the HermesRunner instance (needed for shutdown/cancel).
     """
-    # Create async hermes runner
+    # Create provider registry with default providers (claude_code, gemini_cli)
+    registry = ProviderRegistry()
+    registry.register_defaults()
+
+    # Create async hermes runner with provider registry
     hermes = HermesRunner(
         db=pipeline.db,
+        registry=registry,
         max_concurrent=max_concurrent,
         heartbeat_interval=heartbeat_interval,
     )

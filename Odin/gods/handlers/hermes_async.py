@@ -15,14 +15,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
-import shutil
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from gods.pipeline import Event, Emit
 from gods import safe_json
+
+if TYPE_CHECKING:
+    from gods.providers.base import ProviderRegistry
 
 logger = logging.getLogger("gods.handlers.hermes_async")
 
@@ -39,11 +40,13 @@ class HermesRunner:
         self,
         db,
         *,
+        registry: ProviderRegistry | None = None,
         max_concurrent: int = 4,
         default_timeout: int = 600,
         heartbeat_interval: float = 30.0,
     ):
         self.db = db
+        self.registry = registry
         self.max_concurrent = max_concurrent
         self.default_timeout = default_timeout
         self.heartbeat_interval = heartbeat_interval
@@ -361,96 +364,33 @@ class HermesRunner:
         task_id: str = "",
         project_id: str = "",
     ) -> dict:
-        """Execute a CLI provider. Override/mock in tests.
+        """Execute a CLI provider via the provider registry.
+
+        Falls back to legacy inline execution if no registry or provider
+        is not registered (e.g. ollama).
 
         Returns: {output, cost_usd, prompt_tokens, completion_tokens, model_used, narration}
         """
-        from gods.handlers.hermes import _build_cli_command, _parse_stream_event
+        # Try provider registry first
+        cli_provider = self.registry.get(provider) if self.registry else None
 
-        cmd, stdin_text = _build_cli_command(provider, prompt, cwd)
-        narration: list[dict] = []
+        if cli_provider is not None:
+            result = await cli_provider.execute(
+                prompt=prompt,
+                cwd=cwd,
+                timeout=self.default_timeout,
+            )
+            return {
+                "output": result.output,
+                "cost_usd": result.cost_usd,
+                "prompt_tokens": result.prompt_tokens,
+                "completion_tokens": result.completion_tokens,
+                "model_used": result.model or provider,
+                "narration": result.narration,
+            }
 
-        # Clean env for subprocess execution
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        # Ensure Gemini CLI can find OAuth tokens (file-based, not Windows Credential Manager)
-        env["GEMINI_FORCE_FILE_STORAGE"] = "true"
-
-        logger.debug("Hermes: launching CLI cmd=%s cwd=%s provider=%s prompt_len=%d",
-                     cmd, cwd, provider, len(prompt))
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,  # Don't capture stderr — prevents buffer deadlock
-            cwd=cwd,
-            env=env,
-            limit=10 * 1024 * 1024,
-        )
-
-        proc.stdin.write(stdin_text.encode("utf-8"))
-        await proc.stdin.drain()
-        proc.stdin.close()
-
-        output_lines: list[str] = []
-        try:
-            async with asyncio.timeout(self.default_timeout):
-                while True:
-                    line = await proc.stdout.readline()
-                    if not line:
-                        break
-                    decoded = line.decode("utf-8", errors="replace").strip()
-                    if not decoded:
-                        continue
-
-                    if provider == "claude_code":
-                        event = _parse_stream_event(decoded)
-                        if event:
-                            narration.append(event)
-                            # Write narration to relay in real-time
-                            if event.get("type") in ("narration", "tool_call"):
-                                await self._write_relay_event("narration", {
-                                    "task_id": task_id,
-                                    "project_id": project_id,
-                                    **event,
-                                })
-                        try:
-                            import json as _json
-                            data = _json.loads(decoded)
-                            if data.get("type") == "result":
-                                result_text = data.get("result", "")
-                                if result_text:
-                                    output_lines.append(result_text)
-                            elif data.get("type") == "assistant":
-                                # Also capture assistant text blocks
-                                msg = data.get("message", {})
-                                for content in msg.get("content", []):
-                                    if content.get("type") == "text":
-                                        output_lines.append(content.get("text", ""))
-                        except (ValueError, KeyError):
-                            output_lines.append(decoded)
-                    else:
-                        output_lines.append(decoded)
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise
-
-        await proc.wait()
-
-        logger.debug("Hermes: CLI exited code=%d output_lines=%d narration_events=%d",
-                     proc.returncode or 0, len(output_lines), len(narration))
-
-        if proc.returncode != 0 and not output_lines:
-            raise RuntimeError(f"CLI exited with code {proc.returncode}")
-
-        return {
-            "output": "\n".join(output_lines),
-            "cost_usd": 0.0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "model_used": provider,
-            "narration": narration,
-        }
+        # Fallback: unknown provider — raise so caller writes a failed event
+        raise RuntimeError(f"No provider registered for '{provider}'")
 
     # ------------------------------------------------------------------
     # Relay write — direct insert into god_relay_events
