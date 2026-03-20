@@ -151,30 +151,20 @@ else:
 # =========================================================================
 # Step 6: Restart NSSM service
 # =========================================================================
-log("Restarting service...")
+log("Restarting service via Hades...")
 
-r = subprocess.run(["nssm", "restart", SERVICE], capture_output=True, text=True)
-if r.returncode == 0 and "completed successfully" in (r.stdout + r.stderr).lower():
-    print("  Service restarted")
+status, resp = http_post("http://localhost:5201/services/HekateEngine/restart")
+if status == 200 and isinstance(resp, dict) and resp.get("result"):
+    print("  Hades restarted HekateEngine")
 else:
-    # Kill the old process directly, NSSM will respawn with new code
-    print("  nssm restart failed — killing process directly")
-    kill_r = subprocess.run(
-        ["taskkill", "/F", "/FI", f"SERVICES eq {SERVICE}"],
-        capture_output=True, text=True,
-    )
-    if kill_r.returncode != 0:
-        # Try killing by port
-        import re
-        netstat = subprocess.run(["netstat", "-ano"], capture_output=True, text=True)
-        for line in netstat.stdout.split("\n"):
-            if f":{PORT} " in line and "LISTENING" in line:
-                pid = line.strip().split()[-1]
-                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
-                print(f"  Killed PID {pid} on port {PORT}")
-                break
-    print("  Waiting for NSSM to respawn...")
-    time.sleep(5)
+    print(f"  Hades restart failed (status={status}): {resp}")
+    print(f"  Trying nssm directly...")
+    r = subprocess.run(["nssm", "restart", SERVICE], capture_output=True, text=True)
+    if r.returncode == 0:
+        print("  nssm restarted service")
+    else:
+        print(f"  From admin PowerShell run: nssm restart {SERVICE}")
+        input("  Press Enter after restarting...")
 
 # =========================================================================
 # Step 7: Health check
