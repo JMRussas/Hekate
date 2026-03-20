@@ -18,9 +18,9 @@
 
 set -e
 
-PYTHON="/c/Users/jruss/AppData/Local/Programs/Python/Python311/python.exe"
-SOURCE="/c/Users/jruss/Documents/GitHub/Hekate"
-DEPLOY="/c/Hekate"
+PYTHON="C:/Users/jruss/AppData/Local/Programs/Python/Python311/python.exe"
+SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
+DEPLOY="C:/Hekate"
 SERVICE="HekateEngine"
 
 # NSSM must run from DEPLOY dir (LocalSystem can't access user folders)
@@ -212,7 +212,7 @@ fi
 # Clean up smoke test
 "$PYTHON" -c "
 import sqlite3, time
-conn = sqlite3.connect('/c/Hekate/orchestration/data/orchestration.db')
+conn = sqlite3.connect('C:/Hekate/orchestration/data/orchestration.db')
 conn.execute('DELETE FROM tasks WHERE project_id = ?', ('${smoke_id}',))
 conn.execute('DELETE FROM projects WHERE id = ?', ('${smoke_id}',))
 conn.execute('DELETE FROM god_relay_events WHERE payload LIKE ?', ('%${smoke_id}%',))
