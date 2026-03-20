@@ -1,0 +1,16 @@
+version: "3.8"
+services:
+  superset:
+    image: apache/superset:latest
+    container_name: hekate-superset
+    ports:
+      - "8088:8088"
+    volumes:
+      - /c/Hekate/orchestration/data:/data:ro
+      - superset_home:/app/superset_home
+    environment:
+      - SUPERSET_SECRET_KEY=hekate-superset-dev-key
+    restart: unless-stopped
+
+volumes:
+  superset_home:
