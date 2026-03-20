@@ -57,8 +57,11 @@ def http_get(url, timeout=5):
 
 def http_post(url, data=None, timeout=10):
     try:
-        body = json.dumps(data).encode() if data else None
-        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+        if data is not None:
+            body = json.dumps(data).encode()
+            req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+        else:
+            req = urllib.request.Request(url, data=b"", method="POST")
         r = urllib.request.urlopen(req, timeout=timeout)
         return r.status, json.loads(r.read().decode())
     except Exception as e:
@@ -153,7 +156,7 @@ else:
 # =========================================================================
 log("Restarting service via Hades...")
 
-status, resp = http_post("http://localhost:5201/services/HekateEngine/restart")
+status, resp = http_post("http://localhost:5201/services/HekateEngine/restart", data=None)
 if status == 200 and isinstance(resp, dict) and resp.get("result"):
     print("  Hades restarted HekateEngine")
 else:
@@ -163,8 +166,7 @@ else:
     if r.returncode == 0:
         print("  nssm restarted service")
     else:
-        print(f"  From admin PowerShell run: nssm restart {SERVICE}")
-        input("  Press Enter after restarting...")
+        fail(f"Could not restart service. Run from admin: nssm restart {SERVICE}")
 
 # =========================================================================
 # Step 7: Health check
