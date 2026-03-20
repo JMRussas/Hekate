@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from gods.providers.base import CLIProvider, StandardResult, ProviderRegistry
 from gods.providers.claude import ClaudeCodeProvider, ClaudeCodeConfig
-from gods.providers.gemini import GeminiCLIProvider
+from gods.providers.gemini import GeminiCLIProvider, GeminiCLIConfig
 
 
 # ---------------------------------------------------------------------------
@@ -364,15 +364,123 @@ class TestClaudeCodeEnvAndParsing:
 # GeminiCLIProvider
 # ---------------------------------------------------------------------------
 
-class TestGeminiCLIProvider:
-    def test_build_command(self):
+class TestGeminiCLIConfig:
+    def test_defaults(self):
+        cfg = GeminiCLIConfig()
+        assert cfg.model is None
+        assert cfg.approval_mode == "yolo"
+        assert cfg.sandbox is False
+        assert cfg.output_format == "text"
+        assert cfg.debug is False
+
+    def test_custom(self):
+        cfg = GeminiCLIConfig(model="pro", sandbox=True, debug=True)
+        assert cfg.model == "pro"
+        assert cfg.sandbox is True
+
+
+class TestGeminiCLIBuildCommand:
+    def test_minimal_command(self):
         p = GeminiCLIProvider()
         cmd, stdin = p.build_command("Research this", "/tmp")
         assert "-p" in cmd
         assert "--approval-mode" in cmd
         assert "yolo" in cmd
+        assert "-o" in cmd
+        assert "text" in cmd
         assert stdin == "Research this"
 
+    def test_model_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(model="pro"))
+        cmd, _ = p.build_command("test", "/tmp")
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "pro"
+
+    def test_model_flash(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(model="flash"))
+        cmd, _ = p.build_command("test", "/tmp")
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "flash"
+
+    def test_sandbox_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(sandbox=True))
+        cmd, _ = p.build_command("test", "/tmp")
+        assert "--sandbox" in cmd
+
+    def test_approval_mode_default(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(approval_mode="default"))
+        cmd, _ = p.build_command("test", "/tmp")
+        idx = cmd.index("--approval-mode")
+        assert cmd[idx + 1] == "default"
+
+    def test_approval_mode_auto_edit(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(approval_mode="auto_edit"))
+        cmd, _ = p.build_command("test", "/tmp")
+        idx = cmd.index("--approval-mode")
+        assert cmd[idx + 1] == "auto_edit"
+
+    def test_output_format_json(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(output_format="json"))
+        cmd, _ = p.build_command("test", "/tmp")
+        idx = cmd.index("-o")
+        assert cmd[idx + 1] == "json"
+
+    def test_output_format_stream_json(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(output_format="stream-json"))
+        cmd, _ = p.build_command("test", "/tmp")
+        idx = cmd.index("-o")
+        assert cmd[idx + 1] == "stream-json"
+
+    def test_extensions_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(extensions=["web_search", "code_exec"]))
+        cmd, _ = p.build_command("test", "/tmp")
+        assert "--extensions" in cmd
+        assert "web_search" in cmd
+        assert "code_exec" in cmd
+
+    def test_allowed_mcp_servers_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(allowed_mcp_server_names=["server1", "server2"]))
+        cmd, _ = p.build_command("test", "/tmp")
+        idx = cmd.index("--allowed-mcp-server-names")
+        assert cmd[idx + 1] == "server1,server2"
+
+    def test_resume_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(resume="latest"))
+        cmd, _ = p.build_command("test", "/tmp")
+        idx = cmd.index("--resume")
+        assert cmd[idx + 1] == "latest"
+
+    def test_include_directories_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(include_directories=["../apps", "../lib"]))
+        cmd, _ = p.build_command("test", "/tmp")
+        indices = [i for i, x in enumerate(cmd) if x == "--include-directories"]
+        assert len(indices) == 2
+
+    def test_debug_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(debug=True))
+        cmd, _ = p.build_command("test", "/tmp")
+        assert "--debug" in cmd
+
+    def test_screen_reader_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(screen_reader=True))
+        cmd, _ = p.build_command("test", "/tmp")
+        assert "--screen-reader" in cmd
+
+    def test_experimental_acp_flag(self):
+        p = GeminiCLIProvider(GeminiCLIConfig(experimental_acp=True))
+        cmd, _ = p.build_command("test", "/tmp")
+        assert "--experimental-acp" in cmd
+
+    def test_none_flags_omitted(self):
+        p = GeminiCLIProvider(GeminiCLIConfig())
+        cmd, _ = p.build_command("test", "/tmp")
+        assert "--model" not in cmd
+        assert "--resume" not in cmd
+        assert "--sandbox" not in cmd
+        assert "--debug" not in cmd
+
+
+class TestGeminiCLIEnvAndParsing:
     def test_build_env_sets_force_file_storage(self):
         p = GeminiCLIProvider()
         env = p.build_env()
@@ -390,8 +498,23 @@ class TestGeminiCLIProvider:
         result = p.parse_output(lines)
         assert "FastAPI" in result.output
 
+    def test_parse_error_auth(self):
+        p = GeminiCLIProvider()
+        assert p.parse_error(1, "authentication failed") == "auth_error"
+
+    def test_parse_error_quota(self):
+        p = GeminiCLIProvider()
+        assert p.parse_error(1, "quota exceeded") == "quota_exceeded"
+
     def test_name(self):
         assert GeminiCLIProvider().name == "gemini_cli"
+
+    def test_with_config(self):
+        base = GeminiCLIProvider(GeminiCLIConfig(model="flash"))
+        task = base.with_config(model="pro", sandbox=True)
+        assert task._config.model == "pro"
+        assert task._config.sandbox is True
+        assert base._config.model == "flash"  # base unchanged
 
 
 # ---------------------------------------------------------------------------
