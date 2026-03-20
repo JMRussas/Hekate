@@ -254,8 +254,8 @@ def create_app(
     @app.get("/api/usage/budget")
     async def get_budget():
         return {
-            "daily_limit": 5.0, "daily_spent": 0.0,
-            "monthly_limit": 50.0, "monthly_spent": 0.0,
+            "daily_limit_usd": 5.0, "daily_spent_usd": 0.0, "daily_pct": 0.0,
+            "monthly_limit_usd": 50.0, "monthly_spent_usd": 0.0, "monthly_pct": 0.0,
         }
 
     @app.get("/api/usage/summary")
