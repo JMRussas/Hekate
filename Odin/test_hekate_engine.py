@@ -338,3 +338,92 @@ class TestProjectStatus:
 
         projects = await engine.list_projects()
         assert len(projects) == 2
+
+
+# ---------------------------------------------------------------------------
+# 7. Startup recovery — reset stuck tasks
+# ---------------------------------------------------------------------------
+
+class TestStartupRecovery:
+    @pytest.mark.asyncio
+    async def test_resets_running_tasks_on_startup(self):
+        """Tasks stuck in 'running' from a crash should be reset to 'pending'."""
+        from gods.engine import create_engine
+
+        engine = create_engine(db_path=":memory:")
+        await engine.setup_db()
+
+        # Create project and task, manually set to running (simulating crash)
+        pid = await engine.create_project(name="Recovery Test", requirements="X")
+        await engine.db.execute_write(
+            "INSERT INTO tasks (id, project_id, title, status, retry_count, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            ("stuck-1", pid, "Stuck Task", "running", 0, time.time(), time.time()),
+        )
+
+        # Run recovery
+        await engine.recover_stuck_tasks()
+
+        row = await engine.db.fetchone("SELECT status, retry_count FROM tasks WHERE id = $1", ("stuck-1",))
+        assert row["status"] == "pending"
+        assert row["retry_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_resets_planning_projects_on_startup(self):
+        """Projects stuck in 'planning' should be reset to 'draft'."""
+        from gods.engine import create_engine
+
+        engine = create_engine(db_path=":memory:")
+        await engine.setup_db()
+
+        pid = await engine.create_project(name="Planning Stuck", requirements="X")
+        await engine.db.execute_write(
+            "UPDATE projects SET status = $1 WHERE id = $2", ("planning", pid),
+        )
+
+        await engine.recover_stuck_tasks()
+
+        row = await engine.db.fetchone("SELECT status FROM projects WHERE id = $1", (pid,))
+        assert row["status"] == "draft"
+
+    @pytest.mark.asyncio
+    async def test_does_not_reset_completed_tasks(self):
+        """Completed tasks should not be touched."""
+        from gods.engine import create_engine
+
+        engine = create_engine(db_path=":memory:")
+        await engine.setup_db()
+
+        pid = await engine.create_project(name="Done Test", requirements="X")
+        await engine.db.execute_write(
+            "INSERT INTO tasks (id, project_id, title, status, retry_count, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            ("done-1", pid, "Done Task", "completed", 0, time.time(), time.time()),
+        )
+
+        await engine.recover_stuck_tasks()
+
+        row = await engine.db.fetchone("SELECT status FROM tasks WHERE id = $1", ("done-1",))
+        assert row["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_recovery_runs_on_start(self):
+        """start() should call recover_stuck_tasks."""
+        from gods.engine import create_engine
+
+        engine = create_engine(db_path=":memory:")
+        await engine.setup_db()
+
+        pid = await engine.create_project(name="Auto Recovery", requirements="X")
+        await engine.db.execute_write(
+            "INSERT INTO tasks (id, project_id, title, status, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            ("auto-1", pid, "Auto Stuck", "running", time.time(), time.time()),
+        )
+
+        await engine.start()
+        await asyncio.sleep(0.1)
+        await engine.stop()
+
+        row = await engine.db.fetchone("SELECT status FROM tasks WHERE id = $1", ("auto-1",))
+        assert row["status"] == "pending"

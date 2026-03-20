@@ -204,8 +204,46 @@ class HekateEngine:
                 except Exception:
                     pass  # Table already exists
 
+    async def recover_stuck_tasks(self):
+        """Reset tasks/projects stuck from a previous crash.
+
+        - Tasks in 'running' → reset to 'pending' (increment retry_count)
+        - Projects in 'planning' → reset to 'draft'
+        """
+        # Reset stuck running tasks
+        stuck_tasks = await self.db.fetchall(
+            "SELECT id, title FROM tasks WHERE status = $1", ("running",),
+        )
+        for t in stuck_tasks:
+            tid = t["id"] if isinstance(t, dict) else t[0]
+            title = t["title"] if isinstance(t, dict) else t[1]
+            await self.db.execute_write(
+                "UPDATE tasks SET status = $1, retry_count = retry_count + 1, "
+                "updated_at = $2 WHERE id = $3",
+                ("pending", time.time(), tid),
+            )
+            logger.info("Recovery: reset stuck task %s (%s) to pending", tid[:8], title[:30])
+
+        # Reset stuck planning projects
+        stuck_projects = await self.db.fetchall(
+            "SELECT id, name FROM projects WHERE status = $1", ("planning",),
+        )
+        for p in stuck_projects:
+            pid = p["id"] if isinstance(p, dict) else p[0]
+            name = p["name"] if isinstance(p, dict) else p[1]
+            await self.db.execute_write(
+                "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
+                ("draft", time.time(), pid),
+            )
+            logger.info("Recovery: reset stuck project %s (%s) to draft", pid[:8], name[:30])
+
+        if stuck_tasks or stuck_projects:
+            logger.info("Recovery: reset %d tasks + %d projects",
+                        len(stuck_tasks), len(stuck_projects))
+
     async def start(self):
         """Start the pipeline tick loop."""
+        await self.recover_stuck_tasks()
         self.running = True
         self._tick_task = asyncio.create_task(self._tick_loop(), name="hekate-pipeline")
         logger.info("Hekate engine started")

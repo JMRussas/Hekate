@@ -348,16 +348,33 @@ def _parse_tasks(plan_data: dict) -> list[TaskSpec]:
         for phase in plan.get("phases", []):
             raw_tasks.extend(phase.get("tasks", []))
 
+    # First pass: assign IDs
     specs = []
+    id_map: dict[int, str] = {}  # index → task ID
     for i, t in enumerate(raw_tasks):
+        task_id = t.get("id", f"task-{i}")
+        id_map[i] = task_id
+
+    # Second pass: resolve depends_on integers to task IDs
+    for i, t in enumerate(raw_tasks):
+        raw_deps = t.get("depends_on") or []
+        resolved_deps = []
+        for dep in raw_deps:
+            if isinstance(dep, int):
+                # Integer index → resolve to task ID
+                if dep in id_map:
+                    resolved_deps.append(id_map[dep])
+            elif isinstance(dep, str):
+                resolved_deps.append(dep)
+
         specs.append(TaskSpec(
-            id=t.get("id", f"task-{i}"),
+            id=id_map[i],
             title=t.get("title", ""),
             task_type=t.get("task_type", "code"),
-            wave=t.get("wave", i // 3),  # infer wave from position if not set
+            wave=t.get("wave", i // 3),
             description=t.get("description"),
             affected_files=t.get("affected_files"),
-            depends_on=t.get("depends_on"),
+            depends_on=resolved_deps if resolved_deps else None,
             complexity=t.get("complexity"),
             implementation_notes=t.get("implementation_notes"),
             test_strategy=t.get("test_strategy"),
