@@ -1,37 +1,11 @@
-// Orchestration Engine - API Client
+// Hekate - API Client
 //
-// Base fetch wrapper for the REST API.
-// Injects JWT Authorization header and handles token refresh on 401.
-//
-// Depends on: api/auth.ts
-// Used by:    api/projects.ts, api/tasks.ts, api/usage.ts, api/services.ts
-
-import { getAccessToken, apiRefresh } from './auth'
+// Simple fetch wrapper. No auth.
 
 const BASE = '/api'
 
 export async function authFetch(path: string, init?: RequestInit): Promise<Response> {
-  const token = getAccessToken()
-  const headers = new Headers(init?.headers)
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
-
-  let resp = await fetch(`${BASE}${path}`, { ...init, headers })
-
-  // If 401, try refreshing the token once
-  if (resp.status === 401 && token) {
-    const refreshed = await apiRefresh()
-    if (refreshed) {
-      const newToken = getAccessToken()
-      if (newToken) {
-        headers.set('Authorization', `Bearer ${newToken}`)
-        resp = await fetch(`${BASE}${path}`, { ...init, headers })
-      }
-    }
-  }
-
-  return resp
+  return fetch(`${BASE}${path}`, { ...init })
 }
 
 export async function apiFetch<T>(path: string): Promise<T> {
