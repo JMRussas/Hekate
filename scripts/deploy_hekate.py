@@ -39,7 +39,7 @@ def fail(msg):
 
 
 def run(cmd, cwd=None, check=True):
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=120)
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=120, shell=True)
     if check and r.returncode != 0:
         print(f"  stdout: {r.stdout[-200:]}" if r.stdout else "")
         print(f"  stderr: {r.stderr[-200:]}" if r.stderr else "")
