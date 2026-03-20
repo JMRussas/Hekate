@@ -1,0 +1,729 @@
+{
+  "metadata": {
+    "generated_at": "2026-03-20T17:59:55.886048+00:00",
+    "source_db": "orchestration/data/orchestration.db",
+    "total_tasks": 188,
+    "total_events": 1127,
+    "total_sentinel_observations": 1214,
+    "total_projects": 51,
+    "total_god_relay_events": 771,
+    "total_odin_decisions": 0
+  },
+  "failure_categories": {
+    "total_failures": 5,
+    "categories": {
+      "unknown": {
+        "count": 3,
+        "instances": [
+          {
+            "task_id": "7033d2737583",
+            "task_title": "Define Sentinel Data Models",
+            "model_tier": "codex_cli",
+            "model_used": "gpt-4o",
+            "error_message": "",
+            "retry_count": 2
+          },
+          {
+            "task_id": "b506ada4e765",
+            "task_title": "Update Context Store C# Schema",
+            "model_tier": "codex_cli",
+            "model_used": "gpt-4o",
+            "error_message": "",
+            "retry_count": 2
+          },
+          {
+            "task_id": "ecb51ba0168c",
+            "task_title": "Update project_knowledge database schema and models",
+            "model_tier": "gemini_cli",
+            "model_used": "gemini-2.5-pro",
+            "error_message": "",
+            "retry_count": 0
+          }
+        ],
+        "models_affected": [
+          "codex_cli",
+          "gemini-2.5-pro",
+          "gemini_cli",
+          "gpt-4o"
+        ],
+        "task_types_affected": [
+          "code"
+        ]
+      },
+      "other_error": {
+        "count": 2,
+        "instances": [
+          {
+            "task_id": "5907514b0b4d",
+            "task_title": "Verify Sentinel Health CLI against Mock/Live API",
+            "model_tier": "ollama",
+            "model_used": null,
+            "error_message": "Max retries exceeded: ",
+            "retry_count": 3
+          },
+          {
+            "task_id": "f06ce43ec82c",
+            "task_title": "Initialize Project Structure and Git",
+            "model_tier": "claude_code",
+            "model_used": null,
+            "error_message": "'sqlite3.Row' object has no attribute 'get'",
+            "retry_count": 0
+          }
+        ],
+        "models_affected": [
+          "claude_code",
+          "ollama"
+        ],
+        "task_types_affected": [
+          "analysis",
+          "code"
+        ]
+      }
+    },
+    "summary": {
+      "dominant_failure_mode": "unknown",
+      "unique_categories": 2,
+      "models_with_failures": [
+        "claude_code",
+        "codex_cli",
+        "gemini-2.5-pro",
+        "gemini_cli",
+        "gpt-4o",
+        "ollama"
+      ]
+    }
+  },
+  "success_patterns": {
+    "total_completed": 116,
+    "by_model": {
+      "claude-code-cli": {
+        "count": 69,
+        "task_types": {
+          "code": 61,
+          "integration": 6,
+          "analysis": 2
+        },
+        "verification_retries_needed": 3,
+        "avg_output_len": 3091,
+        "median_output_len": 2876
+      },
+      "gemini-2.5-pro": {
+        "count": 32,
+        "task_types": {
+          "research": 15,
+          "code": 14,
+          "integration": 1,
+          "analysis": 1,
+          "documentation": 1
+        },
+        "verification_retries_needed": 1,
+        "avg_output_len": 1384,
+        "median_output_len": 1024
+      },
+      "gpt-4o": {
+        "count": 4,
+        "task_types": {
+          "code": 3,
+          "integration": 1
+        },
+        "verification_retries_needed": 3,
+        "avg_output_len": 0,
+        "median_output_len": 0
+      },
+      "claude-opus-4-6": {
+        "count": 8,
+        "task_types": {
+          "code": 5,
+          "integration": 2,
+          "research": 1
+        },
+        "verification_retries_needed": 0,
+        "avg_output_len": 724,
+        "median_output_len": 662
+      },
+      "claude_code": {
+        "count": 3,
+        "task_types": {
+          "code": 3
+        },
+        "verification_retries_needed": 1,
+        "avg_output_len": 537,
+        "median_output_len": 339
+      }
+    },
+    "by_task_type": {
+      "code": {
+        "count": 86,
+        "models_used": {
+          "claude-code-cli": 61,
+          "gpt-4o": 3,
+          "gemini-2.5-pro": 14,
+          "claude-opus-4-6": 5,
+          "claude_code": 3
+        },
+        "avg_output_len": 2332
+      },
+      "research": {
+        "count": 16,
+        "models_used": {
+          "gemini-2.5-pro": 15,
+          "claude-opus-4-6": 1
+        },
+        "avg_output_len": 1762
+      },
+      "integration": {
+        "count": 10,
+        "models_used": {
+          "claude-code-cli": 6,
+          "gpt-4o": 1,
+          "gemini-2.5-pro": 1,
+          "claude-opus-4-6": 2
+        },
+        "avg_output_len": 2909
+      },
+      "analysis": {
+        "count": 3,
+        "models_used": {
+          "claude-code-cli": 2,
+          "gemini-2.5-pro": 1
+        },
+        "avg_output_len": 2296
+      },
+      "documentation": {
+        "count": 1,
+        "models_used": {
+          "gemini-2.5-pro": 1
+        },
+        "avg_output_len": 301
+      }
+    },
+    "verification_pass_rate_pct": 88.8,
+    "tasks_needing_retries": 8
+  },
+  "model_reliability_matrix": {
+    "gpt-4o": {
+      "total_attempted": 6,
+      "completed": 4,
+      "pending": 0,
+      "failed_or_needs_review": 2,
+      "verification_pass_count": 0,
+      "verification_gaps_count": 5,
+      "failure_modes": {
+        "unknown": 2
+      },
+      "tiers_used": [
+        "codex_cli"
+      ],
+      "success_rate_pct": 66.7,
+      "avg_output_length": 0
+    },
+    "claude-code-cli": {
+      "total_attempted": 69,
+      "completed": 69,
+      "pending": 0,
+      "failed_or_needs_review": 0,
+      "verification_pass_count": 69,
+      "verification_gaps_count": 0,
+      "failure_modes": {},
+      "tiers_used": [
+        "claude_code"
+      ],
+      "success_rate_pct": 100.0,
+      "avg_output_length": 3091
+    },
+    "gemini-2.5-pro": {
+      "total_attempted": 34,
+      "completed": 32,
+      "pending": 1,
+      "failed_or_needs_review": 1,
+      "verification_pass_count": 31,
+      "verification_gaps_count": 1,
+      "failure_modes": {
+        "unknown": 1
+      },
+      "tiers_used": [
+        "gemini_cli"
+      ],
+      "success_rate_pct": 97.0,
+      "avg_output_length": 1510
+    },
+    "ollama": {
+      "total_attempted": 2,
+      "completed": 0,
+      "pending": 1,
+      "failed_or_needs_review": 1,
+      "verification_pass_count": 0,
+      "verification_gaps_count": 0,
+      "failure_modes": {
+        "other_error": 1
+      },
+      "tiers_used": [
+        "ollama"
+      ],
+      "success_rate_pct": 0.0,
+      "avg_output_length": 0
+    },
+    "gemini_cli": {
+      "total_attempted": 21,
+      "completed": 0,
+      "pending": 21,
+      "failed_or_needs_review": 0,
+      "verification_pass_count": 0,
+      "verification_gaps_count": 0,
+      "failure_modes": {},
+      "tiers_used": [
+        "gemini_cli"
+      ],
+      "success_rate_pct": 0,
+      "avg_output_length": 0
+    },
+    "claude_code": {
+      "total_attempted": 45,
+      "completed": 3,
+      "pending": 27,
+      "failed_or_needs_review": 15,
+      "verification_pass_count": 5,
+      "verification_gaps_count": 0,
+      "failure_modes": {
+        "other_error": 1
+      },
+      "tiers_used": [
+        "claude_code"
+      ],
+      "success_rate_pct": 16.7,
+      "avg_output_length": 101
+    },
+    "claude-opus-4-6": {
+      "total_attempted": 8,
+      "completed": 8,
+      "pending": 0,
+      "failed_or_needs_review": 0,
+      "verification_pass_count": 0,
+      "verification_gaps_count": 0,
+      "failure_modes": {},
+      "tiers_used": [
+        "claude_code",
+        "codex_cli",
+        "gemini_cli"
+      ],
+      "success_rate_pct": 100.0,
+      "avg_output_length": 724
+    },
+    "haiku": {
+      "total_attempted": 3,
+      "completed": 0,
+      "pending": 2,
+      "failed_or_needs_review": 1,
+      "verification_pass_count": 0,
+      "verification_gaps_count": 0,
+      "failure_modes": {},
+      "tiers_used": [
+        "haiku"
+      ],
+      "success_rate_pct": 0.0,
+      "avg_output_length": 0
+    }
+  },
+  "verification_retry_analysis": {
+    "total_verification_retry_events": 14,
+    "unique_tasks_retried": 11,
+    "retry_success_rate_pct": 36.4,
+    "retries_that_succeeded": 4,
+    "retries_that_failed": 7,
+    "models_needing_retries": {
+      "gpt-4o": 5,
+      "claude-code-cli": 1,
+      "gemini-2.5-pro": 4,
+      "ollama": 1
+    },
+    "gap_types": {
+      "other": 8,
+      "empty_output": 2,
+      "unknown": 1
+    },
+    "instances": [
+      {
+        "task_id": "7033d2737583",
+        "task_title": "Define Sentinel Data Models",
+        "model_tier": "codex_cli",
+        "model_used": "gpt-4o",
+        "gap_description": "Define Sentinel Data Models: gaps found, retrying with feedback",
+        "retry_succeeded": false,
+        "final_status": "needs_review",
+        "final_verification": "gaps_found",
+        "total_retries": 2
+      },
+      {
+        "task_id": "b506ada4e765",
+        "task_title": "Update Context Store C# Schema",
+        "model_tier": "codex_cli",
+        "model_used": "gpt-4o",
+        "gap_description": "Update Context Store C# Schema: gaps found, retrying with feedback",
+        "retry_succeeded": false,
+        "final_status": "needs_review",
+        "final_verification": "gaps_found",
+        "total_retries": 2
+      },
+      {
+        "task_id": "56e9769a4c96",
+        "task_title": "Rule-based Detection Engine",
+        "model_tier": "claude_code",
+        "model_used": "claude-code-cli",
+        "gap_description": "Rule-based Detection Engine: gaps found, retrying with feedback",
+        "retry_succeeded": true,
+        "final_status": "completed",
+        "final_verification": "passed",
+        "total_retries": 1
+      },
+      {
+        "task_id": "b9dfe1b005d9",
+        "task_title": "Update Configuration for Sentinel Reasoner",
+        "model_tier": "codex_cli",
+        "model_used": "gpt-4o",
+        "gap_description": "Update Configuration for Sentinel Reasoner: gaps found, retrying with feedback",
+        "retry_succeeded": false,
+        "final_status": "completed",
+        "final_verification": "gaps_found",
+        "total_retries": 1
+      },
+      {
+        "task_id": "9ff7a45c0c42",
+        "task_title": "Define Sentinel API Schemas",
+        "model_tier": "codex_cli",
+        "model_used": "gpt-4o",
+        "gap_description": "Define Sentinel API Schemas: gaps found, retrying with feedback",
+        "retry_succeeded": false,
+        "final_status": "completed",
+        "final_verification": "gaps_found",
+        "total_retries": 1
+      },
+      {
+        "task_id": "6a91204fab37",
+        "task_title": "Wire router into main app",
+        "model_tier": "codex_cli",
+        "model_used": "gpt-4o",
+        "gap_description": "Wire router into main app: gaps found, retrying with feedback",
+        "retry_succeeded": false,
+        "final_status": "completed",
+        "final_verification": "gaps_found",
+        "total_retries": 1
+      },
+      {
+        "task_id": "484be5ab041d",
+        "task_title": "Scaffold CLI arguments and authentication",
+        "model_tier": "gemini_cli",
+        "model_used": "gemini-2.5-pro",
+        "gap_description": "Scaffold CLI arguments and authentication: empty output with gaps, retrying",
+        "retry_succeeded": true,
+        "final_status": "completed",
+        "final_verification": "passed",
+        "total_retries": 0
+      },
+      {
+        "task_id": "475d6184be5a",
+        "task_title": "Implement HTTP client logic",
+        "model_tier": "gemini_cli",
+        "model_used": "gemini-2.5-pro",
+        "gap_description": "Implement HTTP client logic: empty output with gaps, retrying",
+        "retry_succeeded": true,
+        "final_status": "completed",
+        "final_verification": "passed",
+        "total_retries": 0
+      },
+      {
+        "task_id": "5907514b0b4d",
+        "task_title": "Verify Sentinel Health CLI against Mock/Live API",
+        "model_tier": "ollama",
+        "model_used": null,
+        "gap_description": "",
+        "retry_succeeded": false,
+        "final_status": "needs_review",
+        "final_verification": null,
+        "total_retries": 3
+      },
+      {
+        "task_id": "76618df283d9",
+        "task_title": "Define New Capabilities and API Surface",
+        "model_tier": "gemini_cli",
+        "model_used": "gemini-2.5-pro",
+        "gap_description": "Define New Capabilities and API Surface: gaps found, retrying with feedback",
+        "retry_succeeded": true,
+        "final_status": "completed",
+        "final_verification": "passed",
+        "total_retries": 1
+      },
+      {
+        "task_id": "1849b457ea38",
+        "task_title": "Create failing test script",
+        "model_tier": "gemini_cli",
+        "model_used": "gemini-2.5-pro",
+        "gap_description": "Create failing test script: gaps found, retrying with feedback",
+        "retry_succeeded": false,
+        "final_status": "pending",
+        "final_verification": "gaps_found",
+        "total_retries": 1
+      }
+    ]
+  },
+  "sentinel_pattern_analysis": {
+    "total_observations": 1214,
+    "category_distribution": {
+      "resource_unavailable": {
+        "count": 1155,
+        "severity": "warning",
+        "pattern": "codex_cli perpetually offline, sentinel polls every ~10s generating noise"
+      },
+      "task_stuck": {
+        "count": 47,
+        "severity": "warning",
+        "pattern": "3 distinct tasks stuck >300s, sentinel emits tick per stuck task creating observation flood"
+      },
+      "intervention_result": {
+        "count": 11,
+        "severity": "warning",
+        "pattern": "All 11 reassign_tier attempts failed"
+      },
+      "cascade_failure": {
+        "count": 1,
+        "severity": "critical",
+        "pattern": "Cascade: consecutive wave-0 failures detected"
+      }
+    },
+    "key_findings": {
+      "observation_noise": "95.1% of observations (1155/1214) are the same codex_cli offline warning repeating indefinitely",
+      "stuck_task_flood": "47 observations for only 3 stuck tasks - sentinel lacks deduplication",
+      "intervention_100pct_failure": "All 11 auto-interventions failed",
+      "no_successful_autonomous_action": "Sentinel has never successfully executed an autonomous intervention"
+    },
+    "stuck_tasks_detail": [
+      {
+        "task_id": "17bbf23113a7",
+        "title": "Expand SentinelBus Topics",
+        "model_tier": "gemini_cli",
+        "model_used": "gemini-2.5-pro",
+        "final_status": "completed",
+        "observation_count": 20,
+        "min_elapsed_secs": 300.2,
+        "max_elapsed_secs": 490.6
+      },
+      {
+        "task_id": "1849b457ea38",
+        "title": "Create failing test script",
+        "model_tier": "gemini_cli",
+        "model_used": "gemini-2.5-pro",
+        "final_status": "pending",
+        "observation_count": 7,
+        "min_elapsed_secs": 300.2,
+        "max_elapsed_secs": 360.5
+      },
+      {
+        "task_id": "b1ab710f1498",
+        "title": "Integration Testing and Verification",
+        "model_tier": "gemini_cli",
+        "model_used": "gemini-2.5-pro",
+        "final_status": "completed",
+        "observation_count": 20,
+        "min_elapsed_secs": 300.2,
+        "max_elapsed_secs": 490.6
+      }
+    ],
+    "intervention_outcomes": {
+      "total": 11,
+      "succeeded": 0,
+      "failed": 11,
+      "actions": {
+        "reassign_tier": 11
+      }
+    },
+    "resource_unavailable_detail": {
+      "total_observations": 1155,
+      "resource": "codex_cli",
+      "pattern": "Continuous polling every ~10s detecting codex_cli offline",
+      "first_seen_ts": 1773646372.465439,
+      "last_seen_ts": 1773980185.860705,
+      "duration_hours": 92.7
+    },
+    "recommendations": [
+      "Deduplicate sentinel observations: emit once per state change, not once per tick",
+      "Fix reassign_tier intervention: populate dominant_tier and failed_task_ids in observation details_json",
+      "Add observation TTL or compaction: identical warnings add no signal",
+      "Implement escalation: after N failed interventions, escalate to human instead of silently continuing",
+      "Add stuck-task resolution: after detecting stuck task, kill and reassign rather than observing indefinitely"
+    ]
+  },
+  "project_summary": {
+    "status_distribution": {
+      "cancelled": 22,
+      "completed": 22,
+      "draft": 6,
+      "failed": 1
+    },
+    "completion_rate_pct": 43.1,
+    "cancellation_rate_pct": 43.1
+  },
+  "god_relay_analysis": {
+    "total_events": 771,
+    "by_source": {
+      "api": {
+        "total": 1,
+        "events": {
+          "project_created": 1
+        }
+      },
+      "athena": {
+        "total": 75,
+        "events": {
+          "wave_assessed": 43,
+          "narration": 30,
+          "project_planned": 2
+        }
+      },
+      "engine": {
+        "total": 1,
+        "events": {
+          "project_created": 1
+        }
+      },
+      "hermes": {
+        "total": 312,
+        "events": {
+          "narration": 216,
+          "worker_event": 43,
+          "task_running": 43,
+          "heartbeat": 8,
+          "task_already_running": 1,
+          "slots_full": 1
+        }
+      },
+      "mimir": {
+        "total": 188,
+        "events": {
+          "review_rejected": 57,
+          "task_reset": 52,
+          "task_verified": 51,
+          "review_passed": 12,
+          "tick": 10,
+          "task_rejected": 5,
+          "needs_human_review": 1
+        }
+      },
+      "mimir_handle_review_rejection": {
+        "total": 30,
+        "events": {
+          "handler_error": 30
+        }
+      },
+      "odin": {
+        "total": 162,
+        "events": {
+          "project_tick": 56,
+          "dispatch_command": 45,
+          "wave_complete": 36,
+          "project_complete": 23,
+          "project_started": 2
+        }
+      },
+      "scheduler": {
+        "total": 1,
+        "events": {
+          "tick": 1
+        }
+      },
+      "user": {
+        "total": 1,
+        "events": {
+          "project_created": 1
+        }
+      }
+    },
+    "event_type_distribution": {
+      "narration": 246,
+      "review_rejected": 57,
+      "project_tick": 56,
+      "task_reset": 52,
+      "task_verified": 51,
+      "dispatch_command": 45,
+      "wave_assessed": 43,
+      "worker_event": 43,
+      "task_running": 43,
+      "wave_complete": 36,
+      "handler_error": 30,
+      "project_complete": 23,
+      "review_passed": 12,
+      "tick": 11,
+      "heartbeat": 8,
+      "task_rejected": 5,
+      "project_created": 3,
+      "project_planned": 2,
+      "project_started": 2,
+      "task_already_running": 1,
+      "slots_full": 1,
+      "needs_human_review": 1
+    }
+  },
+  "odin_decisions_analysis": {
+    "total_decisions": 0,
+    "by_decision_type": {},
+    "by_action_taken": {},
+    "by_outcome": {},
+    "confidence_stats": {
+      "mean": null,
+      "median": null,
+      "min": null,
+      "max": null
+    }
+  },
+  "cross_cutting_insights": {
+    "codex_cli_is_dead": {
+      "evidence": "100% failure rate across all 0 codex CLI crash events, 1155+ resource_unavailable warnings, model disabled",
+      "impact": "All tasks assigned to codex_cli tier were rerouted to gemini_cli for execution but codex stderr still appears in failure messages",
+      "root_cause": "Codex CLI v0.114.0 model not supported error with ChatGPT subscription models (gpt-4o, o4-mini)"
+    },
+    "gemini_cli_empty_output_problem": {
+      "evidence": "Several gemini_cli tasks failed with empty output on first attempt, retry sometimes succeeds",
+      "pattern": "Gemini CLI sometimes returns empty stdout on first attempt, verification catches it, retry with feedback succeeds",
+      "affected_count": 0,
+      "recovery_rate": "Variable - some recovered on retry, others exhausted retries"
+    },
+    "claude_code_is_most_reliable": {
+      "evidence": "69 completions, avg output 3091 chars, 69 verification passes",
+      "comparison": {
+        "claude-code-cli": {
+          "completions": 69,
+          "avg_output": 3091,
+          "verification_pass_pct": 100.0
+        },
+        "gemini-2.5-pro": {
+          "completions": 32,
+          "avg_output": 1384,
+          "verification_pass_pct": 96.9
+        },
+        "claude-opus-4-6": {
+          "completions": 8,
+          "avg_output": 724,
+          "note": "no verification ran for external execution"
+        },
+        "gpt-4o": {
+          "completions": 4,
+          "avg_output": 0,
+          "note": "all outputs empty, all gaps_found"
+        }
+      }
+    },
+    "verification_system_works_but_retries_are_weak": {
+      "evidence": "Verification caught all empty outputs and logic gaps, but retry success was only 36.4%",
+      "pattern": "codex_cli retries always fail (identical empty output), gemini_cli retries sometimes succeed, claude_code retries always succeed"
+    },
+    "gods_architecture_emerging": {
+      "evidence": "771 god_relay_events: hermes (312 events), mimir (188), odin (162), athena (75)",
+      "mimir_quality_gate": "57 reviews rejected, 52 tasks reset, 12 reviews passed - mimir quality gating (82.6% rejection rate)",
+      "handler_errors": "30 handler_error events in mimir suggest review pipeline has bugs to fix",
+      "hermes_narration": "216 narration events - hermes is active as the communication layer"
+    },
+    "project_lifecycle_issues": {
+      "high_cancellation": "43% of projects cancelled (22/51)",
+      "stress_test_failures": "Multiple stress test projects cancelled - the system struggles with intentional failure scenarios",
+      "epic_pattern": "Sentinel built across multiple epics: some completed, some cancelled then re-planned and completed"
+    }
+  }
+}

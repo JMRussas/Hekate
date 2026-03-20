@@ -135,7 +135,8 @@ _SCHEMA_STATEMENTS = [
         git_branch TEXT,
         git_commit_sha TEXT,
         claimed_by TEXT,
-        claimed_at DOUBLE PRECISION
+        claimed_at DOUBLE PRECISION,
+        step_tree_json TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS task_deps (
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

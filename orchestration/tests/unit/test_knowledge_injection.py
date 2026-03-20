@@ -83,11 +83,11 @@ class TestBuildPromptKnowledgeInjection:
 
         prompt = build_prompt(task_row)
 
-        assert "<project_knowledge>" in prompt
+        assert "<historical_rationale>" in prompt
         assert "SQLite is the chosen DB" in prompt
         assert "<rationale>No concurrent writes needed</rationale>" in prompt
-        assert "<alternatives_considered>Postgres, DuckDB</alternatives_considered>" in prompt
-        assert "<confidence>high</confidence>" in prompt
+        assert "<rejected_alternatives>Postgres, DuckDB</rejected_alternatives>" in prompt
+        assert 'confidence="high"' in prompt
 
     def test_missing_rationale_omitted(self):
         """When rationale is empty/missing, the tag is not rendered."""
@@ -180,7 +180,7 @@ class TestKnowledgeInjection:
 
         call_kwargs = client.messages.create.call_args.kwargs
         system_prompt = call_kwargs["system"]
-        assert "<project_knowledge>" in system_prompt
+        assert "<historical_rationale>" in system_prompt
         assert "API has a 100/min rate limit" in system_prompt
         assert "Library X breaks with Python 3.12" in system_prompt
 

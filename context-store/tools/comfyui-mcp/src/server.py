@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-#  ComfyUI MCP Server
+#  ComfyUI MCP Server — FastAPI edition
 #
-#  FastMCP server wrapping the ComfyUI REST API for image generation,
-#  workflow management, and queue monitoring.
+#  FastAPI application wrapping the ComfyUI REST API for image generation,
+#  workflow management, and queue monitoring. Also exposes tools via MCP.
 #
-#  Tools: generate_image, get_result, list_workflows, queue_status
+#  Endpoints: GET /health, GET /workflows, GET /queue
+#  MCP Tools: generate_image, get_result, list_workflows, queue_status
 #
-#  Depends on: mcp, httpx
+#  Depends on: fastapi, uvicorn, mcp, httpx
 #  Used by:    Claude Code (registered via .mcp.json)
 
 import asyncio
@@ -15,14 +16,22 @@ import logging
 import os
 import random
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
+import uvicorn
+from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
 
 log = logging.getLogger("comfyui-mcp")
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
+
+# --- App constants ---
+
+VERSION = "0.1.0"
+START_TIME = datetime.now(timezone.utc)
 
 # --- Configuration ---
 
@@ -32,13 +41,44 @@ WORKFLOWS_DIR = os.environ.get(
     str(Path(__file__).parent / "workflows"),
 )
 
+# --- FastAPI app ---
+
+app = FastAPI(
+    title="ComfyUI MCP Server",
+    description="Image generation and workflow management via ComfyUI",
+    version="0.1.0",
+)
+
+# --- MCP server (mounted on FastAPI) ---
+
 mcp = FastMCP(
     "comfyui",
     instructions="ComfyUI image generation and workflow management",
 )
 
 
-# --- Tools ---
+# --- FastAPI routes ---
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok", "service": "comfyui-mcp"}
+
+
+@app.get("/workflows")
+async def get_workflows():
+    """List available workflow templates."""
+    return await list_workflows()
+
+
+@app.get("/queue")
+async def get_queue():
+    """Get current ComfyUI queue status."""
+    return await queue_status()
+
+
+# --- MCP Tools ---
 
 
 @mcp.tool()
@@ -121,7 +161,6 @@ async def generate_image(
         height: Image height in pixels.
         seed: Random seed (-1 for random).
     """
-    # Load workflow template
     workflow_path = Path(WORKFLOWS_DIR) / f"{workflow_name}.json"
     if not workflow_path.exists():
         return {"error": f"Workflow not found: {workflow_path}"}
@@ -134,25 +173,21 @@ async def generate_image(
     if seed < 0:
         seed = random.randint(0, 2**32 - 1)
 
-    # Inject parameters into known node types
     positive_set = False
     for _node_id, node in workflow.items():
         cls = node.get("class_type", "")
         inputs = node.get("inputs", {})
 
-        # Positive prompt — first empty CLIPTextEncode or explicit placeholder
         if cls == "CLIPTextEncode" and not positive_set:
             txt = inputs.get("text", "")
             if txt in ("", "PROMPT", "positive prompt", "{{prompt}}"):
                 inputs["text"] = prompt
                 positive_set = True
 
-        # Dimensions — EmptyLatentImage or EmptySD3LatentImage
         if cls in ("EmptyLatentImage", "EmptySD3LatentImage"):
             inputs["width"] = width
             inputs["height"] = height
 
-        # Seed — KSampler, KSamplerAdvanced, RandomNoise
         if cls in ("KSampler", "KSamplerAdvanced"):
             inputs["seed"] = seed
         if cls == "RandomNoise":
@@ -225,7 +260,6 @@ async def _fetch_result(prompt_id: str) -> dict:
         return {"error": f"Failed to fetch history: {e}", "prompt_id": prompt_id}
 
     if prompt_id not in data:
-        # Not in history yet — check if still queued/running
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(f"{COMFYUI_URL}/queue")
@@ -285,4 +319,4 @@ async def _fetch_result(prompt_id: str) -> dict:
 if __name__ == "__main__":
     log.info("ComfyUI URL: %s", COMFYUI_URL)
     log.info("Workflows dir: %s", WORKFLOWS_DIR)
-    mcp.run()
+    uvicorn.run(app, host="0.0.0.0", port=8000)

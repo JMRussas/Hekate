@@ -14,7 +14,13 @@ logger = logging.getLogger("orchestration.mcp_spawner")
 
 
 class McpSession:
-    """A single MCP server subprocess session via stdio."""
+    """A single MCP server subprocess session via stdio.
+
+    Supports both request/response and server-initiated notifications.
+    Register handlers via on_notification() to react to events like
+    tools/list_changed, resources/updated, logging/message, or custom
+    god-specific notifications.
+    """
 
     def __init__(self, proc: asyncio.subprocess.Process, server_name: str):
         self._proc = proc
@@ -24,6 +30,10 @@ class McpSession:
         self._reader_task: asyncio.Task | None = None
         self._capabilities: dict = {}
         self._tools: list[dict] = []
+        # Notification handlers: method -> list of async callbacks
+        self._notification_handlers: dict[str, list] = {}
+        # Wildcard handlers — called for every notification
+        self._wildcard_handlers: list = []
 
     @property
     def tools(self) -> list[dict]:
@@ -32,6 +42,76 @@ class McpSession:
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def capabilities(self) -> dict:
+        return self._capabilities
+
+    def on_notification(self, method: str, handler):
+        """Register an async callback for a specific notification method.
+
+        The handler receives (method: str, params: dict).
+        Use method="*" for a wildcard that fires on every notification.
+
+        Example:
+            session.on_notification("notifications/tools/list_changed", my_handler)
+            session.on_notification("*", log_all_notifications)
+        """
+        if method == "*":
+            self._wildcard_handlers.append(handler)
+        else:
+            self._notification_handlers.setdefault(method, []).append(handler)
+
+    async def _dispatch_notification(self, method: str, params: dict):
+        """Route a server-initiated notification to registered handlers."""
+        # Specific handlers first
+        for handler in self._notification_handlers.get(method, []):
+            try:
+                await handler(method, params)
+            except Exception as e:
+                logger.warning(
+                    "Notification handler error for '%s' on '%s': %s",
+                    method, self._name, e,
+                )
+        # Wildcard handlers
+        for handler in self._wildcard_handlers:
+            try:
+                await handler(method, params)
+            except Exception as e:
+                logger.warning(
+                    "Wildcard notification handler error on '%s': %s",
+                    self._name, e,
+                )
+
+    async def _handle_tools_changed(self, method: str, params: dict):
+        """Built-in handler: refresh tool list when server signals changes."""
+        try:
+            tools_resp = await self._request("tools/list", {}, timeout=10.0)
+            old_count = len(self._tools)
+            self._tools = tools_resp.get("tools", [])
+            logger.info(
+                "MCP session '%s' tools refreshed: %d -> %d",
+                self._name, old_count, len(self._tools),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to refresh tools for '%s' after list_changed: %s",
+                self._name, e,
+            )
+
+    async def _handle_log_message(self, method: str, params: dict):
+        """Built-in handler: forward server log messages to Python logging."""
+        level = params.get("level", "info")
+        data = params.get("data", "")
+        msg = f"[{self._name}] {data}"
+        if level == "error":
+            logger.error(msg)
+        elif level == "warning":
+            logger.warning(msg)
+        elif level == "debug":
+            logger.debug(msg)
+        else:
+            logger.info(msg)
 
     async def initialize(self, timeout: float = 10.0):
         """Send MCP initialize request and read response."""
@@ -53,8 +133,18 @@ class McpSession:
             tools_resp = await self._request("tools/list", {}, timeout=timeout)
             self._tools = tools_resp.get("tools", [])
 
+        # Register built-in notification handlers
+        self.on_notification(
+            "notifications/tools/list_changed", self._handle_tools_changed,
+        )
+        self.on_notification(
+            "notifications/resources/list_changed", self._handle_tools_changed,
+        )
+        self.on_notification("notifications/message", self._handle_log_message)
+
         logger.info(
-            "MCP session '%s' initialized (%d tools)", self._name, len(self._tools)
+            "MCP session '%s' initialized (%d tools, notifications enabled)",
+            self._name, len(self._tools),
         )
         return self._capabilities
 
@@ -126,7 +216,12 @@ class McpSession:
         await self._proc.stdin.drain()
 
     async def _read_loop(self):
-        """Read JSON-RPC responses from stdout."""
+        """Read JSON-RPC messages from stdout.
+
+        Handles both:
+        - Responses (have 'id') — resolve pending request futures
+        - Notifications (no 'id', have 'method') — dispatch to handlers
+        """
         try:
             while True:
                 line = await self._proc.stdout.readline()
@@ -139,7 +234,15 @@ class McpSession:
 
                 rid = msg.get("id")
                 if rid is not None and rid in self._pending:
+                    # Response to a request we sent
                     self._pending.pop(rid).set_result(msg)
+                elif "method" in msg and rid is None:
+                    # Server-initiated notification
+                    method = msg["method"]
+                    params = msg.get("params", {})
+                    asyncio.create_task(
+                        self._dispatch_notification(method, params)
+                    )
         except asyncio.CancelledError:
             pass
         except Exception as e:

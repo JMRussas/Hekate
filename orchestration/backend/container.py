@@ -22,7 +22,6 @@ from backend.services.planner import PlannerService
 from backend.services.progress import ProgressManager
 from backend.services.provider_quota import ProviderQuotaManager
 from backend.services.resource_monitor import ResourceMonitor
-from backend.services.sentinel.system_sentinel import SystemSentinel
 from backend.services.sentinel.bus import SentinelBus
 from backend.services.odin import Odin
 from backend.services.context_store_client import ContextStoreClient
@@ -61,6 +60,7 @@ class Container(containers.DeclarativeContainer):
             "backend.routes.internal",
             "backend.routes.sentinel",
             "backend.routes.odin",
+            "backend.routes.fixes",
             "backend.routes.chat",
             "backend.middleware.auth",
             "backend.services.model_discovery",
@@ -85,12 +85,6 @@ class Container(containers.DeclarativeContainer):
     provider_quota = providers.Singleton(ProviderQuotaManager, db=db)
     resource_monitor = providers.Singleton(ResourceMonitor)
     sentinel_bus = providers.Singleton(SentinelBus)
-    system_sentinel = providers.Singleton(
-        SystemSentinel, resource_monitor=resource_monitor, progress_manager=progress, db=db,
-    )
-    odin = providers.Singleton(
-        Odin, db=db, resource_monitor=resource_monitor, bus=sentinel_bus, progress_manager=progress,
-    )
     diagnostic_ingester = providers.Singleton(DiagnosticIngester)
     model_discovery = providers.Singleton(ModelDiscoveryService)
 
@@ -108,6 +102,11 @@ class Container(containers.DeclarativeContainer):
     planner = providers.Factory(PlannerService, db=db, budget=budget, tool_registry=tool_registry)
     decomposer = providers.Factory(DecomposerService, db=db)
 
+    # --- Odin overseer ---
+    odin = providers.Singleton(
+        Odin, db=db, resource_monitor=resource_monitor, bus=sentinel_bus, progress_manager=progress,
+    )
+
     # --- Executor (depends on all services) ---
     executor = providers.Singleton(
         Executor,
@@ -120,6 +119,5 @@ class Container(containers.DeclarativeContainer):
         rag_cache=rag_cache,
         diagnostic_ingester=diagnostic_ingester,
         quota_manager=provider_quota,
-        system_sentinel=system_sentinel,
         bus=sentinel_bus,
     )

@@ -586,6 +586,144 @@ class TestExtractKnowledge:
         assert result[0]["confidence"] == "high"
 
     @pytest.mark.asyncio
+    async def test_budget_exhausted_skips_extraction(self, tmp_db):
+        """No LLM call when budget is exhausted."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        client = AsyncMock()
+        budget = AsyncMock()
+        budget.can_spend = AsyncMock(return_value=False)
+
+        result = await extract_knowledge(
+            task_title="Task",
+            task_description="Test",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert result == []
+        client.messages.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_content_finding_skipped(self, tmp_db):
+        """Finding with empty/whitespace content is skipped."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        findings = [
+            {"category": "discovery", "content": ""},
+            {"category": "discovery", "content": "   "},
+            {"category": "gotcha", "content": "Real finding"},
+        ]
+        client = _make_mock_client(findings)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="Task",
+            task_description="Test",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert len(result) == 1
+        assert result[0]["content"] == "Real finding"
+
+        rows = await tmp_db.fetchall(
+            "SELECT * FROM project_knowledge WHERE project_id = ?", ("proj1",)
+        )
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_source_task_title_persisted(self, tmp_db):
+        """Source task title is stored from the task_title parameter."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        findings = [{"category": "constraint", "content": "Must use TLS 1.3"}]
+        client = _make_mock_client(findings)
+        budget = AsyncMock()
+
+        await extract_knowledge(
+            task_title="Security Audit",
+            task_description="Audit TLS config",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        row = await tmp_db.fetchone(
+            "SELECT source_task_title, task_id FROM project_knowledge WHERE project_id = ?",
+            ("proj1",),
+        )
+        assert row["source_task_title"] == "Security Audit"
+        assert row["task_id"] == "task1"
+
+    @pytest.mark.asyncio
+    async def test_markdown_fenced_json_parsed(self, tmp_db):
+        """JSON wrapped in markdown code fences is still parsed."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+        await create_test_task(tmp_db, "task1", "proj1")
+
+        fenced = '```json\n{"findings": [{"category": "gotcha", "content": "Fenced finding"}]}\n```'
+        client = _make_mock_client_raw(fenced)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="Task",
+            task_description="Test",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert len(result) == 1
+        assert result[0]["content"] == "Fenced finding"
+
+    @pytest.mark.asyncio
+    async def test_non_list_findings_returns_empty(self, tmp_db):
+        """When 'findings' is not a list, returns []."""
+        from backend.services.knowledge_extractor import extract_knowledge
+
+        await create_test_project(tmp_db, "proj1")
+
+        raw = json.dumps({"findings": "not a list"})
+        client = _make_mock_client_raw(raw)
+        budget = AsyncMock()
+
+        result = await extract_knowledge(
+            task_title="Task",
+            task_description="Test",
+            output_text="A" * 300,
+            client=client,
+            budget=budget,
+            project_id="proj1",
+            task_id="task1",
+            db=tmp_db,
+        )
+
+        assert result == []
+
+    @pytest.mark.asyncio
     async def test_null_rationale_in_response(self, tmp_db):
         """Null rationale from LLM normalizes to empty string."""
         from backend.services.knowledge_extractor import extract_knowledge
@@ -655,11 +793,11 @@ class TestBuildPromptKnowledge:
         assert "</historical_rationale>" in prompt
         assert '<finding category="constraint" confidence="high">' in prompt
         assert "<statement>API rate limit is 100/min</statement>" in prompt
-        assert "<why>Exceeded limit during load test</why>" in prompt
-        assert "<alternatives_considered>Batch API considered but not available</alternatives_considered>" in prompt
+        assert "<rationale>Exceeded limit during load test</rationale>" in prompt
+        assert "<rejected_alternatives>Batch API considered but not available</rejected_alternatives>" in prompt
 
     def test_knowledge_without_rationale(self):
-        """Findings without rationale omit the <why> tag."""
+        """Findings without rationale omit the <rationale> tag."""
         from backend.services.cli_common import build_prompt
 
         context = [{
@@ -676,8 +814,8 @@ class TestBuildPromptKnowledge:
         prompt = build_prompt(row)
 
         assert "<statement>Returns XML not JSON</statement>" in prompt
-        assert "<why>" not in prompt
-        assert "<alternatives_considered>" not in prompt
+        assert "<rationale>" not in prompt
+        assert "<rejected_alternatives>" not in prompt
 
     def test_knowledge_without_confidence(self):
         """Findings without confidence omit the confidence attribute."""

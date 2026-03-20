@@ -15,6 +15,7 @@ from backend.config import DEFAULT_MAX_TOKENS
 from backend.exceptions import CycleDetectedError, InvalidStateError, NotFoundError
 from backend.models.enums import PlanStatus, ProjectStatus, TaskStatus
 from backend.services.model_router import estimate_task_cost, recommend_tier, recommend_tools
+from backend.templates import resolve_step_tree
 
 logger = logging.getLogger("orchestration.decomposer")
 
@@ -218,15 +219,20 @@ class DecomposerService:
 
             rationale = task_def.get("rationale")
 
+            # Resolve step tree: planner-provided steps > built-in template > None
+            step_tree = resolve_step_tree(task_def)
+            step_tree_json = json.dumps(step_tree) if step_tree else None
+
             write_statements.append((
                 "INSERT INTO tasks (id, project_id, plan_id, title, description, task_type, "
                 "priority, status, model_tier, context_json, tools_json, "
-                "max_tokens, wave, phase, requirement_ids_json, rationale, created_at, updated_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
+                "max_tokens, wave, phase, requirement_ids_json, rationale, "
+                "step_tree_json, created_at, updated_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
                 (task_id, project_id, plan_id, title, description, task_type,
                  priority, TaskStatus.PENDING, tier.value, json.dumps(context),
                  json.dumps(tools), DEFAULT_MAX_TOKENS, waves[i], phase,
-                 json.dumps(requirement_ids), rationale, now, now),
+                 json.dumps(requirement_ids), rationale, step_tree_json, now, now),
             ))
 
         # Create dependency edges
@@ -457,8 +463,27 @@ def _compute_waves(tasks_data: list[dict]) -> list[int]:
 
 
 async def _update_blocked_status(project_id: str, *, db):
-    """Mark pending tasks as blocked if they have incomplete dependencies (single query)."""
+    """Mark pending tasks as waiting or blocked based on dependency health.
+
+    - WAITING: has unmet deps, but all deps are in healthy states
+    - BLOCKED: at least one dep is failed or cancelled (genuinely stuck)
+    """
     now = time.time()
+
+    # Mark tasks with any stuck dep (failed/cancelled) as BLOCKED
+    await db.execute_write(
+        "UPDATE tasks SET status = $1, updated_at = $2 "
+        "WHERE project_id = $3 AND status = $4 "
+        "AND id IN ("
+        "  SELECT d.task_id FROM task_deps d "
+        "  JOIN tasks dep ON dep.id = d.depends_on "
+        "  WHERE dep.status IN ($5, $6)"
+        ")",
+        (TaskStatus.BLOCKED, now, project_id, TaskStatus.PENDING,
+         TaskStatus.FAILED, TaskStatus.CANCELLED),
+    )
+
+    # Mark remaining tasks with unmet deps (all deps healthy) as WAITING
     await db.execute_write(
         "UPDATE tasks SET status = $1, updated_at = $2 "
         "WHERE project_id = $3 AND status = $4 "
@@ -467,5 +492,6 @@ async def _update_blocked_status(project_id: str, *, db):
         "  JOIN tasks dep ON dep.id = d.depends_on "
         "  WHERE dep.status != $5"
         ")",
-        (TaskStatus.BLOCKED, now, project_id, TaskStatus.PENDING, TaskStatus.COMPLETED),
+        (TaskStatus.WAITING, now, project_id, TaskStatus.PENDING,
+         TaskStatus.COMPLETED),
     )

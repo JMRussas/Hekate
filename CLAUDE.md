@@ -1,6 +1,18 @@
 # Hekate
 
-Unified AI agent platform: VSCode extension (fleet control) + orchestration backend (task execution) + context store (agent memory) + admin service (infra). Four components, one repo.
+Unified AI agent platform: gods pipeline (event-driven task execution) + orchestration backend (API + DB + dashboard) + context store (agent memory) + admin service (infra). Six components, one repo.
+
+## Execution Architecture
+
+**Gods pipeline is the active execution engine.** The monolith orchestration services (executor.py, task_lifecycle.py, sentinel/) are legacy — still deployed but being replaced.
+
+```
+Project created → Athena plans (Gemini, L1-L5) → Odin dispatches
+  → Hermes executes (Claude Code CLI, async) → Mimir verifies (LLM Gateway)
+  → Odin manages lifecycle (unblock deps → wave progression → complete)
+```
+
+Key files: `Odin/gods/pipeline.py` (event loop), `Odin/gods/handlers/registration.py` (handler wiring), `Odin/run_pipeline.py` (standalone runner).
 
 ## CRITICAL: Two Directories
 
@@ -43,6 +55,7 @@ All services run via NSSM from `C:\Hekate`, **not** from the source repo.
 | HekateTypeScriptWorker | similar | 9202 | |
 | HekateCppWorker | similar | 9201 | |
 | HekateAdmin | Python 3.14 `server.py` | 5201 | Hades — admin service. Needs `PATH` with nssm + python |
+| HekateLLMGateway | Python 3.11 `server.py` | 5210 | LLM proxy — runs as user for CLI OAuth token access |
 
 ### NSSM Environment (HekateOrchestration)
 
@@ -92,6 +105,8 @@ bash scripts/restart.sh restart --all  # restart everything including MCP worker
 | **Context Store UI** | `context-store/ui/` | React/Vite | `cd context-store/ui && npm install && npm run dev` | port 5179 |
 | **Orchestration Dashboard** | `orchestration/frontend/` | React/Vite | `cd orchestration/frontend && npm run build` | Served by FastAPI from `dist/` |
 | **Hades** | `hades/` | Python/FastAPI | `pip install -r hades/requirements.txt` | `python hades/server.py` (port 5201) |
+| **LLM Gateway** | `llm-gateway/` | Python/FastMCP | `pip install -r llm-gateway/requirements.txt` | `python llm-gateway/server.py` (port 5210) |
+| **Gods (Odin)** | `Odin/` | Python | `pip install -r Odin/requirements.txt` | Standalone god servers |
 
 ## Project Structure
 
@@ -102,22 +117,21 @@ Hekate/                              # Source repo (C:\Users\jruss\Documents\Git
 │   ├── deploy.sh                    # Full deploy to C:\Hekate
 │   └── restart.sh                   # NSSM service management
 ├── orchestration/
-│   ├── backend/                     # FastAPI app
+│   ├── backend/                     # FastAPI app (API + DB + dashboard)
 │   │   ├── services/
-│   │   │   ├── executor.py          # Task dispatch, worktrees, auto-PR
-│   │   │   ├── task_lifecycle.py    # Task execution, verification, file tracking, syntax check
 │   │   │   ├── planner.py           # Claude-powered plan generation (L0-L3)
+│   │   │   ├── decomposer.py       # Plan → task rows + dependency DAG
 │   │   │   ├── plan_sync.py         # Sync plans to context store
 │   │   │   ├── model_router.py      # Tier routing (claude_code, gemini_cli, ollama)
-│   │   │   ├── sentinel/            # Argos monitoring system
-│   │   │   │   ├── plan_sentinel.py # Per-project monitor
-│   │   │   │   ├── system_sentinel.py # Singleton, spawns plan sentinels
-│   │   │   │   ├── reasoner.py      # Metis — LLM diagnosis
-│   │   │   │   ├── intervention_executor.py # Actions: retry, reassign_tier, skip
-│   │   │   │   ├── rules.py         # Detection rules
-│   │   │   │   └── bus.py           # Async pub/sub
+│   │   │   ├── odin.py             # LLM-driven overseer service
+│   │   │   ├── llm_router.py       # Routes LLM calls through gateway (5210)
+│   │   │   ├── chat_agent.py       # Multi-round streaming chat
+│   │   │   ├── tree_runner.py      # Step-tree executor
+│   │   │   ├── executor.py          # [LEGACY] Wave dispatch — being replaced by gods pipeline
+│   │   │   ├── task_lifecycle.py    # [LEGACY] Task execution — being replaced by hermes
+│   │   │   ├── sentinel/            # [LEGACY] Monitoring — being replaced by odin god
 │   │   │   └── context_store_client.py # Circuit-breaker HTTP client
-│   │   ├── routes/                  # REST API endpoints
+│   │   ├── routes/                  # REST API endpoints (projects, tasks, chat, odin, usage, events)
 │   │   ├── migrations/versions/     # Alembic migrations (NNN_description.py)
 │   │   ├── mcp/server.py            # MCP server for external executors
 │   │   └── container.py             # DI container
@@ -132,6 +146,26 @@ Hekate/                              # Source repo (C:\Users\jruss\Documents\Git
 │   ├── tools/                       # MCP servers (agent-context, skills, dev)
 │   │   └── skills/skills.json       # Skill definitions (includes orchestrate bridge)
 │   └── docker-compose.yml           # Postgres + AGE + pgvector
+├── Odin/                            # Gods pipeline — ACTIVE execution engine
+│   ├── gods/
+│   │   ├── handlers/                # God implementations
+│   │   │   ├── athena_leveled.py   # Planning (L1-L5 via Gemini)
+│   │   │   ├── odin.py             # Dispatch, lifecycle, diagnosis
+│   │   │   ├── hermes_async.py     # Async CLI execution (Claude Code)
+│   │   │   ├── mimir.py            # Verification via LLM Gateway
+│   │   │   ├── hephaestus.py       # Git staging
+│   │   │   ├── tyche.py            # Budget tracking
+│   │   │   └── registration.py     # Wires all handlers
+│   │   ├── pipeline.py              # Event loop, cursor, gates
+│   │   ├── relay.py                 # Event relay (god_relay_events table)
+│   │   ├── plan_levels.py           # L1-L5 rule engine
+│   │   ├── registry.py              # God registry
+│   │   ├── odin/                    # Odin MCP server (dispatch, mcp_client)
+│   │   └── providers/               # CLI provider abstraction (built, not wired)
+│   ├── run_pipeline.py              # Standalone runner (--debug flag)
+│   └── tests/                       # Gods test suite
+├── llm-gateway/                     # LLM proxy for CLI OAuth tokens (port 5210)
+├── Design/                          # Pencil design files
 ├── extension/                       # VSCode extension
 └── .worktrees/                      # Git worktrees for parallel projects (gitignored)
 ```
@@ -157,6 +191,7 @@ Read **on-demand** when working in the relevant area.
 | Hades (admin) | 5201 | `HEKATE_ROOT`, `HEKATE_SOURCE` env vars |
 | Ollama | 11434 | `OLLAMA_URL` env var |
 | hekate-mcp | 5110 | NSSM `HekateServer` |
+| LLM Gateway | 5210 | NSSM `HekateLLMGateway`, Python 3.11 |
 
 ## Model Routing
 
@@ -166,6 +201,9 @@ Read **on-demand** when working in the relevant area.
 | `gemini_cli` | Gemini CLI | Simple code, research, analysis | Active (needs `GEMINI_FORCE_FILE_STORAGE=true`) |
 | `codex_cli` | Codex CLI | Simple code | Disabled (low quota, use `gpt-5.2-codex` to re-enable) |
 | `ollama` | Ollama (local) | Analysis, documentation | Active |
+| `haiku` | Claude Haiku (API) | Verification, knowledge extraction | Active (routes through CLI if no API key) |
+| `sonnet` | Claude Sonnet (API) | Complex tasks | Active (routes through CLI if no API key) |
+| `opus` | Claude Opus (API) | Critical tasks | Active (routes through CLI if no API key) |
 
 ## Environment
 

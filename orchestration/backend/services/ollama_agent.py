@@ -38,11 +38,15 @@ async def run_ollama_task(*, task_row, http_client, budget, tool_registry=None) 
     /api/chat with function calling. Otherwise falls back to /api/generate.
 
     Args:
-        task_row: Task database row.
+        task_row: Task database row (sqlite3.Row or dict).
         http_client: Shared httpx.AsyncClient (or None to create a temporary one).
         budget: BudgetManager instance.
         tool_registry: ToolRegistry instance (optional). Enables tool calling.
     """
+    # sqlite3.Row doesn't support .get() — normalize to dict
+    if not isinstance(task_row, dict):
+        task_row = dict(task_row)
+
     model = OLLAMA_DEFAULT_MODEL
     host_url = OLLAMA_HOSTS.get("local", "http://localhost:11434")
 

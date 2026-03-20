@@ -110,6 +110,7 @@ tasks = Table(
     Column("git_commit_sha", Text),
     Column("claimed_by", Text),
     Column("claimed_at", Float),
+    Column("step_tree_json", Text),
 )
 
 task_deps = Table(
@@ -329,3 +330,32 @@ god_events = Table(
 Index("idx_god_events_name_created", god_events.c.god_name, god_events.c.created_at)
 Index("idx_god_events_created", god_events.c.created_at)
 Index("idx_god_events_type", god_events.c.event_type)
+
+# -- Fix queue (unified failure-to-resolution pipeline) --
+fix_queue = Table(
+    "fix_queue",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("source", Text, nullable=False),
+    Column("category", Text, nullable=False),
+    Column("severity", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("description", Text, nullable=False),
+    Column("evidence_json", Text, server_default="[]"),
+    Column("proposed_fix", Text, nullable=True),
+    Column("status", Text, nullable=False, server_default="open"),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True),
+    Column("task_id", Text, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True),
+    Column("affected_component", Text, nullable=True),
+    Column("resolution", Text, nullable=True),
+    Column("resolved_by", Text, nullable=True),
+    Column("claimed_by", Text, nullable=True),
+    Column("dedupe_key", Text, nullable=True, unique=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("resolved_at", Float, nullable=True),
+)
+Index("ix_fix_queue_status", fix_queue.c.status)
+Index("ix_fix_queue_severity", fix_queue.c.severity)
+Index("ix_fix_queue_category", fix_queue.c.category)
+Index("ix_fix_queue_created", fix_queue.c.created_at)

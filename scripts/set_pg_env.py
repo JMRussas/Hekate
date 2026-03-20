@@ -1,29 +1,34 @@
-"""Add ORCHESTRATION_DSN to HekateOrchestration NSSM env vars."""
+"""Add ORCHESTRATION_DSN to NSSM env vars for orchestration services."""
 import subprocess
+import sys
 
-result = subprocess.run(
-    ["nssm", "get", "HekateOrchestration", "AppEnvironmentExtra"],
-    capture_output=True, text=True,
-)
-current = result.stdout.strip()
+DSN = "ORCHESTRATION_DSN=postgresql://postgres:postgres@localhost:5433/orchestration"
 
-if "ORCHESTRATION_DSN" in current:
-    print("ORCHESTRATION_DSN already set")
-else:
+SERVICES = ["HekateOrchestration", "HekateEngine"]
+
+
+def set_pg_env(service: str) -> None:
+    result = subprocess.run(
+        ["nssm", "get", service, "AppEnvironmentExtra"],
+        capture_output=True, text=True,
+    )
+    current = result.stdout.strip()
+
+    if "ORCHESTRATION_DSN" in current:
+        print(f"  {service}: ORCHESTRATION_DSN already set")
+        return
+
     lines = [l for l in current.split("\n") if l.strip()]
-    lines.append("ORCHESTRATION_DSN=postgresql://postgres:postgres@localhost:5433/orchestration")
+    lines.append(DSN)
     proc = subprocess.run(
-        ["nssm", "set", "HekateOrchestration", "AppEnvironmentExtra"] + lines,
+        ["nssm", "set", service, "AppEnvironmentExtra"] + lines,
         capture_output=True, text=True,
     )
     if proc.returncode == 0:
-        print("ORCHESTRATION_DSN added successfully")
+        print(f"  {service}: ORCHESTRATION_DSN added")
     else:
-        print(f"Error: {proc.stderr}")
+        print(f"  {service}: Error — {proc.stderr}", file=sys.stderr)
 
-# Verify
-result2 = subprocess.run(
-    ["nssm", "get", "HekateOrchestration", "AppEnvironmentExtra"],
-    capture_output=True, text=True,
-)
-print(result2.stdout)
+
+for svc in SERVICES:
+    set_pg_env(svc)

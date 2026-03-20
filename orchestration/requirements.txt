@@ -16,3 +16,5 @@ slowapi>=0.1.9,<1.0.0
 email-validator>=2.0,<3.0
 authlib>=1.3.0,<2.0.0
 mcp>=1.0.0,<2.0.0
+pytest>=8.0.0,<9.0.0
+requests>=2.31.0,<3.0.0

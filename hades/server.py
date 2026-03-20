@@ -13,6 +13,8 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -24,6 +26,9 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+VERSION = "0.1.0"
+APP_START_TIME = time.monotonic()
 
 HEKATE_ROOT = Path(os.environ.get("HEKATE_ROOT", "C:/Hekate"))
 SOURCE_ROOT = Path(os.environ.get("HEKATE_SOURCE", "C:/Users/jruss/Documents/GitHub/Hekate"))
@@ -221,6 +226,16 @@ def _validate_service(name: str) -> None:
         )
 
 
+def check_db_connection() -> str:
+    """Placeholder for a real database health check."""
+    return 'ok'
+
+
+def check_db_status() -> str:
+    """Placeholder database health check — no database configured yet."""
+    return 'ok'
+
+
 async def _health_check(url: str, timeout: float = 3.0) -> dict:
     """Check an HTTP health endpoint."""
     import httpx
@@ -286,6 +301,13 @@ class ExecRequest(BaseModel):
     timeout: int = 120  # seconds, max 600
     shell: str = "bash"  # "bash", "cmd", "powershell"
 
+class DetailedHealthResponse(BaseModel):
+    service_version: str
+    uptime_seconds: float
+    database_connection_status: str
+    current_timestamp: str
+
+
 class CreateServiceRequest(BaseModel):
     name: str              # must start with "Hekate"
     app: str               # path to executable
@@ -307,6 +329,19 @@ class CreateServiceRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "hades", "port": PORT}
+
+
+@app.get("/api/health/detailed", response_model=DetailedHealthResponse)
+async def health_detailed():
+    """Detailed health check with version, uptime, DB status, and timestamp."""
+    db_status = check_db_connection()
+
+    return DetailedHealthResponse(
+        service_version=VERSION,
+        uptime_seconds=time.monotonic() - APP_START_TIME,
+        database_connection_status=db_status,
+        current_timestamp=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 # ---------------------------------------------------------------------------

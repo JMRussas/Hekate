@@ -11,14 +11,12 @@
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from backend.models.enums import TaskStatus
 from backend.services.context_store_client import ContextStoreClient
-
-from tests.conftest import create_test_project, create_test_task
 
 
 # ---------------------------------------------------------------------------
@@ -90,13 +88,17 @@ class TestTaskCompletionTriggersUpdate:
 
         mock_cs = AsyncMock(spec=ContextStoreClient)
         mock_cs.update_attributes = AsyncMock(return_value=True)
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -122,13 +124,17 @@ class TestTaskCompletionTriggersUpdate:
 
         mock_cs = AsyncMock(spec=ContextStoreClient)
         mock_cs.update_attributes = AsyncMock(return_value=True)
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -150,13 +156,17 @@ class TestTaskCompletionTriggersUpdate:
 
         mock_cs = AsyncMock(spec=ContextStoreClient)
         mock_cs.update_attributes = AsyncMock(return_value=True)
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -177,13 +187,17 @@ class TestTaskCompletionTriggersUpdate:
 
         mock_cs = AsyncMock(spec=ContextStoreClient)
         mock_cs.update_attributes = AsyncMock(return_value=True)
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -203,13 +217,17 @@ class TestTaskCompletionTriggersUpdate:
         )
 
         mock_cs = AsyncMock(spec=ContextStoreClient)
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -236,14 +254,12 @@ class TestCircuitBreakerSkipsGracefully:
             tmp_db, task_titles=titles,
         )
 
-        cs = _make_circuit_open_client()
+        cs_open = _make_circuit_open_client()
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = cs
-            MockSvc.return_value = mock_instance
-
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=cs_open,
+        ):
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
             # Should complete without error despite circuit being open
@@ -267,14 +283,12 @@ class TestCircuitBreakerSkipsGracefully:
             tmp_db, task_titles=titles,
         )
 
-        cs = _make_circuit_open_client()
+        cs_open = _make_circuit_open_client()
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = cs
-            MockSvc.return_value = mock_instance
-
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=cs_open,
+        ):
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
             start = time.monotonic()
@@ -299,12 +313,20 @@ class TestExceptionResilience:
 
     async def test_get_node_mapping_exception_swallowed(self, tmp_db):
         """Exception in get_node_mapping does not propagate."""
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(
+        mock_cs = AsyncMock(spec=ContextStoreClient)
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
+
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(
                 side_effect=Exception("DB locked"),
             )
-            MockSvc.return_value = mock_instance
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -322,13 +344,17 @@ class TestExceptionResilience:
         mock_cs.update_attributes = AsyncMock(
             side_effect=Exception("Connection refused"),
         )
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -346,13 +372,17 @@ class TestExceptionResilience:
         mock_cs.update_attributes = AsyncMock(
             side_effect=asyncio.TimeoutError(),
         )
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -363,12 +393,20 @@ class TestExceptionResilience:
 
     async def test_fire_and_forget_ensure_future_resilient(self, tmp_db):
         """ensure_future wrapping swallows internal errors — caller unblocked."""
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(
+        mock_cs = AsyncMock(spec=ContextStoreClient)
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
+
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(
                 side_effect=RuntimeError("unexpected"),
             )
-            MockSvc.return_value = mock_instance
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -398,13 +436,17 @@ class TestMultiStatusTransitions:
 
         mock_cs = AsyncMock(spec=ContextStoreClient)
         mock_cs.update_attributes = AsyncMock(return_value=True)
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 
@@ -435,13 +477,17 @@ class TestMultiStatusTransitions:
 
         mock_cs = AsyncMock(spec=ContextStoreClient)
         mock_cs.update_attributes = AsyncMock(return_value=True)
-        mock_cs._is_circuit_open = lambda: False
+        mock_cs._is_circuit_open = MagicMock(return_value=False)
 
-        with patch("backend.services.plan_sync.PlanSyncService") as MockSvc:
-            mock_instance = AsyncMock()
-            mock_instance.get_node_mapping = AsyncMock(return_value=mapping)
-            mock_instance._cs = mock_cs
-            MockSvc.return_value = mock_instance
+        with patch(
+            "backend.services.context_store_client.ContextStoreClient",
+            return_value=mock_cs,
+        ), patch(
+            "backend.services.plan_sync.PlanSyncService",
+        ) as MockSvc:
+            mock_svc = AsyncMock()
+            mock_svc.get_node_mapping = AsyncMock(return_value=mapping)
+            MockSvc.return_value = mock_svc
 
             from backend.services.task_lifecycle import _sync_status_to_context_store
 

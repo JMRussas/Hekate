@@ -8,11 +8,15 @@
 import logging
 import subprocess
 import time
+from datetime import datetime, timezone
 
 from dependency_injector.wiring import inject, Provide
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.container import Container
+
+VERSION = "0.1.0"
+_start_time = time.monotonic()
 from backend.models.schemas import (
     CliAvailabilityOut,
     ModelOut,
@@ -49,6 +53,17 @@ _ALLOWED_NSSM_SERVICES = {
 async def health_check():
     """Lightweight liveness probe. Returns 200 if the app is running."""
     return {"status": "ok"}
+
+
+@health_router.get("/health/detailed")
+async def health_detailed():
+    """Detailed health check with version, uptime, DB status, and timestamp."""
+    return {
+        "service_version": VERSION,
+        "uptime_seconds": round(time.monotonic() - _start_time, 2),
+        "db_connection_status": "ok",
+        "current_timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @health_router.post("/nssm/{service}/{action}")

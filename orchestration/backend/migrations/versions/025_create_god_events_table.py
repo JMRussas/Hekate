@@ -62,7 +62,7 @@ def upgrade() -> None:
         sa.Column("payload", payload_type, nullable=True),
         sa.Column("severity", sa.Text, nullable=False, server_default="info"),
     ]
-    if created_at_default:
+    if created_at_default is not None:
         columns.append(sa.Column("created_at", created_at_type, nullable=False,
                                  server_default=created_at_default))
     else:

@@ -56,7 +56,12 @@ Requirements are numbered [R1], [R2], etc. for traceability.
 - Map each task to the requirement IDs it satisfies using requirement_ids.
 - Include verification_criteria: a concrete check to confirm task completion.
 - Include affected_files: list of files this task will create or modify (best guess).
-- Include rationale: explain WHY this approach was chosen, what alternatives were considered and rejected, and what constraints or dependencies drove the decision. This captures decision context so future tasks and revisions understand the reasoning.
+- Include rationale: a REQUIRED field capturing the decision context behind each task. Every task must have a non-empty rationale with three components:
+  1. **Approach justification**: Why this specific approach was chosen over others.
+  2. **Alternatives considered**: At least one alternative approach that was evaluated and rejected, with the reason it was rejected (e.g., "Could use a migration script instead of ALTER TABLE, but that risks data loss during the rename").
+  3. **Driving constraints**: What technical constraints, dependencies, or project requirements forced or influenced this decision (e.g., "Must run after task 2 because it creates the schema this task populates").
+  This captures decision context so future tasks, revisions, and post-mortems understand the reasoning without re-deriving it.
+  A rationale that merely restates the task title or says "standard approach" will be rejected — be specific.
 - When a feature has well-known implementation patterns (window resizing, drag-and-drop, undo/redo, virtual scrolling, etc.), plan to replicate the established pattern rather than speculating about difficulty. Reference the standard approach in the task description so the implementer knows what to follow.
 </task_guidelines>
 
@@ -81,8 +86,54 @@ _TASK_SCHEMA = """{
       "requirement_ids": ["R1", "R3"],
       "verification_criteria": "How to verify this task was completed correctly",
       "affected_files": ["src/auth.ts", "db/schema.sql"],
-      "rationale": "Why this approach was chosen, alternatives considered, and driving constraints"
+      "rationale": "Approach: [why this approach]. Alternatives: [what else was considered and why it was rejected]. Constraints: [what forced this decision]",
+      "steps": null
     }"""
+
+# Step tree schema hint — appended to task guidelines for L1+ rigor.
+# Instructs the planner to generate step trees for medium/complex tasks.
+_STEP_TREE_GUIDANCE = """
+<step_trees>
+For medium and complex tasks (code, integration, game_code, game_ui), you MUST include a "steps" array.
+For simple tasks and for research/analysis/documentation tasks, set "steps": null.
+
+Step trees give the executor a deterministic execution skeleton. The model executes one step at a time
+with progressive context injection — it never sees the full tree. Each step produces named output
+variables that flow as typed inputs into subsequent steps.
+
+Step format:
+  "steps": [
+    {
+      "id": "unique_step_id",
+      "instruction": "What the model must do in this step",
+      "inputs": ["var_from_prior_step"],
+      "outputs": [{"name": "var_name", "description": "what this produces", "required": true}],
+      "next_step_id": "optional_explicit_next_step",
+      "branch_conditions": [{"condition": "natural language condition", "target_step_id": "step_id"}],
+      "fallback_step_id": "step_if_no_branch_matches"
+    }
+  ]
+
+Example — a medium code task with 3 steps:
+  "steps": [
+    {"id": "step_0", "instruction": "Read the target files and identify existing patterns, imports, and conventions.", "inputs": [], "outputs": [{"name": "code_context", "description": "Summary of existing code structure and patterns", "required": true}]},
+    {"id": "step_1", "instruction": "Implement the changes following the patterns identified in code_context.", "inputs": ["code_context"], "outputs": [{"name": "files_changed", "description": "List of files created or modified", "required": true}]},
+    {"id": "step_2", "instruction": "Read back the changed files and verify correctness: imports resolve, types match, no syntax errors. Fix any issues.", "inputs": ["files_changed"], "outputs": [{"name": "verification", "description": "PASS or list of issues found and fixed", "required": true}]}
+  ]
+
+Step count guidelines:
+- Medium tasks: 2-4 steps (read -> implement -> verify).
+- Complex tasks: 3-6 steps (read -> plan -> implement -> test -> verify).
+- Simple tasks: set "steps": null — they run single-shot.
+
+Rules:
+- Each step must be independently executable by a fresh model instance given only its instruction and typed inputs.
+- Inputs/outputs create the data flow between steps — this is the only way context transfers.
+- Branch conditions are optional — use for conditional logic (e.g., "if tests exist" -> run_tests, else -> skip_tests).
+- Do NOT generate steps for research, analysis, asset, or documentation tasks.
+- More than 6 steps means the task should be split into separate tasks.
+</step_trees>
+"""
 
 _RIGOR_SUFFIX_L0 = """Produce a high-level roadmap of epics. Do NOT decompose into individual tasks — \
 each epic represents a major body of work that will be planned separately at L1-L3 when the user is ready.
@@ -231,7 +282,16 @@ _RIGOR_SUFFIXES = {
 
 def _build_system_prompt(rigor: PlanningRigor) -> str:
     """Build the full system prompt for the given planning rigor level."""
-    return _PLANNING_PREAMBLE + _RIGOR_SUFFIXES[rigor]
+    preamble = _PLANNING_PREAMBLE
+    # Inject step tree guidance for L1+ rigor — any plan that produces tasks
+    # should generate step trees for medium/complex work. L0 only produces
+    # epics (no tasks), so step trees don't apply.
+    if rigor in (PlanningRigor.L1, PlanningRigor.L2, PlanningRigor.L3):
+        preamble = preamble.replace(
+            "</task_guidelines>",
+            _STEP_TREE_GUIDANCE + "\n</task_guidelines>",
+        )
+    return preamble + _RIGOR_SUFFIXES[rigor]
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +327,11 @@ Task assignment heuristics:
 - Build verification, integration tests → claude_code (game_build_verify)
 
 Rationale requirement:
-- Every task MUST include a rationale field explaining why this approach was chosen, what alternatives were considered and rejected, and what constraints drove the decision.
+- Every task MUST include a non-empty rationale field with three components:
+  1. Approach justification: Why this specific approach was chosen.
+  2. Alternatives considered: At least one rejected alternative with the reason.
+  3. Driving constraints: Technical constraints, dependencies, or requirements that influenced the decision.
+  A rationale that merely restates the task title or says "standard approach" will be rejected — be specific.
 
 Anti-patterns to avoid:
 - Don't create a single massive "Implement game" task — decompose into focused work units.
@@ -311,7 +375,8 @@ _GAMEDEV_TASK_SCHEMA = """{
       "requirement_ids": ["R1", "R3"],
       "verification_criteria": "How to verify this task was completed correctly",
       "affected_files": ["game/Combat.cs", "assets/monsters.json"],
-      "rationale": "Why this approach was chosen, alternatives considered, and driving constraints"
+      "rationale": "Approach: [why this approach]. Alternatives: [what else was considered and why it was rejected]. Constraints: [what forced this decision]",
+      "steps": null
     }"""
 
 # Platform-specific context blocks injected into the game dev preamble
@@ -391,6 +456,13 @@ def _build_gamedev_system_prompt(rigor: PlanningRigor, platform: str | None = No
     """Build the full system prompt for game dev planning."""
     prompt = _GAMEDEV_PLANNING_PREAMBLE
 
+    # Inject step tree guidance for L1+ rigor (game dev tasks benefit too)
+    if rigor in (PlanningRigor.L1, PlanningRigor.L2, PlanningRigor.L3):
+        prompt = prompt.replace(
+            "</game_dev_strategy>",
+            _STEP_TREE_GUIDANCE + "\n</game_dev_strategy>",
+        )
+
     # Inject platform context if specified
     if platform and platform in _PLATFORM_CONTEXTS:
         prompt += _PLATFORM_CONTEXTS[platform] + "\n\n"
@@ -428,7 +500,7 @@ You will receive:
 - Map depends_on to the task indices (0-based, global across phases) of methods that must complete before this one.
 - For new methods on existing classes, include the existing method signatures in available_methods.
 - For methods that modify shared state, note potential concurrency concerns in the description.
-- Every task MUST include a rationale field explaining why this approach was chosen, what alternatives were considered, and what constraints drove the decision.
+- Every task MUST include a non-empty rationale field with: (1) why this approach was chosen, (2) at least one alternative considered and why it was rejected, (3) what constraints drove the decision. A rationale that merely restates the task title will be rejected.
 </rules>
 
 """
@@ -446,7 +518,7 @@ _CSHARP_TASK_SCHEMA = """{
       "requirement_ids": ["R1"],
       "verification_criteria": "How to verify this method works correctly",
       "affected_files": ["src/Services/MyService.cs"],
-      "rationale": "Why this approach was chosen, alternatives considered, and driving constraints"
+      "rationale": "Approach: [why this approach]. Alternatives: [what else was considered and why it was rejected]. Constraints: [what forced this decision]"
     }"""
 
 _CSHARP_RIGOR_SUFFIX = f"""Produce a JSON plan organized into phases. Each phase corresponds to one class being modified or created.
@@ -779,13 +851,14 @@ class PlannerService:
         user_message = context.model_dump_json(indent=2)
 
         try:
-            # Using Haiku for this evaluation as it's fast and good at structured JSON output.
+            # Use the "simple" task_type which routes to the cheapest/fastest
+            # provider chain (gemini → ollama → claude).  This is a structured
+            # JSON classification task — perfect for lightweight models.
             llm_response = await call_llm(
                 system_prompt=_REASSESSMENT_PROMPT,
                 user_message=user_message,
-                provider="claude",  # Assuming 'claude' provider can route to Haiku
-                model="haiku",
-                task_type="simple",  # This is more of a classification/extraction task
+                model=cfg("llm.reassessment_model", None),
+                task_type="simple",
             )
 
             response_text = llm_response.text
@@ -797,8 +870,8 @@ class PlannerService:
                 cost_usd=0.0,
                 prompt_tokens=0,
                 completion_tokens=0,
-                provider=llm_response.provider or "claude",
-                model=llm_response.model or "haiku",
+                provider=llm_response.provider or "unknown",
+                model=llm_response.model or "default",
                 purpose="wave_reassessment",
                 project_id=context.project_id,
             )

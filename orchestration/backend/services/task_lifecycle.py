@@ -63,22 +63,24 @@ async def _sync_status_to_context_store(
     unreachable (circuit breaker open).
     """
     try:
+        from backend.services.context_store_client import ContextStoreClient
         from backend.services.plan_sync import PlanSyncService
-        svc = PlanSyncService(db=db)
+        cs = ContextStoreClient()
+
+        # Circuit breaker check — skip early if context store is down
+        if cs._is_circuit_open():
+            return
+
+        svc = PlanSyncService(context_client=cs, db=db)
         mapping = await svc.get_node_mapping(plan_id)
         node_id = mapping.get(task_title)
         if not node_id:
             return
 
-        # Circuit breaker check — _is_circuit_open is already called inside
-        # update_attributes, so this just ensures we don't build attrs for nothing
-        if svc._cs._is_circuit_open():
-            return
-
         attrs: dict = {"status": status, "updated_at": time.time()}
         if error:
             attrs["error"] = error[:500]
-        await svc._cs.update_attributes(node_id, attrs)
+        await cs.update_attributes(node_id, attrs)
     except Exception:
         # Never propagate — this is fire-and-forget
         logger.debug("Context store status sync failed for task %s", task_title, exc_info=True)
@@ -517,6 +519,12 @@ async def _run_review_cycle(
                 time.time(), task_id,
             ),
         )
+        if _row_get(task_row, "plan_id"):
+            asyncio.ensure_future(_sync_status_to_context_store(
+                db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
+                status=TaskStatus.NEEDS_REVIEW,
+                error=f"Review iteration limit: {summary}",
+            ))
         await progress.push_event(
             project_id, "task_needs_review",
             f"{task_row['title']}: review iteration limit reached — {summary}",
@@ -680,12 +688,86 @@ async def create_checkpoint(
         "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
         (TaskStatus.NEEDS_REVIEW, error_msg, time.time(), task_id),
     )
+    if _row_get(task_row,"plan_id"):
+        asyncio.ensure_future(_sync_status_to_context_store(
+            db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
+            status=TaskStatus.NEEDS_REVIEW, error=error_msg,
+        ))
 
     await progress.push_event(
         project_id, "checkpoint",
         f"Checkpoint: {task_row['title']} needs attention after {task_row['max_retries']} failed attempts",
         task_id=task_id, checkpoint_id=checkpoint_id,
     )
+
+
+async def create_reassessment_intervention(
+    *,
+    project_id: str,
+    plan_id: str,
+    wave: int,
+    reassessment_context: dict,
+    rationale: str,
+    db,
+    progress,
+):
+    """Create a supervised intervention proposal from a wave reassessment.
+
+    This is called when the Athena Loop determines that the plan requires
+    human intervention rather than autonomous replanning. It creates a
+    checkpoint record and emits a frontend event.
+    """
+    intervention_id = uuid.uuid4().hex[:12]
+    summary = f"Wave {wave} reassessment: escalation recommended"
+    question = "The project plan may no longer be viable. Review the context and decide whether to replan, modify, or abort the project."
+
+    await db.execute_write(
+        "INSERT INTO checkpoints "
+        "(id, project_id, checkpoint_type, summary, attempts_json, question, created_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        (
+            intervention_id,
+            project_id,
+            "reassessment_escalation",
+            summary,
+            json.dumps(reassessment_context),
+            question,
+            time.time(),
+        ),
+    )
+
+    # Also log to sentinel observations for unified history
+    try:
+        from backend.services.sentinel.models import SentinelObservation, Severity
+        from backend.services.sentinel.context_client import SentinelContextClient
+
+        observation = SentinelObservation(
+            category="wave_reassessment",
+            message=f"Escalation proposed for plan {plan_id} after wave {wave}",
+            severity=Severity.CRITICAL,
+            project_id=project_id,
+            details={
+                "wave": wave,
+                "rationale": rationale,
+                "context": reassessment_context,
+                "intervention_id": intervention_id,
+            },
+        )
+        ctx_client = SentinelContextClient()
+        await ctx_client.save_observation(observation, parent_id=plan_id)
+    except Exception:
+        logger.debug("Failed to persist reassessment observation for plan %s", plan_id, exc_info=True)
+
+
+    await progress.push_event(
+        project_id,
+        "intervention_proposal",
+        summary,
+        plan_id=plan_id,
+        intervention_id=intervention_id,
+        rationale=rationale,
+    )
+    logger.info("Created reassessment intervention %s for project %s wave %d", intervention_id, project_id, wave)
 
 
 async def verify_task_output(
@@ -729,6 +811,11 @@ async def verify_task_output(
             (TaskStatus.NEEDS_REVIEW, VerificationResult.SKIPPED,
              f"Verification error: {e}", time.time(), task_id),
         )
+        if _row_get(task_row,"plan_id"):
+            asyncio.ensure_future(_sync_status_to_context_store(
+                db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
+                status=TaskStatus.NEEDS_REVIEW, error=f"Verification error: {e}",
+            ))
         await progress.push_event(
             project_id, "task_needs_review",
             f"{task_row['title']}: verification infrastructure failed, blocking dependents",
@@ -790,11 +877,30 @@ async def verify_task_output(
                      f"Empty output after {retry_count} retries (gaps: {v_notes})",
                      time.time(), task_id),
                 )
+                if _row_get(task_row,"plan_id"):
+                    asyncio.ensure_future(_sync_status_to_context_store(
+                        db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
+                        status=TaskStatus.FAILED,
+                        error=f"Empty output after {retry_count} retries",
+                    ))
                 await progress.push_event(
                     project_id, "task_failed",
                     f"{task_row['title']}: empty output with gaps, retries exhausted",
                     task_id=task_id,
                 )
+                # File to fix queue for tracking
+                try:
+                    from backend.services.fix_queue import FixQueue
+                    fq = FixQueue(db)
+                    await fq.file_from_lifecycle(
+                        task_id=task_id, project_id=project_id,
+                        title=f"Empty output: {task_row['title'][:80]}",
+                        description=f"Task produced empty output after {retry_count} retries. Gaps: {v_notes}",
+                        error=f"Empty output after {retry_count} retries",
+                        affected_component=_row_get(task_row,"model_tier") or _row_get(task_row,"model_used"),
+                    )
+                except Exception:
+                    pass
                 return True
 
         # Loop-breaker: if this output is identical to a previously rejected
@@ -820,6 +926,12 @@ async def verify_task_output(
                      f"Identical output after retry — likely false positive: {v_notes}",
                      time.time(), task_id),
                 )
+                if _row_get(task_row,"plan_id"):
+                    asyncio.ensure_future(_sync_status_to_context_store(
+                        db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
+                        status=TaskStatus.NEEDS_REVIEW,
+                        error=f"Identical output after retry: {v_notes}",
+                    ))
                 await progress.push_event(
                     project_id, "task_needs_review",
                     f"{task_row['title']}: identical output on retry, likely false positive",
@@ -840,9 +952,28 @@ async def verify_task_output(
             feedbacks = [e for e in ctx if e.get("type") == "verification_feedback"]
             if len(feedbacks) >= _MAX_VERIFICATION_FEEDBACKS:
                 feedbacks = feedbacks[-(_MAX_VERIFICATION_FEEDBACKS - 1):]
+            # Enrich retry feedback with historical recovery intelligence
+            recovery_hint = ""
+            try:
+                from backend.services.learning.execution_learner import get_learner
+                learner = get_learner()
+                recommendation = learner.get_recovery_recommendation(v_notes or "")
+                if recommendation == "diagnose_first":
+                    recovery_hint = (
+                        " RECOVERY STRATEGY: Read the relevant files first to understand "
+                        "the current state before making changes (91% historical success rate)."
+                    )
+                elif recommendation == "reassign_model":
+                    recovery_hint = (
+                        " NOTE: This failure pattern has historically been unrecoverable "
+                        "with retries. Focus on producing any working output."
+                    )
+            except Exception:
+                pass
+
             feedbacks.append({
                 "type": "verification_feedback",
-                "content": f"Previous attempt had gaps: {v_notes}. Address these issues.",
+                "content": f"Previous attempt had gaps: {v_notes}. Address these issues.{recovery_hint}",
                 "output_hash": output_hash,
             })
             ctx = non_feedbacks + feedbacks
@@ -863,6 +994,11 @@ async def verify_task_output(
             "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
             (TaskStatus.NEEDS_REVIEW, time.time(), task_id),
         )
+        if _row_get(task_row,"plan_id"):
+            asyncio.ensure_future(_sync_status_to_context_store(
+                db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
+                status=TaskStatus.NEEDS_REVIEW, error="Verification: human review needed",
+            ))
         await progress.push_event(
             project_id, "task_needs_review",
             f"{task_row['title']}: requires human review",
@@ -986,19 +1122,27 @@ async def _gather_interrogation_context(*, db, project_id: str, task_id: str) ->
     try:
         # Project knowledge findings — what the system has learned
         findings = await db.fetchall(
-            "SELECT content, rationale FROM project_knowledge "
+            "SELECT content, category, rationale, alternatives_considered, "
+            "confidence, source_task_title FROM project_knowledge "
             "WHERE project_id = $1 ORDER BY created_at DESC LIMIT 5",
             (project_id,),
         )
         if findings:
             lines = []
             for f in findings:
-                line = f["content"][:200]
+                cat = f.get("category", "discovery")
+                conf = f.get("confidence", "medium")
+                line = f"[{cat}|{conf}] {f['content'][:200]}"
                 if f.get("rationale"):
-                    line += f" (why: {f['rationale'][:100]})"
+                    line += f"\n    WHY: {f['rationale'][:150]}"
+                if f.get("alternatives_considered"):
+                    line += f"\n    REJECTED: {f['alternatives_considered'][:100]}"
+                if f.get("source_task_title"):
+                    line += f"\n    (from: {f['source_task_title']})"
                 lines.append(line)
             ctx["knowledge_findings"] = (
-                "Known project findings:\n" + "\n".join(f"- {l}" for l in lines)
+                "Historical Rationale — lessons from prior tasks:\n"
+                + "\n".join(f"- {l}" for l in lines)
             )
     except Exception:
         pass
@@ -1268,6 +1412,10 @@ async def execute_task(
             await progress.push_event(
                 project_id, "task_start", task_row["title"], task_id=task_id
             )
+            await progress.push_event(
+                project_id, "phase", "Phase: dispatching",
+                task_id=task_id, phase="dispatching",
+            )
 
             try:
                 # --- Ensure working directory exists with CLI config ---
@@ -1289,14 +1437,15 @@ async def execute_task(
                 # --- Project Knowledge Injection ---
                 try:
                     knowledge_rows = await db.fetchall(
-                        "SELECT category, content AS finding, rationale, alternatives_considered, confidence "
+                        "SELECT category, content AS finding, rationale, alternatives_considered, "
+                        "confidence, source_task_title "
                         "FROM project_knowledge WHERE project_id = $1 ORDER BY created_at DESC LIMIT 5",
                         (project_id,)
                     )
                     if knowledge_rows:
                         knowledge_items = [dict(r) for r in knowledge_rows]
                         
-                        current_context = json.loads(_dispatch_row.get("context_json") or "[]")
+                        current_context = json.loads(_row_get(_dispatch_row,"context_json") or "[]")
                         # Avoid duplicating on retries
                         if not any(c.get("type") == "project_knowledge" for c in current_context):
                             current_context.insert(0, {
@@ -1352,7 +1501,30 @@ async def execute_task(
                         ),
                     )
 
-                if tier == ModelTier.OLLAMA:
+                await progress.push_event(
+                    project_id, "phase", f"Phase: executing ({tier.value})",
+                    task_id=task_id, phase="executing", model_tier=tier.value,
+                )
+
+                # Step tree execution — if task has a step tree, use
+                # the tree runner instead of single-shot dispatch.
+                _step_tree_raw = _row_get(_dispatch_row,"step_tree_json")
+                if _step_tree_raw:
+                    from backend.services.tree_runner import run_step_tree
+                    _step_tree_data = (
+                        json.loads(_step_tree_raw)
+                        if isinstance(_step_tree_raw, str)
+                        else _step_tree_raw
+                    )
+                    result = await run_step_tree(
+                        step_tree=_step_tree_data,
+                        task_row=_dispatch_row,
+                        tier=tier,
+                        db=db, budget=budget, progress=progress,
+                        http_client=http_client,
+                        tool_registry=tool_registry,
+                    )
+                elif tier == ModelTier.OLLAMA:
                     result = await run_ollama_task(
                         task_row=_dispatch_row, http_client=http_client, budget=budget,
                         tool_registry=tool_registry,
@@ -1448,6 +1620,10 @@ async def execute_task(
                 # Run BEFORE forwarding context to prevent dependents from
                 # receiving output that verification may reject.
                 if VERIFICATION_ENABLED and tier != ModelTier.OLLAMA:
+                    await progress.push_event(
+                        project_id, "phase", "Phase: verifying",
+                        task_id=task_id, phase="verifying",
+                    )
                     verification_overridden = await verify_task_output(
                         task_row=task_row, output_text=result["output"],
                         project_id=project_id, task_id=task_id,
@@ -1844,6 +2020,13 @@ async def complete_task_external(
         ),
     )
 
+    # Sync status to context store (fire-and-forget)
+    if _row_get(task_row,"plan_id"):
+        asyncio.ensure_future(_sync_status_to_context_store(
+            db=db, task_title=task_row["title"], plan_id=task_row["plan_id"],
+            status=TaskStatus.COMPLETED,
+        ))
+
     await progress.push_event(
         project_id, "task_complete", task_row["title"],
         task_id=task_id, cost_usd=cost_usd,
@@ -1928,21 +2111,76 @@ async def verify_csharp_build(csproj_path: str) -> tuple[bool, str]:
 # Wave Reassessment (Athena Loop)
 # ---------------------------------------------------------------------------
 
-from backend.models.schemas import TaskOutcomeSummary, WaveReassessmentContext
+from backend.models.schemas import (
+    KnowledgeFinding,
+    SentinelObservationSummary,
+    TaskOutcomeSummary,
+    WaveReassessmentContext,
+)
+
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "needs_review")
+
 
 async def collect_wave_reassessment_context(
     *, db, project_id: str, wave_number: int
 ) -> WaveReassessmentContext | None:
-    """Collect task outcomes, knowledge, and observations for wave reassessment."""
+    """Collect task outcomes, knowledge, and observations when all wave tasks are terminal.
 
-    # 1. Get task outcomes for the wave
+    Returns None if the plan is missing or any task in the wave is still non-terminal.
+    Gathers:
+      - Per-task outcomes with cost (from usage_log), model_tier, duration
+      - Knowledge findings from project_knowledge
+      - Sentinel observations for the project
+      - Original plan JSON
+      - Aggregate wave cost
+    """
+
+    # ---------------------------------------------------------------
+    # 0. Verify all tasks in the wave are terminal
+    # ---------------------------------------------------------------
+    non_terminal_row = await db.fetchone(
+        "SELECT COUNT(*) as cnt FROM tasks "
+        "WHERE project_id = $1 AND wave = $2 AND status NOT IN ($3, $4, $5, $6)",
+        (project_id, wave_number, *_TERMINAL_STATUSES),
+    )
+    if non_terminal_row and non_terminal_row["cnt"] > 0:
+        logger.debug(
+            "Wave %d has %d non-terminal tasks, skipping reassessment collection",
+            wave_number, non_terminal_row["cnt"],
+        )
+        return None
+
+    # ---------------------------------------------------------------
+    # 1. Task outcomes with cost data from usage_log
+    #    NOTE: u.cost_usd is fully qualified to avoid ambiguity when
+    #    JOINing usage_log (which has cost_usd) with other tables.
+    # ---------------------------------------------------------------
     task_rows = await db.fetchall(
-        "SELECT id, title, status, output_text, error FROM tasks WHERE project_id = $1 AND wave = $2",
+        "SELECT t.id, t.title, t.status, t.output_text, t.error, "
+        "t.model_tier, t.started_at, t.completed_at, "
+        "COALESCE(SUM(u.cost_usd), 0) as task_cost "
+        "FROM tasks t "
+        "LEFT JOIN usage_log u ON u.task_id = t.id "
+        "WHERE t.project_id = $1 AND t.wave = $2 "
+        "GROUP BY t.id",
         (project_id, wave_number),
     )
+
+    if not task_rows:
+        logger.debug("No tasks found for wave %d in project %s", wave_number, project_id)
+        return None
+
     task_outcomes = []
+    wave_cost = 0.0
     for row in task_rows:
-        summary = (row["output_text"] or "")[:500]  # Truncate for summary
+        summary = (row["output_text"] or "")[:500]
+        cost = row["task_cost"] or 0.0
+        wave_cost += cost
+
+        duration = None
+        if row["started_at"] and row["completed_at"]:
+            duration = round(row["completed_at"] - row["started_at"], 2)
+
         task_outcomes.append(
             TaskOutcomeSummary(
                 task_id=row["id"],
@@ -1950,43 +2188,68 @@ async def collect_wave_reassessment_context(
                 status=row["status"],
                 output_summary=summary,
                 error=row["error"],
+                model_tier=row["model_tier"],
+                cost_usd=round(cost, 6),
+                duration_seconds=duration,
             )
         )
 
-    # 2. Get knowledge findings for the project (including rationale)
+    # ---------------------------------------------------------------
+    # 2. Knowledge findings for the project
+    # ---------------------------------------------------------------
     knowledge_rows = await db.fetchall(
-        "SELECT content, rationale, confidence FROM project_knowledge "
+        "SELECT id, content, category, confidence, rationale, source_task_title "
+        "FROM project_knowledge "
         "WHERE project_id = $1 ORDER BY created_at DESC",
         (project_id,),
     )
-    knowledge_findings = []
-    for row in knowledge_rows:
-        entry = row["content"]
-        if row.get("rationale"):
-            entry += f" [WHY: {row['rationale']}]"
-        if row.get("confidence"):
-            entry += f" [confidence: {row['confidence']}]"
-        knowledge_findings.append(entry)
+    knowledge_findings = [
+        KnowledgeFinding(
+            id=row["id"] or "",
+            content=row["content"],
+            category=row["category"] or "discovery",
+            confidence=row["confidence"] or "medium",
+            rationale=row["rationale"] or "",
+            source_task_title=row["source_task_title"] or "",
+        )
+        for row in knowledge_rows
+    ]
 
-    # 3. Get sentinel observations for the project
+    # ---------------------------------------------------------------
+    # 3. Sentinel observations for the project
+    #    Table columns: id, project_id, rule, severity, summary,
+    #    details_json, reasoning, timestamp
+    # ---------------------------------------------------------------
     observation_rows = await db.fetchall(
-        "SELECT message, details_json FROM sentinel_observations WHERE project_id = $1 ORDER BY created_at DESC",
+        "SELECT id, rule, severity, summary, details_json "
+        "FROM sentinel_observations "
+        "WHERE project_id = $1 ORDER BY timestamp DESC",
         (project_id,),
     )
     sentinel_observations = []
     for row in observation_rows:
-        details = json.loads(row["details_json"]) if row["details_json"] else {}
-        # a simple string representation
-        observation_str = f"{row['message']} (Details: {json.dumps(details)})"
-        sentinel_observations.append(observation_str)
+        try:
+            details = json.loads(row["details_json"]) if row["details_json"] else {}
+        except (json.JSONDecodeError, TypeError):
+            details = {}
+        sentinel_observations.append(
+            SentinelObservationSummary(
+                id=row["id"] or "",
+                category=row["rule"],
+                severity=row["severity"],
+                message=row["summary"],
+                details=details,
+            )
+        )
 
-    # 4. Get the original plan
+    # ---------------------------------------------------------------
+    # 4. Original plan
+    # ---------------------------------------------------------------
     plan_row = await db.fetchone(
         "SELECT plan_json FROM plans WHERE project_id = $1 ORDER BY version DESC LIMIT 1",
         (project_id,),
     )
     if not plan_row:
-        # Cannot proceed without a plan
         return None
 
     original_plan = json.loads(plan_row["plan_json"])
@@ -1998,6 +2261,8 @@ async def collect_wave_reassessment_context(
         knowledge_findings=knowledge_findings,
         sentinel_observations=sentinel_observations,
         original_plan=original_plan,
+        wave_cost_usd=round(wave_cost, 6),
+        all_tasks_terminal=True,
     )
 
 
@@ -2041,20 +2306,21 @@ async def execute_replan(
         project_id, completed_wave, rationale,
     )
 
-    # 1. Cancel all pending/blocked tasks in waves after the completed wave
+    # 1. Cancel all pending/blocked/queued tasks in waves after the completed wave.
+    #    Include QUEUED because those tasks haven't started executing yet.
     now = time.time()
     cancelled_status = await db.execute_write(
         "UPDATE tasks SET status = $1, updated_at = $2 "
-        "WHERE project_id = $3 AND wave > $4 AND status IN ($5, $6)",
+        "WHERE project_id = $3 AND wave > $4 AND status IN ($5, $6, $7)",
         (
             TaskStatus.CANCELLED, now,
             project_id, completed_wave,
-            TaskStatus.PENDING, TaskStatus.BLOCKED,
+            TaskStatus.PENDING, TaskStatus.BLOCKED, TaskStatus.QUEUED,
         ),
     )
     cancelled_count = parse_rowcount(cancelled_status)
     logger.info(
-        "Cancelled %s pending/blocked tasks in waves > %d for project %s",
+        "Cancelled %s pending/blocked/queued tasks in waves > %d for project %s",
         cancelled_count, completed_wave, project_id,
     )
 
@@ -2101,7 +2367,14 @@ async def execute_replan(
             project_id, new_plan_id, plan_result["version"],
         )
 
-        # 5. Decompose the new plan into tasks
+        # 5. Auto-approve the new plan (system-triggered replan, no human gate)
+        from backend.models.enums import PlanStatus as _PlanStatus
+        await db.execute_write(
+            "UPDATE plans SET status = $1 WHERE id = $2",
+            (_PlanStatus.APPROVED, new_plan_id),
+        )
+
+        # 6. Decompose the new plan into tasks
         decomposer = DecomposerService(db=db)
         decompose_result = await decomposer.decompose(project_id, new_plan_id)
         logger.info(
@@ -2110,13 +2383,37 @@ async def execute_replan(
             decompose_result.get("total_waves", 0),
         )
     finally:
-        # 6. Restore original requirements (the addendum was temporary context)
+        # 7. Restore original requirements (the addendum was temporary context)
         await db.execute_write(
             "UPDATE projects SET requirements = $1, updated_at = $2 WHERE id = $3",
             (original_requirements, time.time(), project_id),
         )
 
-    # 7. Record the revision in the context store
+    # 8. Set project back to EXECUTING so the executor picks up the new tasks.
+    #    decomposer.decompose() sets status to READY (awaiting human approval),
+    #    but auto-replan is system-triggered — no human gate needed.
+    from backend.models.enums import ProjectStatus
+    await db.execute_write(
+        "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
+        (ProjectStatus.EXECUTING, time.time(), project_id),
+    )
+
+    # 9. Sync the new plan's node tree to the context store so the new tasks
+    #    get context store nodes (required for status update propagation).
+    if plan_sync:
+        project_row_full = await db.fetchone(
+            "SELECT name, repo_path FROM projects WHERE id = $1", (project_id,),
+        )
+        if project_row_full:
+            await plan_sync.sync_plan(
+                project_name=project_row_full["name"],
+                repo_path=project_row_full["repo_path"],
+                plan_data=plan_result["plan"],
+                plan_id=new_plan_id,
+                project_id=project_id,
+            )
+
+    # 10. Record the revision in the context store
     revision_node_id = None
     if plan_sync and old_plan_id:
         delta = {

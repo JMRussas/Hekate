@@ -6,12 +6,19 @@
 #  Depends on: backend/db/connection.py, backend/config.py
 #  Used by:    container.py, routes/usage.py, services/executor.py
 
+from __future__ import annotations
+
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
+from types import TracebackType
 
 from backend.config import BUDGET_DAILY, BUDGET_MONTHLY, BUDGET_PER_PROJECT, BUDGET_WARN_PCT
+from backend.exceptions import BudgetExhaustedError
 from backend.models.schemas import BudgetStatus, UsageSummary
+
+logger = logging.getLogger(__name__)
 
 
 def _today_key() -> str:
@@ -100,11 +107,11 @@ class BudgetManager:
     async def get_budget_status(self) -> BudgetStatus:
         """Get current spending vs. limits."""
         day_row = await self._db.fetchone(
-            "SELECT total_cost_usd FROM budget_periods WHERE period_key = $1",
+            "SELECT budget_periods.total_cost_usd FROM budget_periods WHERE period_key = $1",
             (_today_key(),),
         )
         month_row = await self._db.fetchone(
-            "SELECT total_cost_usd FROM budget_periods WHERE period_key = $1",
+            "SELECT budget_periods.total_cost_usd FROM budget_periods WHERE period_key = $1",
             (_month_key(),),
         )
 
@@ -292,3 +299,267 @@ class BudgetManager:
             by_model=by_model,
             by_provider=by_provider,
         )
+
+    def guard(
+        self,
+        estimated_cost: float,
+        provider: str,
+        model: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        purpose: str = "",
+    ) -> BudgetGuard:
+        """Create an async context manager that reserves budget on entry
+        and records or rolls back on exit.
+
+        Usage::
+
+            async with budget.guard(0.05, "anthropic", "haiku", project_id="p1") as guard:
+                result = await do_llm_call()
+                guard.actual_cost = result.cost
+                guard.prompt_tokens = result.prompt_tokens
+                guard.completion_tokens = result.completion_tokens
+        """
+        return BudgetGuard(
+            manager=self,
+            estimated_cost=estimated_cost,
+            provider=provider,
+            model=model,
+            project_id=project_id,
+            task_id=task_id,
+            purpose=purpose,
+        )
+
+
+class AsyncBudgetManager:
+    """Async context manager for transactional budget control.
+
+    Wraps the full lifecycle: check budget → reserve → execute (caller's
+    code inside the ``async with``) → record spend or rollback.
+
+    Unlike ``BudgetGuard`` which is created via ``BudgetManager.guard()``,
+    this class can be instantiated directly with a ``BudgetManager`` and
+    used as a standalone transactional wrapper.
+
+    Usage::
+
+        async with AsyncBudgetManager(
+            budget_manager,
+            estimated_cost=0.05,
+            provider="anthropic",
+            model="haiku",
+            project_id="p1",
+        ) as txn:
+            result = await do_llm_call()
+            txn.actual_cost = result.cost
+            txn.prompt_tokens = result.prompt_tokens
+            txn.completion_tokens = result.completion_tokens
+    """
+
+    def __init__(
+        self,
+        manager: BudgetManager,
+        estimated_cost: float,
+        provider: str,
+        model: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        purpose: str = "",
+    ):
+        self._manager = manager
+        self._estimated_cost = estimated_cost
+        self._provider = provider
+        self._model = model
+        self._project_id = project_id
+        self._task_id = task_id
+        self._purpose = purpose
+
+        # Callers set these before exiting to record actuals.
+        self.actual_cost: float = 0.0
+        self.prompt_tokens: int = 0
+        self.completion_tokens: int = 0
+
+        self._global_reserved = False
+        self._project_reserved = False
+        self._committed = False
+
+    async def __aenter__(self) -> AsyncBudgetManager:
+        """Reserve budget (global + per-project) and mark as in-use.
+
+        Raises ``BudgetExhaustedError`` if either global or per-project
+        limits would be exceeded by the estimated cost.
+        """
+        if self._estimated_cost <= 0:
+            return self
+
+        # Global reservation
+        if not await self._manager.reserve_spend(self._estimated_cost):
+            raise BudgetExhaustedError(
+                f"Global budget exceeded for estimated ${self._estimated_cost:.4f}"
+            )
+        self._global_reserved = True
+
+        # Per-project reservation
+        if self._project_id:
+            if not await self._manager.reserve_spend_project(
+                self._project_id, self._estimated_cost
+            ):
+                # Roll back global reservation before raising
+                await self._manager.release_reservation(self._estimated_cost)
+                self._global_reserved = False
+                raise BudgetExhaustedError(
+                    f"Project {self._project_id} budget exceeded "
+                    f"for estimated ${self._estimated_cost:.4f}"
+                )
+            self._project_reserved = True
+
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
+        """Finalize the budget transaction.
+
+        On success (no exception): records the actual spend via
+        ``record_spend`` if ``actual_cost > 0``.
+
+        On failure (exception raised): logs a warning and skips
+        recording — the reservation is rolled back either way.
+
+        Reservations are always released in the ``finally`` block
+        regardless of outcome. Exceptions are never suppressed.
+        """
+        try:
+            if exc_type is None and self.actual_cost > 0:
+                await self._manager.record_spend(
+                    cost_usd=self.actual_cost,
+                    prompt_tokens=self.prompt_tokens,
+                    completion_tokens=self.completion_tokens,
+                    provider=self._provider,
+                    model=self._model,
+                    purpose=self._purpose,
+                    project_id=self._project_id,
+                    task_id=self._task_id,
+                )
+                self._committed = True
+            elif exc_type is not None:
+                logger.warning(
+                    "AsyncBudgetManager: rolling back reservation of $%.4f "
+                    "due to %s: %s",
+                    self._estimated_cost,
+                    exc_type.__name__,
+                    exc_val,
+                )
+        finally:
+            # Always release reservations
+            if self._global_reserved:
+                await self._manager.release_reservation(self._estimated_cost)
+            if self._project_reserved and self._project_id:
+                await self._manager.release_reservation_project(
+                    self._project_id, self._estimated_cost
+                )
+
+        return False  # Never suppress exceptions
+
+    @property
+    def committed(self) -> bool:
+        """Whether actual spend was successfully recorded."""
+        return self._committed
+
+
+class BudgetGuard:
+    """Async context manager that reserves budget on entry and records
+    actual spend on successful exit, or rolls back reservations on error.
+
+    Set ``actual_cost``, ``prompt_tokens``, and ``completion_tokens``
+    inside the ``async with`` block before exiting to record the real
+    spend.  If an exception occurs, reservations are released and the
+    exception propagates.
+    """
+
+    def __init__(
+        self,
+        manager: BudgetManager,
+        estimated_cost: float,
+        provider: str,
+        model: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        purpose: str = "",
+    ):
+        self._manager = manager
+        self._estimated_cost = estimated_cost
+        self._provider = provider
+        self._model = model
+        self._project_id = project_id
+        self._task_id = task_id
+        self._purpose = purpose
+
+        # Callers set these before exiting the context to record actuals.
+        self.actual_cost: float = 0.0
+        self.prompt_tokens: int = 0
+        self.completion_tokens: int = 0
+
+        self._global_reserved = False
+        self._project_reserved = False
+
+    async def __aenter__(self) -> BudgetGuard:
+        if self._estimated_cost <= 0:
+            return self
+
+        if not await self._manager.reserve_spend(self._estimated_cost):
+            raise BudgetExhaustedError(
+                f"Global budget exceeded for estimated ${self._estimated_cost:.4f}"
+            )
+        self._global_reserved = True
+
+        if self._project_id:
+            if not await self._manager.reserve_spend_project(
+                self._project_id, self._estimated_cost
+            ):
+                await self._manager.release_reservation(self._estimated_cost)
+                self._global_reserved = False
+                raise BudgetExhaustedError(
+                    f"Project {self._project_id} budget exceeded "
+                    f"for estimated ${self._estimated_cost:.4f}"
+                )
+            self._project_reserved = True
+
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
+        try:
+            if exc_type is None and self.actual_cost > 0:
+                await self._manager.record_spend(
+                    cost_usd=self.actual_cost,
+                    prompt_tokens=self.prompt_tokens,
+                    completion_tokens=self.completion_tokens,
+                    provider=self._provider,
+                    model=self._model,
+                    purpose=self._purpose,
+                    project_id=self._project_id,
+                    task_id=self._task_id,
+                )
+            elif exc_type is not None:
+                logger.warning(
+                    "BudgetGuard: rolling back reservation of $%.4f due to %s",
+                    self._estimated_cost,
+                    exc_type.__name__,
+                )
+        finally:
+            if self._global_reserved:
+                await self._manager.release_reservation(self._estimated_cost)
+            if self._project_reserved and self._project_id:
+                await self._manager.release_reservation_project(
+                    self._project_id, self._estimated_cost
+                )
+
+        return False  # Don't suppress exceptions

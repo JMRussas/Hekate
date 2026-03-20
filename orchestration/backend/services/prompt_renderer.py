@@ -33,6 +33,7 @@ class ContextType(str, Enum):
     VERIFICATION_CRITERIA = "verification_criteria"
     DEPENDENCY_OUTPUT = "dependency_output"
     META_INSTRUCTIONS = "meta_instructions"
+    EXECUTION_INTELLIGENCE = "execution_intelligence"
     SIBLING_TASKS = "sibling_tasks"
     GENERIC = "generic"
 
@@ -48,6 +49,7 @@ CONTEXT_PRIORITY: dict[ContextType, int] = {
     ContextType.VERIFICATION_CRITERIA: 5,
     ContextType.DEPENDENCY_OUTPUT: 6,
     ContextType.META_INSTRUCTIONS: 7,
+    ContextType.EXECUTION_INTELLIGENCE: 7,
     ContextType.SIBLING_TASKS: 8,
     ContextType.GENERIC: 9,
 }

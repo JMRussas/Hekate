@@ -1,9 +1,11 @@
 #  Orchestration Engine - Sentinel Routes
 #
-#  REST endpoints for the Sentinel monitoring subsystem.
-#  Exposes system/plan health status, observations, and intervention management.
+#  REST endpoints for observations, interventions, and decision audit trail.
+#  The legacy SystemSentinel/PlanSentinel have been removed — Odin handles
+#  monitoring. These routes provide read access to historical data and
+#  the SSE event stream from the bus.
 #
-#  Depends on: container.py, services/sentinel/system_sentinel.py, middleware/auth.py
+#  Depends on: container.py, services/sentinel/bus.py, services/sentinel/decision_logger.py
 #  Used by:    app.py
 
 import asyncio
@@ -18,8 +20,7 @@ from fastapi.responses import StreamingResponse
 from backend.container import Container
 from backend.middleware.auth import get_current_user, get_user_from_sse_token
 from backend.services.sentinel.decision_logger import DecisionLogger
-from backend.services.sentinel.models import HealthState, Severity
-from backend.services.sentinel.system_sentinel import SystemSentinel
+from backend.services.sentinel.models import Severity
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,9 @@ _TOPIC_TO_SSE_EVENT: dict[str, str] = {
 }
 
 
-async def _sentinel_event_generator(sentinel: SystemSentinel):
+async def _bus_event_generator(bus):
     """Yield SSE-formatted strings from the SentinelBus."""
-    sub = sentinel._bus.subscribe()
+    sub = bus.subscribe()
     try:
         while True:
             try:
@@ -61,18 +62,18 @@ async def _sentinel_event_generator(sentinel: SystemSentinel):
 
 
 # ---------------------------------------------------------------------------
-# GET /events — SSE stream for sentinel events
+# GET /events — SSE stream from the bus (Odin + any publisher)
 # ---------------------------------------------------------------------------
 
 @router.get("/events")
 @inject
 async def stream_sentinel_events(
     user: dict = Depends(get_user_from_sse_token),
-    sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
+    bus=Depends(Provide[Container.sentinel_bus]),
 ) -> StreamingResponse:
-    """SSE stream for sentinel events (health_update, plan_observation, intervention_proposal, intervention_result)."""
+    """SSE stream for bus events (health_update, plan_observation, intervention_proposal, etc.)."""
     return StreamingResponse(
-        _sentinel_event_generator(sentinel),
+        _bus_event_generator(bus),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -85,49 +86,24 @@ async def stream_sentinel_events(
 
 
 # ---------------------------------------------------------------------------
-# GET /status — overall sentinel system status
+# GET /status — monitoring status (Odin-era: just report bus is alive)
 # ---------------------------------------------------------------------------
 
 @router.get("/status")
 @inject
 async def get_status(
     current_user: dict = Depends(get_current_user),
-    sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
 ):
-    """Return overall Sentinel system status: running state, health trends, active plan sentinels."""
-    trends = sentinel.get_all_trends()
-    plan_sentinels = sentinel.plan_sentinels
-
-    trend_summaries = {}
-    for resource_id, trend in trends.items():
-        trend_summaries[resource_id] = {
-            "state": trend.state.value,
-            "previous_state": trend.previous_state.value if trend.previous_state else None,
-            "failure_rate": round(trend.failure_rate, 3),
-            "avg_latency_ms": round(trend.avg_latency_ms, 1) if trend.avg_latency_ms is not None else None,
-            "sample_count": len(trend.samples),
-        }
-
-    plan_sentinel_summaries = {}
-    for project_id, ps in plan_sentinels.items():
-        plan_sentinel_summaries[project_id] = {
-            "running": ps.running,
-            "events_processed": ps.state.events_processed,
-            "current_wave": ps.state.current_wave,
-            "task_count": len(ps.state.task_statuses),
-            "failure_count": sum(ps.state.failure_counts.values()),
-        }
-
+    """Return monitoring status. Legacy sentinel removed — Odin handles monitoring via /odin/status."""
     return {
-        "running": sentinel.running,
-        "health_trends": trend_summaries,
-        "plan_sentinels": plan_sentinel_summaries,
-        "active_plan_sentinel_count": len(plan_sentinels),
+        "engine": "odin",
+        "legacy_sentinel": "removed",
+        "note": "Use GET /odin/status for Odin overseer status",
     }
 
 
 # ---------------------------------------------------------------------------
-# GET /observations — filterable list of recent observations
+# GET /observations — filterable list of observations
 # ---------------------------------------------------------------------------
 
 @router.get("/observations")
@@ -138,20 +114,14 @@ async def list_observations(
     severity: str | None = Query(default=None, description="Filter by severity (info, warning, critical)"),
     limit: int = Query(default=50, ge=1, le=200),
     current_user: dict = Depends(get_current_user),
-    sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
     db=Depends(Provide[Container.db]),
 ):
-    """Return observations from the durable store, with optional filtering.
-
-    Queries the sentinel_observations table so observations survive
-    PlanSentinel teardown. Falls back to in-memory if DB unavailable.
-    """
+    """Return observations from the sentinel_observations table."""
     if severity is not None:
         valid_severities = {s.value for s in Severity}
         if severity not in valid_severities:
             raise HTTPException(400, f"Invalid severity '{severity}'. Must be one of: {', '.join(sorted(valid_severities))}")
 
-    # Build query with filters
     sql = "SELECT id, project_id, task_id, category, severity, message, details_json, created_at FROM sentinel_observations WHERE 1=1"
     params: list = []
     param_idx = 0
@@ -199,7 +169,7 @@ async def list_observations(
 
 
 # ---------------------------------------------------------------------------
-# GET /interventions — list intervention proposals (optionally filtered by status)
+# GET /interventions — list intervention proposals
 # ---------------------------------------------------------------------------
 
 @router.get("/interventions")
@@ -211,11 +181,7 @@ async def list_interventions(
     current_user: dict = Depends(get_current_user),
     db=Depends(Provide[Container.db]),
 ):
-    """Return intervention proposals and results from the durable store.
-
-    Queries sentinel_observations WHERE category IN ('intervention_proposal',
-    'intervention_result') so interventions survive PlanSentinel teardown.
-    """
+    """Return intervention proposals and results from the durable store."""
     sql = (
         "SELECT id, project_id, task_id, category, severity, message, details_json, created_at "
         "FROM sentinel_observations "
@@ -244,7 +210,6 @@ async def list_interventions(
             except (json.JSONDecodeError, TypeError):
                 details = {}
 
-        # intervention_result rows from auto-execution have implicit "executed" status
         if row["category"] == "intervention_result":
             row_status = "executed"
         else:
@@ -265,7 +230,6 @@ async def list_interventions(
         }
         interventions.append(intervention)
 
-    # Apply status filter in Python (since status lives in details_json)
     if status is not None:
         interventions = [i for i in interventions if i["status"] == status]
 
@@ -273,7 +237,7 @@ async def list_interventions(
 
 
 # ---------------------------------------------------------------------------
-# POST /interventions/{id}/approve — approve a pending intervention
+# POST /interventions/{id}/approve
 # ---------------------------------------------------------------------------
 
 @router.post("/interventions/{intervention_id}/approve")
@@ -281,11 +245,10 @@ async def list_interventions(
 async def approve_intervention(
     intervention_id: str,
     current_user: dict = Depends(get_current_user),
-    sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
+    bus=Depends(Provide[Container.sentinel_bus]),
     db=Depends(Provide[Container.db]),
 ):
-    """Approve a pending supervised intervention and trigger execution."""
-    # Look up the intervention proposal in DB
+    """Approve a pending intervention and forward to Odin via the bus."""
     row = await db.fetchone(
         "SELECT id, project_id, task_id, category, severity, message, details_json, created_at "
         "FROM sentinel_observations WHERE id = $1 AND category = 'intervention_proposal'",
@@ -310,9 +273,8 @@ async def approve_intervention(
 
     pid = row["project_id"]
 
-    # Forward approved intervention to Odin via the bus
     from backend.services.sentinel.models import SentinelMessage
-    await sentinel.bus.publish(SentinelMessage(
+    await bus.publish(SentinelMessage(
         topic="odin_anomaly",
         source="sentinel_route",
         payload={
@@ -327,7 +289,6 @@ async def approve_intervention(
         },
     ))
 
-    # Update the DB record with approved status
     details["status"] = "approved"
     details["approved_by"] = current_user.get("username", "unknown")
     details["approved_at"] = datetime.now(timezone.utc).isoformat()
@@ -336,21 +297,11 @@ async def approve_intervention(
         (json.dumps(details), intervention_id),
     )
 
-    logger.info(
-        "Intervention %s approved by user %s for project %s",
-        intervention_id[:8], current_user.get("username", "?"), pid,
-    )
-
-    return {
-        "id": intervention_id,
-        "action": action_str,
-        "status": "approved",
-        "project_id": pid,
-    }
+    return {"id": intervention_id, "action": action_str, "status": "approved", "project_id": pid}
 
 
 # ---------------------------------------------------------------------------
-# POST /interventions/{id}/reject — reject a pending intervention
+# POST /interventions/{id}/reject
 # ---------------------------------------------------------------------------
 
 @router.post("/interventions/{intervention_id}/reject")
@@ -358,10 +309,9 @@ async def approve_intervention(
 async def reject_intervention(
     intervention_id: str,
     current_user: dict = Depends(get_current_user),
-    sentinel: SystemSentinel = Depends(Provide[Container.system_sentinel]),
     db=Depends(Provide[Container.db]),
 ):
-    """Reject a pending supervised intervention — marks it as handled without executing."""
+    """Reject a pending intervention."""
     row = await db.fetchone(
         "SELECT id, project_id, task_id, category, details_json "
         "FROM sentinel_observations WHERE id = $1 AND category = 'intervention_proposal'",
@@ -383,7 +333,6 @@ async def reject_intervention(
     action_str = details.get("action", "unknown")
     pid = row["project_id"]
 
-    # Update the DB record with rejected status
     details["status"] = "rejected"
     details["rejected_by"] = current_user.get("username", "unknown")
     details["rejected_at"] = datetime.now(timezone.utc).isoformat()
@@ -392,52 +341,34 @@ async def reject_intervention(
         (json.dumps(details), intervention_id),
     )
 
-    logger.info(
-        "Intervention %s rejected by user %s for project %s",
-        intervention_id[:8], current_user.get("username", "?"), pid,
-    )
-
-    return {
-        "id": intervention_id,
-        "action": action_str,
-        "status": "rejected",
-        "project_id": pid,
-    }
+    return {"id": intervention_id, "action": action_str, "status": "rejected", "project_id": pid}
 
 
 # ---------------------------------------------------------------------------
-# GET /decisions — audit trail of sentinel decisions
+# GET /decisions — audit trail
 # ---------------------------------------------------------------------------
 
 @router.get("/decisions")
 @inject
 async def list_decisions(
     project_id: str | None = Query(default=None, description="Filter by project ID"),
-    command: str | None = Query(default=None, description="Filter by command type (e.g. retry_task, skip_task)"),
+    command: str | None = Query(default=None, description="Filter by command type"),
     limit: int = Query(default=50, ge=1, le=200),
     current_user: dict = Depends(get_current_user),
     db=Depends(Provide[Container.db]),
 ):
-    """Return sentinel decision audit trail, sorted by timestamp descending.
-
-    Each record includes the full reasoning chain, confidence score,
-    outcome, and any additional details attached at decision time.
-    """
+    """Return decision audit trail (Odin + historical sentinel decisions)."""
     decision_logger = DecisionLogger(db)
 
     if project_id:
         records = await decision_logger.query_decisions(
-            project_id=project_id,
-            limit=limit,
-            command=command,
+            project_id=project_id, limit=limit, command=command,
         )
     elif command:
         records = await decision_logger.query_similar_decisions(
-            command=command,
-            limit=limit,
+            command=command, limit=limit,
         )
     else:
-        # No filters — fetch all recent decisions across projects
         try:
             rows = await db.fetchall(
                 """SELECT decision_id, project_id, created_at, decision_type,

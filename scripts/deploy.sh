@@ -173,26 +173,11 @@ else
 fi
 
 # ---------------------------------------------------------------
-# 5. Sync DB
+# 5. Set Postgres environment for NSSM services
 # ---------------------------------------------------------------
-echo -e "${YELLOW}Syncing database...${NC}"
-SRC_DB="$SOURCE/orchestration/data/orchestration.db"
-TGT_DB="$TARGET/orchestration/data/orchestration.db"
-mkdir -p "$TARGET/orchestration/data"
-
-if [ ! -f "$TGT_DB" ]; then
-    cp "$SRC_DB" "$TGT_DB"
-    cp "${SRC_DB}-wal" "$TARGET/orchestration/data/" 2>/dev/null || true
-    cp "${SRC_DB}-shm" "$TARGET/orchestration/data/" 2>/dev/null || true
-    echo -e "  ${GREEN}Copied (missing)${NC}"
-elif [ "$SRC_DB" -nt "$TGT_DB" ]; then
-    cp "$SRC_DB" "$TGT_DB"
-    cp "${SRC_DB}-wal" "$TARGET/orchestration/data/" 2>/dev/null || true
-    cp "${SRC_DB}-shm" "$TARGET/orchestration/data/" 2>/dev/null || true
-    echo -e "  ${GREEN}Copied (newer)${NC}"
-else
-    echo -e "  ${GREEN}Current${NC}"
-fi
+echo -e "${YELLOW}Configuring Postgres environment...${NC}"
+python "$TARGET/scripts/set_pg_env.py"
+echo -e "  ${GREEN}Done${NC}"
 
 # ---------------------------------------------------------------
 # 6. Config

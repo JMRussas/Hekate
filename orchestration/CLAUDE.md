@@ -40,7 +40,7 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 | `backend/container.py` | dependency-injector `DeclarativeContainer` |
 | `backend/exceptions.py` | Typed exception hierarchy (`NotFoundError`, `BudgetExhaustedError`, `GitError`, etc.) |
 | `backend/logging_config.py` | Structured logging setup |
-| `backend/db/connection.py` | Async SQLite (aiosqlite, WAL mode) |
+| `backend/db/connection.py` | Dual-backend async DB: Postgres (asyncpg) via `ORCHESTRATION_DSN` or SQLite (aiosqlite, WAL mode) fallback |
 | `backend/db/migrate.py` | Programmatic Alembic migration runner |
 | `backend/db/models_metadata.py` | SQLAlchemy Table definitions for Alembic |
 | `backend/migrations/` | Alembic migration versions |
@@ -71,6 +71,18 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 | `backend/services/model_router.py` | Model tier selection, cost calculation, TIER_TO_PROVIDER |
 | `backend/services/model_discovery.py` | Queries provider APIs at startup for available models |
 | `backend/services/provider_quota.py` | Per-provider quota tracking and enforcement |
+| `backend/services/ares.py` | Pre-plan-approval security scanner (auth, secrets, DB ops) |
+| `backend/services/chat_agent.py` | Multi-round streaming chat with tool calling and context assembly |
+| `backend/services/cli_provider.py` | Unified typed API for all external CLI providers |
+| `backend/services/diagnostic_ingest.py` | Appends error-resolution pairs to diagnostic-rag ingest queue |
+| `backend/services/llm_router.py` | Routes LLM calls through LLM Gateway (port 5210); falls back to direct CLI/Ollama |
+| `backend/services/mcp_spawner.py` | Stdio MCP client for Odin to spawn ephemeral MCP server subprocesses |
+| `backend/services/odin.py` | LLM-driven system overseer — replaces rule-based sentinel with noz-ai pattern |
+| `backend/services/odin_prompts.py` | Odin system prompt builder (PromptSpec for qwen3.5 via Ollama) |
+| `backend/services/odin_tools.py` | 22 LLM-callable tools (observation, intervention, learning, lifecycle, mcp) |
+| `backend/services/oidc.py` | Generic OIDC provider support via authlib (discovery, auth, code exchange) |
+| `backend/services/prompt_renderer.py` | Model-agnostic prompt specification (PromptSpec) with per-provider renderers |
+| `backend/services/tree_runner.py` | Deterministic step-tree executor — tree owns control flow, model owns leaf judgment |
 | `backend/services/context_store_client.py` | Shared httpx client for context store (circuit breaker) |
 | `backend/services/enrichment_service.py` | Pre-dispatch context injection from context store |
 | `backend/services/telemetry_feedback.py` | Post-completion execution outcome tracking |
@@ -87,7 +99,15 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 | `backend/services/sentinel/system_sentinel.py` | Singleton system monitor: health trends, Plan Sentinel lifecycle, contention detection |
 | `backend/services/sentinel/reasoner.py` | LLM-powered diagnosis via Haiku, semantic search of past incidents |
 | `backend/services/sentinel/intervention_executor.py` | Concrete intervention actions: retry, release, skip, reorder via orchestration API |
+| `backend/services/sentinel/decision_logger.py` | Audit trail for sentinel/odin decisions (odin_decisions table) |
+| `backend/services/sentinel/interrogator.py` | Self-interrogation gate: 6 questions before decisions, autonomous if confident |
+| `backend/services/sentinel/reasoner_context.py` | Unified data source wrapper for 5-Whys reasoner (task history, decisions, health) |
+| `backend/services/sentinel/worker_pool.py` | Abstraction over task dispatch for sentinel-as-orchestrator |
 | `backend/routes/sentinel.py` | REST + SSE endpoints: status, observations, interventions, approve/reject, event stream |
+| `backend/routes/internal.py` | Authenticated internal endpoints: chat proxy for editor integration |
+| `backend/routes/odin.py` | Odin status and audit trail endpoints |
+| `backend/routes/chat.py` | Universal chat endpoint (SSE streaming) with brain services, @mention routing, slash commands |
+| `backend/routes/auth_oidc.py` | OAuth/OIDC login, callback, provider listing, link/unlink |
 | `backend/tools/registry.py` | Injectable `ToolRegistry` class |
 | `backend/tools/` | Tool implementations (RAG, Ollama, ComfyUI, file) |
 | `frontend/` | React 19 + TypeScript + Vite UI (ErrorBoundary, 404 page) |
@@ -110,7 +130,7 @@ docker run -p 5200:5200 -v ./config.json:/app/config.json orchestration
 
 - **Config**: all values in `config.json`, never hardcoded. `validate_config()` runs at startup.
 - **DI Container**: `backend/container.py` wires all singletons; routes use `@inject` + `Depends(Provide[...])`
-- **Database**: async SQLite via aiosqlite, WAL mode, all access via `Database` class
+- **Database**: dual-backend — Postgres (asyncpg) via `ORCHESTRATION_DSN` env var in production, SQLite (aiosqlite, WAL mode) as fallback. All access via `Database` class
 - **Migrations**: Alembic manages schema; `Database.init(run_migrations=True)` in production, inline schema in tests
 - **Auth**: JWT Bearer tokens for REST, API keys (`orch_` prefix) for MCP/external executors, short-lived SSE tokens for EventSource. First registered user becomes admin.
 - **Ownership**: projects have `owner_id`. Users see/modify only their own projects. Admins can access all.

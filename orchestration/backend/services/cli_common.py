@@ -70,7 +70,13 @@ _CODE_TASK_FEW_SHOT = FewShotExample(
 
 
 def _format_knowledge_block(content: list) -> str:
-    """Format a project_knowledge content list into structured text."""
+    """Format a project_knowledge content list into structured text.
+
+    Produces a structured block that foregrounds *why* decisions were made,
+    what alternatives were rejected, and how confident the finding is.
+    This lets downstream tasks avoid repeating failed approaches and
+    build on proven strategies.
+    """
     lines: list[str] = []
     for item in content:
         if not isinstance(item, dict):
@@ -80,15 +86,16 @@ def _format_knowledge_block(content: list) -> str:
         alternatives = item.get("alternatives_considered")
         confidence = item.get("confidence")
         category = item.get("category", "unknown")
+        source = item.get("source_task_title")
 
-        lines.append(f'  <finding category="{category}"'
-                     + (f' confidence="{confidence}"' if confidence else "")
-                     + ">")
+        confidence_attr = f' confidence="{confidence}"' if confidence else ""
+        source_attr = f' source="{source}"' if source else ""
+        lines.append(f'  <finding category="{category}"{confidence_attr}{source_attr}>')
         lines.append(f"    <statement>{finding}</statement>")
         if rationale:
-            lines.append(f"    <why>{rationale}</why>")
+            lines.append(f"    <rationale>{rationale}</rationale>")
         if alternatives:
-            lines.append(f"    <alternatives_considered>{alternatives}</alternatives_considered>")
+            lines.append(f"    <rejected_alternatives>{alternatives}</rejected_alternatives>")
         lines.append("  </finding>")
     return "\n".join(lines)
 
@@ -122,6 +129,10 @@ def build_prompt_spec(task_row) -> PromptSpec:
     executors may further enrich the spec (e.g., claude_agent adds
     project knowledge from DB).
     """
+    # sqlite3.Row doesn't support .get() — normalize to dict
+    if not isinstance(task_row, dict):
+        task_row = dict(task_row)
+
     identity = task_row["system_prompt"] or "You are a focused task executor."
 
     # Parse context entries
@@ -138,12 +149,17 @@ def build_prompt_spec(task_row) -> PromptSpec:
                 block = _format_knowledge_block(content)
                 if block:
                     context_entries.append(ContextEntry(
-                        type=ContextType.PROJECT_KNOWLEDGE,
+                        type=ContextType.HISTORICAL_RATIONALE,
                         tag="historical_rationale",
                         content=(
-                            "The following findings capture WHY previous decisions were made.\n"
-                            "Use this rationale to inform your approach — avoid repeating "
-                            "failed strategies and build on what worked.\n\n"
+                            "HISTORICAL RATIONALE — Lessons from prior tasks in this project.\n"
+                            "Each finding includes WHY the decision was made, what alternatives\n"
+                            "were considered and rejected, and a confidence level.\n\n"
+                            "INSTRUCTIONS: Use this rationale to inform your approach.\n"
+                            "- Do NOT repeat strategies marked as failed or low-confidence.\n"
+                            "- Build on approaches marked as high-confidence.\n"
+                            "- When a rejected alternative is listed, do not revisit it unless\n"
+                            "  you have new information that invalidates the original reasoning.\n\n"
                             + block
                         ),
                     ))
@@ -179,6 +195,21 @@ def build_prompt_spec(task_row) -> PromptSpec:
         ))
         few_shot.append(_CODE_TASK_FEW_SHOT)
         constraints.append("You MUST write files using Write/Edit tools — text descriptions will be rejected.")
+
+    # Inject execution intelligence from historical learnings
+    try:
+        from backend.services.learning.execution_learner import get_learner
+        learner = get_learner()
+        model_used = task_row.get("model_used") or ""
+        historical_context = learner.format_historical_context(task_type, model_used)
+        if historical_context:
+            context_entries.append(ContextEntry(
+                type=ContextType.EXECUTION_INTELLIGENCE,
+                tag="execution_intelligence",
+                content=historical_context,
+            ))
+    except Exception:
+        pass  # Learning module unavailable — prompts work fine without it
 
     return PromptSpec(
         role="task_executor",

@@ -2,22 +2,142 @@
 #
 #  FastMCP stdio server for Claude Code integration.
 #  Provides tools for project lifecycle management and external task execution.
+#  Emits MCP log notifications for task lifecycle events (task_complete,
+#  task_failed, project_status_changed) so connected clients like Odin can
+#  subscribe instead of polling.
 #
 #  Config: backend/mcp/config.json (api_url, api_key, timeout)
 #
 #  Depends on: mcp (FastMCP), httpx
-#  Used by:    Claude Code (via MCP settings)
+#  Used by:    Claude Code (via MCP settings), Odin (via MCP client)
 
+import asyncio
 import json
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 
 log = logging.getLogger("orchestration.mcp")
+
+
+# ---------------------------------------------------------------------------
+# SSE relay — connects to the orchestration API's unified SSE stream and
+# relays events as MCP log-message notifications to the connected client.
+# ---------------------------------------------------------------------------
+
+_RELAY_EVENTS = {
+    "task_complete": "task_complete",
+    "task_failed": "task_failed",
+    "project_complete": "project_status_changed",
+    "project_failed": "project_status_changed",
+    "project_blocked": "project_status_changed",
+    "task_start": "task_started",
+    "wave_checkpoint": "wave_checkpoint",
+}
+
+
+class _SessionTracker:
+    """Captures the active MCP session so background tasks can send notifications."""
+
+    def __init__(self):
+        self.session = None
+        self._event = asyncio.Event()
+
+    def set(self, session):
+        if self.session is None:
+            self.session = session
+            self._event.set()
+
+    async def wait(self, timeout: float = 60.0):
+        try:
+            await asyncio.wait_for(self._event.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+        return self.session
+
+
+async def _sse_relay_loop(api_url: str, api_key: str, tracker: _SessionTracker):
+    """Background: subscribe to orchestration SSE and relay as MCP notifications."""
+    backoff = 1.0
+    stream_url = f"{api_url}/api/events/stream"
+
+    while True:
+        session = await tracker.wait(timeout=120.0)
+        if session is None:
+            continue
+
+        try:
+            async with httpx.AsyncClient(
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
+            ) as http:
+                async with http.stream("GET", stream_url) as resp:
+                    resp.raise_for_status()
+                    log.info("SSE relay: connected to %s", stream_url)
+                    backoff = 1.0
+
+                    event_type = ""
+                    data_buf = ""
+
+                    async for raw_line in resp.aiter_lines():
+                        line = raw_line.rstrip("\r\n") if isinstance(raw_line, str) else raw_line.decode().rstrip("\r\n")
+                        if line.startswith("event: "):
+                            event_type = line[7:].strip()
+                            data_buf = ""
+                        elif line.startswith("data: "):
+                            data_buf += line[6:]
+                        elif line == "" and data_buf:
+                            await _relay_event(session, event_type, data_buf)
+                            event_type = ""
+                            data_buf = ""
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            log.warning("SSE relay: error (%s), reconnecting in %.0fs", exc, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+
+async def _relay_event(session, event_type: str, data_raw: str):
+    """Parse an SSE payload and send an MCP log notification if relevant."""
+    try:
+        data = json.loads(data_raw)
+    except (json.JSONDecodeError, ValueError):
+        return
+
+    internal_type = data.get("status") or data.get("type") or event_type
+    logger_name = _RELAY_EVENTS.get(internal_type)
+    if not logger_name:
+        return
+
+    notification = {
+        "event": internal_type,
+        "project_id": data.get("project_id"),
+        "task_id": data.get("task_id"),
+        "message": data.get("message", ""),
+    }
+    for k in ("cost_usd", "model_used", "wave", "verification_status"):
+        if k in data:
+            notification[k] = data[k]
+
+    level = "error" if "fail" in internal_type else "info"
+    try:
+        await session.send_log_message(level=level, data=notification, logger=logger_name)
+    except Exception as exc:
+        log.debug("SSE relay: notification send failed: %s", exc)
+
+
+async def _notify(ctx: Context, logger_name: str, data: dict, level: str = "info"):
+    """Send an MCP log-message notification from within a tool handler."""
+    try:
+        await ctx.session.send_log_message(level=level, data=data, logger=logger_name)
+    except Exception as exc:
+        log.debug("Inline notification failed (%s): %s", logger_name, exc)
 
 
 def create_server(config_path: Path | None = None) -> FastMCP:
@@ -57,6 +177,28 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         sys.exit(1)
 
     # -----------------------------------------------------------------------
+    # Session tracker + lifespan (SSE relay lifecycle)
+    # -----------------------------------------------------------------------
+    tracker = _SessionTracker()
+
+    @asynccontextmanager
+    async def server_lifespan(app: FastMCP):
+        relay = asyncio.create_task(
+            _sse_relay_loop(api_url, api_key, tracker), name="sse-relay",
+        )
+        log.info("SSE relay task started")
+        try:
+            yield {}
+        finally:
+            if not relay.done():
+                relay.cancel()
+                try:
+                    await relay
+                except asyncio.CancelledError:
+                    pass
+            log.info("SSE relay task stopped")
+
+    # -----------------------------------------------------------------------
     # HTTP client
     # -----------------------------------------------------------------------
     client = httpx.AsyncClient(
@@ -65,11 +207,18 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         timeout=timeout,
     )
 
-    mcp = FastMCP("orchestration")
+    mcp = FastMCP("orchestration", lifespan=server_lifespan)
 
     # -----------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------
+
+    def _capture_session(ctx: Context):
+        """Capture session reference for the SSE relay background task."""
+        try:
+            tracker.set(ctx.session)
+        except Exception:
+            pass
 
     async def _get(path: str, params: dict | None = None) -> dict | list:
         """GET request to the engine API."""
@@ -104,9 +253,11 @@ def create_server(config_path: Path | None = None) -> FastMCP:
     async def create_project(
         name: str,
         requirements: str,
+        ctx: Context,
         planning_rigor: str = "L2",
     ) -> str:
         """Create a project. planning_rigor: L1 (quick), L2 (standard), L3 (thorough)."""
+        _capture_session(ctx)
         try:
             result = await _post("/projects", {
                 "name": name,
@@ -130,8 +281,9 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         name="plan_project",
         description="Generate an AI execution plan for a project. May take 15-45 seconds.",
     )
-    async def plan_project(project_id: str) -> str:
+    async def plan_project(project_id: str, ctx: Context) -> str:
         """Generate a plan. The project must be in DRAFT status."""
+        _capture_session(ctx)
         try:
             result = await _post(f"/projects/{project_id}/plan")
             plan = result.get("plan", {})
@@ -163,8 +315,9 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         name="start_project",
         description="Approve the latest plan and start execution. Combines plan approval + execute.",
     )
-    async def start_project(project_id: str) -> str:
+    async def start_project(project_id: str, ctx: Context) -> str:
         """Approve the latest plan and start executing."""
+        _capture_session(ctx)
         try:
             # Get latest plan
             plans = await _get(f"/projects/{project_id}/plans")
@@ -178,6 +331,13 @@ def create_server(config_path: Path | None = None) -> FastMCP:
 
             # Start execution
             result = await _post(f"/projects/{project_id}/execute")
+
+            await _notify(ctx, "project_status_changed", {
+                "event": "project_executing",
+                "project_id": project_id,
+                "status": result["status"],
+            })
+
             return (
                 f"--- Project Started ---\n"
                 f"Status: {result['status']}\n\n"
@@ -190,8 +350,9 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         name="list_projects",
         description="List your projects with status summaries.",
     )
-    async def list_projects() -> str:
+    async def list_projects(ctx: Context) -> str:
         """List all projects owned by the authenticated user."""
+        _capture_session(ctx)
         try:
             projects = await _get("/projects")
             if not projects:
@@ -214,8 +375,9 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         name="project_status",
         description="Get detailed status of a project including task breakdown.",
     )
-    async def project_status(project_id: str) -> str:
+    async def project_status(project_id: str, ctx: Context) -> str:
         """Get detailed project status."""
+        _capture_session(ctx)
         try:
             p = await _get(f"/projects/{project_id}")
             summary = p.get("task_summary") or {}
@@ -224,7 +386,7 @@ def create_server(config_path: Path | None = None) -> FastMCP:
             out += f"ID: {p['id']}\n"
             out += f"Status: {p['status']}\n"
             out += f"Tasks: {summary.get('total', 0)} total"
-            for k in ("completed", "running", "pending", "failed", "blocked"):
+            for k in ("completed", "running", "pending", "waiting", "failed", "blocked"):
                 v = summary.get(k, 0)
                 if v > 0:
                     out += f", {v} {k}"
@@ -248,9 +410,11 @@ def create_server(config_path: Path | None = None) -> FastMCP:
     )
     async def list_tasks(
         project_id: str,
+        ctx: Context,
         status_filter: str = "",
     ) -> str:
         """List tasks. Optional status_filter: pending, running, completed, failed, etc."""
+        _capture_session(ctx)
         try:
             params = {}
             if status_filter:
@@ -273,12 +437,13 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         name="next_task",
         description="Claim the highest-priority claimable task from a project.",
     )
-    async def next_task(project_id: str) -> str:
+    async def next_task(project_id: str, ctx: Context) -> str:
         """Find and claim the next available task."""
+        _capture_session(ctx)
         try:
             claimable = await _get(f"/external/{project_id}/claimable")
             if not claimable:
-                return "No claimable tasks available. All tasks may be completed, in progress, or blocked."
+                return "No claimable tasks available. All tasks may be completed, in progress, waiting, or blocked."
 
             # Claim the first one (highest priority)
             task_id = claimable[0]["id"]
@@ -295,14 +460,14 @@ def create_server(config_path: Path | None = None) -> FastMCP:
 
             if result.get('context'):
                 out += f"\n--- Context ({len(result['context'])} entries) ---\n"
-                for ctx in result['context']:
-                    ctype = ctx.get('type', 'unknown')
+                for ctx_entry in result['context']:
+                    ctype = ctx_entry.get('type', 'unknown')
                     if ctype == 'dependency_output':
-                        out += f"  From: {ctx.get('source_task_title', '?')}\n"
-                        content = ctx.get('content', '')
+                        out += f"  From: {ctx_entry.get('source_task_title', '?')}\n"
+                        content = ctx_entry.get('content', '')
                         out += f"  {content[:500]}{'...' if len(content) > 500 else ''}\n\n"
                     else:
-                        out += f"  [{ctype}] {json.dumps(ctx)[:200]}\n"
+                        out += f"  [{ctype}] {json.dumps(ctx_entry)[:200]}\n"
 
             if result.get('system_prompt'):
                 out += f"\n--- System Prompt ---\n{result['system_prompt']}\n"
@@ -316,8 +481,9 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         name="claim_task",
         description="Claim a specific task by ID for external execution.",
     )
-    async def claim_task(task_id: str) -> str:
+    async def claim_task(task_id: str, ctx: Context) -> str:
         """Claim a specific task. Must be in PENDING status."""
+        _capture_session(ctx)
         try:
             result = await _post(f"/external/tasks/{task_id}/claim")
 
@@ -329,11 +495,11 @@ def create_server(config_path: Path | None = None) -> FastMCP:
 
             if result.get('context'):
                 out += f"\n--- Context ({len(result['context'])} entries) ---\n"
-                for ctx in result['context']:
-                    ctype = ctx.get('type', 'unknown')
+                for ctx_entry in result['context']:
+                    ctype = ctx_entry.get('type', 'unknown')
                     if ctype == 'dependency_output':
-                        out += f"  From: {ctx.get('source_task_title', '?')}\n"
-                        content = ctx.get('content', '')
+                        out += f"  From: {ctx_entry.get('source_task_title', '?')}\n"
+                        content = ctx_entry.get('content', '')
                         out += f"  {content[:500]}{'...' if len(content) > 500 else ''}\n\n"
 
             out += "\nWhen done, use submit_result with the task output."
@@ -345,8 +511,9 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         name="task_detail",
         description="Get full details of a task including description, context, and dependencies.",
     )
-    async def task_detail(task_id: str) -> str:
+    async def task_detail(task_id: str, ctx: Context) -> str:
         """Get full task details without claiming it."""
+        _capture_session(ctx)
         try:
             t = await _get(f"/tasks/{task_id}")
 
@@ -385,14 +552,32 @@ def create_server(config_path: Path | None = None) -> FastMCP:
     async def submit_result(
         task_id: str,
         output_text: str,
+        ctx: Context,
         model_used: str = "claude-code",
     ) -> str:
         """Submit task output after external execution."""
+        _capture_session(ctx)
         try:
             result = await _post(f"/external/tasks/{task_id}/result", {
                 "output_text": output_text,
                 "model_used": model_used,
             })
+
+            # Emit notification: task_complete or task_failed
+            status = result.get("status", "")
+            if status in ("completed", "needs_review"):
+                await _notify(ctx, "task_complete", {
+                    "event": "task_complete",
+                    "task_id": result.get("task_id", task_id),
+                    "status": status,
+                    "verification_status": result.get("verification_status"),
+                })
+            elif status == "failed":
+                await _notify(ctx, "task_failed", {
+                    "event": "task_failed",
+                    "task_id": result.get("task_id", task_id),
+                    "status": status,
+                }, level="error")
 
             out = "--- Result Submitted ---\n"
             out += f"Task: {result['task_id']}\n"
@@ -417,8 +602,9 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         name="release_task",
         description="Release a claimed task back to pending without counting as a failure.",
     )
-    async def release_task(task_id: str) -> str:
+    async def release_task(task_id: str, ctx: Context) -> str:
         """Release a claimed task. Does not increment retry count."""
+        _capture_session(ctx)
         try:
             result = await _post(f"/external/tasks/{task_id}/release")
             return f"Task {result['task_id']} released back to pending."

@@ -125,6 +125,13 @@ class PlanReviewRequest(BaseModel):
 # Tasks
 # ---------------------------------------------------------------------------
 
+class DependencyInfo(BaseModel):
+    """Dependency detail: which task we depend on and its current status."""
+    task_id: str
+    title: str
+    status: TaskStatus
+
+
 class TaskOut(BaseModel):
     id: str
     project_id: str
@@ -150,6 +157,7 @@ class TaskOut(BaseModel):
     context: list[dict] = Field(default_factory=list)
     error: str | None = None
     depends_on: list[str] = Field(default_factory=list)
+    dependency_details: list[DependencyInfo] = Field(default_factory=list)
     rationale: str | None = None
     started_at: float | None = None
     completed_at: float | None = None
@@ -598,6 +606,29 @@ class TaskOutcomeSummary(BaseModel):
     status: str
     output_summary: str = ""
     error: str | None = None
+    model_tier: str | None = None
+    cost_usd: float = 0.0
+    duration_seconds: float | None = None
+
+
+class KnowledgeFinding(BaseModel):
+    """A knowledge finding from the project_knowledge table."""
+    id: str = ""
+    content: str
+    category: str = "discovery"
+    rationale: str = ""
+    alternatives_considered: str = ""
+    confidence: str = "medium"
+    source_task_title: str = ""
+
+
+class SentinelObservationSummary(BaseModel):
+    """A sentinel observation for wave reassessment context."""
+    id: str = ""
+    category: str
+    severity: str
+    message: str
+    details: dict = Field(default_factory=dict)
 
 
 class WaveReassessmentContext(BaseModel):
@@ -605,9 +636,11 @@ class WaveReassessmentContext(BaseModel):
     project_id: str
     wave_number: int
     task_outcomes: list[TaskOutcomeSummary]
-    knowledge_findings: list[str] = Field(default_factory=list)
-    sentinel_observations: list[str] = Field(default_factory=list)
+    knowledge_findings: list[KnowledgeFinding] = Field(default_factory=list)
+    sentinel_observations: list[SentinelObservationSummary] = Field(default_factory=list)
     original_plan: dict
+    wave_cost_usd: float = 0.0
+    all_tasks_terminal: bool = True
 
 
 class ReassessmentResult(BaseModel):

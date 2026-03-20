@@ -6,6 +6,7 @@
 #  Depends on: config.py, container.py, routes/*.py, middleware/auth.py
 #  Used by:    run.py
 
+import asyncio
 import logging
 import os
 import uuid
@@ -51,6 +52,7 @@ from backend.routes.sentinel import router as sentinel_router
 from backend.routes.services import health_router, router as services_router
 from backend.routes.tasks import router as tasks_router
 from backend.routes.usage import router as usage_router
+from backend.routes.fixes import router as fixes_router
 
 logger = logging.getLogger("orchestration.app")
 
@@ -79,7 +81,6 @@ async def lifespan(app: FastAPI):
     resource_monitor = container.resource_monitor()
     model_discovery = container.model_discovery()
     executor = container.executor()
-    system_sentinel = container.system_sentinel()
 
     async with AsyncExitStack() as stack:
         logger.info("Initializing database...")
@@ -103,17 +104,21 @@ async def lifespan(app: FastAPI):
         stack.push_async_callback(model_discovery.close)
         logger.info("Model discovery completed")
 
-        # Sentinel engine: "odin" (LLM-driven) or "legacy" (rule-based)
-        sentinel_engine = cfg("sentinel.engine", "odin")
-        if sentinel_engine == "odin":
-            odin = container.odin()
-            await odin.start()
-            stack.push_async_callback(odin.stop)
-            logger.info("Odin overseer started (model=%s)", cfg("odin.model", "qwen3.5:latest"))
-        else:
-            await system_sentinel.start()
-            stack.push_async_callback(system_sentinel.stop)
-            logger.info("Legacy sentinel started")
+        # Initialize execution learner with historical data
+        from backend.services.learning.execution_learner import init_learner
+        learner = init_learner(db)
+        await learner.refresh_scores()
+        await learner.file_detected_issues()
+        staleness = await learner.check_staleness()
+        logger.info("Execution learner initialized (%s)", staleness.summary)
+        if staleness.needs_rescan:
+            logger.warning("Execution learner data is stale — run mine_patterns.py to refresh")
+
+        # Odin overseer
+        odin = container.odin()
+        await odin.start()
+        stack.push_async_callback(odin.stop)
+        logger.info("Odin overseer started (model=%s)", cfg("odin.model", "qwen3.5:latest"))
 
         await executor.start()
         stack.push_async_callback(executor.stop)
@@ -342,6 +347,9 @@ app.include_router(sentinel_router, prefix="/api")
 
 # Odin routes — system overseer status and audit trail
 app.include_router(odin_router, prefix="/api", dependencies=_auth_dep)
+
+# Fix queue routes
+app.include_router(fixes_router, prefix="/api", dependencies=_auth_dep)
 
 # Serve frontend build if available (SPA catch-all for client-side routing)
 frontend_dist = PROJECT_ROOT / "frontend" / "dist"

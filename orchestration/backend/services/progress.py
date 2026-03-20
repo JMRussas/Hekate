@@ -21,6 +21,8 @@ class ProgressManager:
         self._db = db
         # project_id -> list of subscriber queues
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        # Global subscribers (receive events from ALL projects)
+        self._global_subscribers: list[asyncio.Queue] = []
 
     async def push_event(
         self,
@@ -51,6 +53,13 @@ class ProgressManager:
         }
 
         for queue in self._subscribers.get(project_id, []):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # Drop if subscriber is slow
+
+        # Broadcast to global subscribers (Iris unified stream)
+        for queue in self._global_subscribers:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
@@ -108,3 +117,62 @@ class ProgressManager:
                 subs.remove(queue)
             if not subs and project_id in self._subscribers:
                 del self._subscribers[project_id]
+
+    async def subscribe_all(self):
+        """Yield SSE-formatted strings for ALL projects.
+
+        Used by the Iris desktop app unified stream endpoint.
+        Maps internal event types to the Iris-expected types:
+          task_start -> status, task_complete -> done, task_failed -> error,
+          tool_call -> tool_call, task_output -> output, token -> token,
+          phase -> phase, tool_result -> tool_result.
+        Other events are passed through as 'status' type.
+        """
+        # Map internal event types to Iris SSE event types
+        _EVENT_MAP = {
+            "task_start": "status",
+            "task_complete": "done",
+            "task_failed": "error",
+            "task_retry": "status",
+            "task_cancelled": "status",
+            "task_needs_review": "status",
+            "task_zombie_recovered": "status",
+            "project_complete": "done",
+            "project_failed": "error",
+            "project_blocked": "status",
+            "wave_checkpoint": "status",
+            "budget_warning": "status",
+            "tool_call": "tool_call",
+            "tool_result": "tool_result",
+            "task_output": "output",
+            "token": "token",
+            "phase": "phase",
+            "checkpoint": "status",
+            "pr_created": "status",
+            "branch_merged": "status",
+        }
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+        self._global_subscribers.append(queue)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    iris_type = _EVENT_MAP.get(event["type"], "status")
+                    iris_event = {
+                        "task_id": event.get("task_id"),
+                        "project_id": event.get("project_id"),
+                        "status": event.get("type"),
+                        "message": event.get("message", ""),
+                        "timestamp": event.get("timestamp"),
+                    }
+                    # Include extra data fields (cost_usd, tool, etc.)
+                    for k, v in event.items():
+                        if k not in ("type", "task_id", "project_id", "message", "timestamp"):
+                            iris_event[k] = v
+                    yield f"event: {iris_type}\ndata: {json.dumps(iris_event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            if queue in self._global_subscribers:
+                self._global_subscribers.remove(queue)

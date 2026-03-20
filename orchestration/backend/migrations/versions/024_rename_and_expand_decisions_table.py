@@ -61,49 +61,34 @@ def upgrade() -> None:
         op.create_index('idx_odin_dec_type', 'odin_decisions', ['decision_type'])
         return
 
-    # Drop old indexes before rename
-    op.drop_index("idx_sentinel_dec_timestamp", table_name="sentinel_decisions")
-    op.drop_index("idx_sentinel_dec_project", table_name="sentinel_decisions")
+    # Drop old indexes before rename (if they exist)
+    existing_indexes = [i['name'] for i in inspector.get_indexes('sentinel_decisions')]
+    if 'idx_sentinel_dec_timestamp' in existing_indexes:
+        op.drop_index("idx_sentinel_dec_timestamp", table_name="sentinel_decisions")
+    if 'idx_sentinel_dec_project' in existing_indexes:
+        op.drop_index("idx_sentinel_dec_project", table_name="sentinel_decisions")
 
     # Rename table: sentinel_decisions -> odin_decisions
     op.rename_table("sentinel_decisions", "odin_decisions")
 
-    with op.batch_alter_table("odin_decisions") as batch_op:
-        # -- Renamed columns --
-        # R9: id -> decision_id (R9 specifies decision_id as PK name)
-        batch_op.alter_column("id", new_column_name="decision_id")
-        # R9: command -> decision_type (dispatch, retry, skip, reassign_tier, etc.)
-        batch_op.alter_column("command", new_column_name="decision_type")
-        # R9: timestamp -> created_at
-        batch_op.alter_column("timestamp", new_column_name="created_at")
+    # Rename columns (direct ALTER TABLE, no batch copy)
+    op.alter_column("odin_decisions", "id", new_column_name="decision_id")
+    op.alter_column("odin_decisions", "command", new_column_name="decision_type")
+    op.alter_column("odin_decisions", "timestamp", new_column_name="created_at")
 
-        # -- New columns --
-        # R9: task_id — nullable because some decisions are project-level
-        batch_op.add_column(sa.Column("task_id", sa.Text, nullable=True))
-        # R9: action_taken — the concrete action executed after the decision
-        batch_op.add_column(sa.Column("action_taken", sa.Text, nullable=True))
-        # params_json — serialized tool arguments for the decision
-        batch_op.add_column(sa.Column("params_json", sa.Text, nullable=True))
+    # New columns (check existence first — params_json may already exist)
+    existing_cols = {c['name'] for c in inspector.get_columns('odin_decisions')}
+    if 'task_id' not in existing_cols:
+        op.add_column("odin_decisions", sa.Column("task_id", sa.Text(), nullable=True))
+    if 'action_taken' not in existing_cols:
+        op.add_column("odin_decisions", sa.Column("action_taken", sa.Text(), nullable=True))
+    if 'params_json' not in existing_cols:
+        op.add_column("odin_decisions", sa.Column("params_json", sa.Text(), nullable=True))
 
-        # -- Pre-existing columns: enforce R9 schema constraints --
-        # R9: reasoning — LLM reasoning output, must not be null
-        batch_op.alter_column(
-            "reasoning",
-            existing_type=sa.Text(),
-            nullable=False,
-        )
-        # R9: confidence — float score, must not be null
-        batch_op.alter_column(
-            "confidence",
-            existing_type=sa.Float(),
-            nullable=False,
-        )
-        # R9: outcome — result of the action, nullable until resolved
-        batch_op.alter_column(
-            "outcome",
-            existing_type=sa.Text(),
-            nullable=True,
-        )
+    # Enforce R9 constraints
+    op.alter_column("odin_decisions", "reasoning", existing_type=sa.Text(), nullable=False)
+    op.alter_column("odin_decisions", "confidence", existing_type=sa.Float(), nullable=False)
+    op.alter_column("odin_decisions", "outcome", existing_type=sa.Text(), nullable=True)
 
     # New indexes for Odin queries
     op.create_index("idx_odin_dec_project", "odin_decisions", ["project_id"])

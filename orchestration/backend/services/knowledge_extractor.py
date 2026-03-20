@@ -33,26 +33,35 @@ _VALID_CONFIDENCE = {c.value for c in ConfidenceLevel}
 _MAX_OUTPUT_CHARS = 4000
 
 _EXTRACTOR_IDENTITY = (
-    "You are a knowledge extraction assistant. Given a task description and its output, "
-    "identify any reusable findings that would help OTHER tasks in the same project."
+    "You are a causal reasoning analyst specialising in software engineering post-mortems. "
+    "Given a task description and its execution output, extract findings that explain "
+    "WHY approaches succeeded or failed — not just what happened. "
+    "Every finding must include the causal chain: what was attempted, what outcome occurred, "
+    "and what root cause drove that outcome. "
+    "Your findings should help future tasks avoid repeated mistakes and replicate successes."
 )
 
 _EXTRACTOR_CONSTRAINTS = [
-    "Capture not just WHAT was learned, but WHY it matters and what alternatives were considered.",
+    "Focus on CAUSATION: why did something work or fail? What was the root cause?",
+    "For each finding, answer: What was tried? Did it work? WHY did it work or fail?",
+    "If an approach failed, capture the failure mode, the root cause, and what was learned.",
+    "If an approach succeeded, capture what made it work, what preconditions were required, and whether the success is reproducible under different conditions.",
     "Categories: constraint, decision, discovery, reference, gotcha, architecture.",
     "Only extract findings that are REUSABLE — skip task-specific implementation details.",
     "Each finding should be self-contained (understandable without reading the full output).",
     "If there are NO reusable findings, return an empty array.",
     "Keep each finding concise (1-3 sentences).",
-    'For "rationale": explain WHY this finding matters. If unknown, write "Unknown".',
-    'For "alternatives_considered": list other approaches tried. If none, use empty string.',
-    'For "confidence": high (observed/tested), medium (inferred), low (speculative).',
+    'For "rationale": explain the causal chain — what was the trigger, what was the mechanism, and what was the effect. Frame it as actionable guidance for future tasks. Never write just "important" or "useful". Write "Unknown — insufficient evidence in output" if truly unknown.',
+    'For "alternatives_considered": describe other approaches that were tried or rejected, and why they were abandoned. Include what trade-offs were evaluated. If none apparent, use empty string.',
+    'For "confidence": high = directly observed cause-and-effect in this execution output, medium = inferred from output patterns or partial stack traces, low = speculative based on circumstantial evidence.',
 ]
 
 _EXTRACTOR_OUTPUT_SCHEMA = """\
 {"findings": [{"category": "constraint|decision|discovery|reference|gotcha|architecture", \
-"content": "1-3 sentences", "rationale": "Why this matters", \
-"alternatives_considered": "Other approaches", "confidence": "high|medium|low"}]}"""
+"content": "What was found — the observable fact (1-3 sentences)", \
+"rationale": "Causal chain: trigger → mechanism → effect. Why this matters for future tasks", \
+"alternatives_considered": "Other approaches tried/rejected and why they were abandoned", \
+"confidence": "high|medium|low"}]}"""
 
 
 def _build_extraction_spec(user_msg: str) -> PromptSpec:
@@ -122,7 +131,14 @@ async def _do_extract(
     user_msg = (
         f"## Task: {task_title}\n\n"
         f"### Description\n{task_description}\n\n"
-        f"### Output\n{output_text[:_MAX_OUTPUT_CHARS]}"
+        f"### Execution Output\n{output_text[:_MAX_OUTPUT_CHARS]}\n\n"
+        f"### Extraction Focus\n"
+        f"Analyze the output above for causal insights. For each finding:\n"
+        f"1. What approach was tried and what was the outcome (success/failure)?\n"
+        f"2. WHY did it succeed or fail? Identify the root cause, not just the symptom.\n"
+        f"3. What constraints, preconditions, or environmental factors were discovered?\n"
+        f"4. What should future tasks know to avoid repeating this mistake or replicate this success?\n"
+        f"5. Were alternative approaches considered or attempted? Why were they chosen or rejected?"
     )
 
     spec = _build_extraction_spec(user_msg)

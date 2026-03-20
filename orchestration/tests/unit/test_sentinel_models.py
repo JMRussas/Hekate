@@ -234,7 +234,7 @@ def test_intervention_values():
 # --- SentinelCommand edge cases ---
 
 def test_sentinel_command_count():
-    assert len(SentinelCommand) == 8
+    assert len(SentinelCommand) == 10
 
 
 def test_sentinel_command_from_invalid_value():

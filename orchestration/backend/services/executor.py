@@ -54,7 +54,7 @@ class Executor:
 
     def __init__(self, db, budget, progress, resource_monitor, tool_registry,
                  http_client=None, rag_cache=None, diagnostic_ingester=None,
-                 quota_manager=None, system_sentinel=None, bus=None):
+                 quota_manager=None, bus=None):
         self._db = db
         self._budget = budget
         self._progress = progress
@@ -64,7 +64,6 @@ class Executor:
         self._rag_cache = rag_cache
         self._diagnostic_ingester = diagnostic_ingester
         self._quota_manager = quota_manager  # Optional; skips quota check when None
-        self._system_sentinel = system_sentinel  # Optional; manages Plan Sentinel lifecycle
         self._bus = bus  # SentinelBus for dispatch_command subscription (Odin mode)
         self._max_concurrent = MAX_CONCURRENT_TASKS
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
@@ -116,7 +115,7 @@ class Executor:
         if not row:
             logger.warning("dispatch_task: task %s not found", task_id[:8])
             return False
-        if row["status"] not in (TaskStatus.PENDING, TaskStatus.BLOCKED):
+        if row["status"] not in (TaskStatus.PENDING, TaskStatus.BLOCKED, TaskStatus.WAITING):
             logger.warning("dispatch_task: task %s in %s state, skipping", task_id[:8], row["status"])
             return False
 
@@ -311,7 +310,7 @@ class Executor:
 
         now = time.time()
         for row in stale:
-            # Check if any dependencies are incomplete → should be BLOCKED, not PENDING
+            # Check if any dependencies are incomplete → waiting or blocked
             dep_count = await self._db.fetchone(
                 "SELECT COUNT(*) as cnt FROM task_deps d "
                 "JOIN tasks dep ON dep.id = d.depends_on "
@@ -319,7 +318,17 @@ class Executor:
                 (row["id"], TaskStatus.COMPLETED),
             )
             has_unmet_deps = dep_count and dep_count["cnt"] > 0
-            new_status = TaskStatus.BLOCKED if has_unmet_deps else TaskStatus.PENDING
+            if has_unmet_deps:
+                stuck_count = await self._db.fetchone(
+                    "SELECT COUNT(*) as cnt FROM task_deps d "
+                    "JOIN tasks dep ON dep.id = d.depends_on "
+                    "WHERE d.task_id = $1 AND dep.status IN ($2, $3)",
+                    (row["id"], TaskStatus.FAILED, TaskStatus.CANCELLED),
+                )
+                has_stuck = stuck_count and stuck_count["cnt"] > 0
+                new_status = TaskStatus.BLOCKED if has_stuck else TaskStatus.WAITING
+            else:
+                new_status = TaskStatus.PENDING
 
             # Only count as a retry attempt if the task was actually running
             if row["status"] == TaskStatus.RUNNING:
@@ -388,7 +397,7 @@ class Executor:
                 logger.warning("SWEEP: task %s zombie, retries exhausted → needs_review", task_id[:8])
                 continue
 
-            # Check deps to decide pending vs blocked
+            # Check deps to decide pending vs waiting vs blocked
             dep_count = await self._db.fetchone(
                 "SELECT COUNT(*) as cnt FROM task_deps d "
                 "JOIN tasks dep ON dep.id = d.depends_on "
@@ -396,7 +405,17 @@ class Executor:
                 (task_id, TaskStatus.COMPLETED),
             )
             has_unmet_deps = dep_count and dep_count["cnt"] > 0
-            new_status = TaskStatus.BLOCKED if has_unmet_deps else TaskStatus.PENDING
+            if has_unmet_deps:
+                stuck_count = await self._db.fetchone(
+                    "SELECT COUNT(*) as cnt FROM task_deps d "
+                    "JOIN tasks dep ON dep.id = d.depends_on "
+                    "WHERE d.task_id = $1 AND dep.status IN ($2, $3)",
+                    (task_id, TaskStatus.FAILED, TaskStatus.CANCELLED),
+                )
+                has_stuck = stuck_count and stuck_count["cnt"] > 0
+                new_status = TaskStatus.BLOCKED if has_stuck else TaskStatus.WAITING
+            else:
+                new_status = TaskStatus.PENDING
 
             await self._db.execute_write(
                 "UPDATE tasks SET status = $1, retry_count = retry_count + 1, "
@@ -488,10 +507,6 @@ class Executor:
             if pid not in self._branch_confirmed:
                 await self._ensure_project_branch(pid)
                 self._branch_confirmed.add(pid)
-
-                # Spawn a Plan Sentinel to monitor this project's execution
-                if self._system_sentinel is not None:
-                    await self._system_sentinel.spawn_plan_sentinel(pid)
 
             # Check budget — skip for projects with only free/CLI tasks remaining.
             # All CLI tiers are subscription-billed ($0). When no API key is set,
@@ -750,8 +765,8 @@ class Executor:
             if execution_mode in (ExecutionMode.EXTERNAL, ExecutionMode.HYBRID):
                 continue
             active = await self._db.fetchone(
-                "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = $1 AND status IN ($2, $3, $4)",
-                (pid, TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.RUNNING),
+                "SELECT COUNT(*) as cnt FROM tasks WHERE project_id = $1 AND status IN ($2, $3, $4, $5)",
+                (pid, TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.WAITING),
             )
             if active and active["cnt"] == 0:
                 blocked = await self._db.fetchone(
@@ -960,31 +975,60 @@ class Executor:
             logger.warning("Failed to clean up worktree for %s: %s", project_id[:8], e)
 
     async def _teardown_plan_sentinel(self, project_id: str) -> None:
-        """Tear down the Plan Sentinel for a project leaving execution."""
-        if self._system_sentinel is not None:
-            await self._system_sentinel.teardown_plan_sentinel(project_id)
+        """No-op — legacy Plan Sentinel removed, Odin handles monitoring."""
+        pass
 
     async def _update_blocked_tasks(self, project_id: str):
-        """Unblock tasks whose dependencies are all resolved.
+        """Unblock tasks whose dependencies are all resolved, and reclassify
+        waiting vs blocked for tasks that still have unmet deps.
 
         A dependency is "resolved" when it's completed OR needs_review WITH
         non-empty output.  NEEDS_REVIEW with empty output is a hollow
-        completion — dependents must stay blocked because there's no usable
-        output to forward.
+        completion — dependents must stay waiting/blocked because there's no
+        usable output to forward.
         """
         now = time.time()
+
+        # Transition WAITING/BLOCKED → PENDING when all deps are resolved
+        for status in (TaskStatus.BLOCKED, TaskStatus.WAITING):
+            await self._db.execute_write(
+                "UPDATE tasks SET status = $1, updated_at = $2 "
+                "WHERE project_id = $3 AND status = $4 "
+                "AND id NOT IN ("
+                "  SELECT d.task_id FROM task_deps d "
+                "  JOIN tasks dep ON dep.id = d.depends_on "
+                "  WHERE dep.status NOT IN ($5, $6) "
+                "     OR (dep.status = $7 AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))"
+                ")",
+                (TaskStatus.PENDING, now, project_id, status,
+                 TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
+                 TaskStatus.NEEDS_REVIEW),
+            )
+
+        # Reclassify remaining WAITING tasks to BLOCKED if a dep is now failed/cancelled
+        await self._db.execute_write(
+            "UPDATE tasks SET status = $1, updated_at = $2 "
+            "WHERE project_id = $3 AND status = $4 "
+            "AND id IN ("
+            "  SELECT d.task_id FROM task_deps d "
+            "  JOIN tasks dep ON dep.id = d.depends_on "
+            "  WHERE dep.status IN ($5, $6)"
+            ")",
+            (TaskStatus.BLOCKED, now, project_id, TaskStatus.WAITING,
+             TaskStatus.FAILED, TaskStatus.CANCELLED),
+        )
+
+        # Reclassify BLOCKED tasks back to WAITING if all stuck deps were retried/resolved
         await self._db.execute_write(
             "UPDATE tasks SET status = $1, updated_at = $2 "
             "WHERE project_id = $3 AND status = $4 "
             "AND id NOT IN ("
             "  SELECT d.task_id FROM task_deps d "
             "  JOIN tasks dep ON dep.id = d.depends_on "
-            "  WHERE dep.status NOT IN ($5, $6) "
-            "     OR (dep.status = $7 AND (dep.output_text IS NULL OR TRIM(dep.output_text) = ''))"
+            "  WHERE dep.status IN ($5, $6)"
             ")",
-            (TaskStatus.PENDING, now, project_id, TaskStatus.BLOCKED,
-             TaskStatus.COMPLETED, TaskStatus.NEEDS_REVIEW,
-             TaskStatus.NEEDS_REVIEW),
+            (TaskStatus.WAITING, now, project_id, TaskStatus.BLOCKED,
+             TaskStatus.FAILED, TaskStatus.CANCELLED),
         )
 
     async def _create_wave_pr(self, project_id: str, project_name: str, wave: int) -> None:

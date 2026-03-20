@@ -101,6 +101,10 @@ async def run_claude_task(
         db: Database instance (optional). Used to inject project knowledge
             into the system prompt when available.
     """
+    # sqlite3.Row doesn't support .get() — normalize to dict
+    if not isinstance(task_row, dict):
+        task_row = dict(task_row)
+
     tier = ModelTier(task_row["model_tier"])
     model_id = get_model_id(tier)
     task_id = task_row["id"]
@@ -161,6 +165,7 @@ async def run_claude_task(
                 knowledge_parts = []
                 total_chars = 0
                 for kr in knowledge_rows:
+                    kr = dict(kr)  # sqlite3.Row → dict (enables .get())
                     entry = f"[{kr['category']}] {kr['content']}"
                     if kr.get("rationale"):
                         entry += f"\n  WHY: {kr['rationale']}"

@@ -906,8 +906,8 @@ async def _dispatch_task(db: Database, bus: SentinelBus, args: dict) -> str:
     )
     if not task:
         return f"Error: task {task_id} not found."
-    if task["status"] not in ("pending", "blocked"):
-        return f"Error: task is '{task['status']}', must be pending or blocked to dispatch."
+    if task["status"] not in ("pending", "blocked", "waiting"):
+        return f"Error: task is '{task['status']}', must be pending, waiting, or blocked to dispatch."
 
     now = time.time()
     await db.execute_write(
@@ -1241,7 +1241,7 @@ async def _advance_wave(db: Database, bus: SentinelBus, args: dict) -> str:
     # Unblock next wave tasks
     next_wave_row = await db.fetchone(
         "SELECT MIN(wave) as w FROM tasks "
-        "WHERE project_id = $1 AND wave > $2 AND status = 'blocked'",
+        "WHERE project_id = $1 AND wave > $2 AND status IN ('blocked', 'waiting')",
         (project_id, current_wave),
     )
     if not next_wave_row or next_wave_row["w"] is None:
@@ -1251,7 +1251,7 @@ async def _advance_wave(db: Database, bus: SentinelBus, args: dict) -> str:
     now = time.time()
     await db.execute_write(
         "UPDATE tasks SET status = 'pending', updated_at = $1 "
-        "WHERE project_id = $2 AND wave = $3 AND status = 'blocked'",
+        "WHERE project_id = $2 AND wave = $3 AND status IN ('blocked', 'waiting')",
         (now, project_id, next_wave),
     )
 

@@ -117,6 +117,7 @@ class SentinelCommand(Enum):
     REASSIGN_TIER = "reassign_tier"
     SKIP_TASK = "skip_task"
     RESTART_SERVER = "restart_server"
+    WAVE_REASSESSMENT = "wave_reassessment"
 
 
 @dataclass
@@ -240,6 +241,7 @@ class ProjectWorldModel:
     timing: dict[str, Any] = field(default_factory=dict)
     decision_log: list[DecisionRecord] = field(default_factory=list)
     strategy: ExecutionStrategy = field(default_factory=ExecutionStrategy)
+    wave_reassessments: dict[int, str] = field(default_factory=dict)  # wave → outcome
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -254,6 +256,7 @@ class ProjectWorldModel:
             "timing": self.timing,
             "decision_log": [d.to_dict() for d in self.decision_log],
             "strategy": self.strategy.to_dict(),
+            "wave_reassessments": self.wave_reassessments,
         }
 
     @classmethod
@@ -279,6 +282,7 @@ class ProjectWorldModel:
             timing=data.get("timing", {}),
             decision_log=decisions,
             strategy=strategy,
+            wave_reassessments=data.get("wave_reassessments", {}),
         )
 
 

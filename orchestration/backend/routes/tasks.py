@@ -37,17 +37,28 @@ async def _verify_task_ownership(db: Database, task_id: str, user: dict):
     return row
 
 
-async def _row_to_dict(row, db: Database, deps_list: list[str] | None = None) -> dict:
+async def _row_to_dict(
+    row, db: Database,
+    deps_list: list[str] | None = None,
+    dep_details: list[dict] | None = None,
+) -> dict:
     """Convert a DB row to a TaskOut-compatible dict.
 
     If deps_list is None, fetches dependencies from the DB (single-task endpoints).
-    For batch use, pass pre-loaded deps_list to avoid N+1 queries.
+    For batch use, pass pre-loaded deps_list and dep_details to avoid N+1 queries.
     """
     if deps_list is None:
-        deps = await db.fetchall(
-            "SELECT depends_on FROM task_deps WHERE task_id = $1", (row["id"],)
+        dep_rows = await db.fetchall(
+            "SELECT d.depends_on, t.title, t.status "
+            "FROM task_deps d JOIN tasks t ON t.id = d.depends_on "
+            "WHERE d.task_id = $1",
+            (row["id"],),
         )
-        deps_list = [d["depends_on"] for d in deps]
+        deps_list = [d["depends_on"] for d in dep_rows]
+        dep_details = [
+            {"task_id": d["depends_on"], "title": d["title"], "status": d["status"]}
+            for d in dep_rows
+        ]
 
     return {
         "id": row["id"],
@@ -74,6 +85,7 @@ async def _row_to_dict(row, db: Database, deps_list: list[str] | None = None) ->
         "context": json.loads(row["context_json"]) if row["context_json"] else [],
         "error": row["error"],
         "depends_on": deps_list,
+        "dependency_details": dep_details or [],
         "rationale": row["rationale"],
         "started_at": row["started_at"],
         "completed_at": row["completed_at"],
@@ -92,16 +104,27 @@ async def _rows_to_tasks(rows, db: Database) -> list[dict]:
     task_ids = [r["id"] for r in rows]
     placeholders = ",".join([f"${i+1}" for i in range(len(task_ids))])
     dep_rows = await db.fetchall(
-        f"SELECT task_id, depends_on FROM task_deps WHERE task_id IN ({placeholders})",
+        f"SELECT d.task_id, d.depends_on, t.title AS dep_title, t.status AS dep_status "
+        f"FROM task_deps d JOIN tasks t ON t.id = d.depends_on "
+        f"WHERE d.task_id IN ({placeholders})",
         task_ids,
     )
 
-    # Group deps by task_id
+    # Group deps and dep details by task_id
     deps_map: dict[str, list[str]] = {tid: [] for tid in task_ids}
+    details_map: dict[str, list[dict]] = {tid: [] for tid in task_ids}
     for d in dep_rows:
         deps_map[d["task_id"]].append(d["depends_on"])
+        details_map[d["task_id"]].append({
+            "task_id": d["depends_on"],
+            "title": d["dep_title"],
+            "status": d["dep_status"],
+        })
 
-    return [await _row_to_dict(r, db, deps_map.get(r["id"], [])) for r in rows]
+    return [
+        await _row_to_dict(r, db, deps_map.get(r["id"], []), details_map.get(r["id"], []))
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +166,7 @@ async def bulk_task_action(
             results["succeeded"].append(task_id)
 
         elif body.action == "cancel":
-            if row["status"] not in (TaskStatus.PENDING, TaskStatus.BLOCKED, TaskStatus.QUEUED):
+            if row["status"] not in (TaskStatus.PENDING, TaskStatus.BLOCKED, TaskStatus.WAITING, TaskStatus.QUEUED):
                 results["failed"].append({"id": task_id, "reason": f"Cannot cancel {row['status']} task"})
                 continue
             await db.execute_write(
@@ -335,7 +358,7 @@ async def cancel_task(
 ) -> TaskOut:
     """Cancel a pending or queued task."""
     row = await _verify_task_ownership(db, task_id, current_user)
-    if row["status"] not in (TaskStatus.PENDING, TaskStatus.BLOCKED, TaskStatus.QUEUED):
+    if row["status"] not in (TaskStatus.PENDING, TaskStatus.BLOCKED, TaskStatus.WAITING, TaskStatus.QUEUED):
         raise HTTPException(400, f"Cannot cancel task in '{row['status']}' state")
 
     await db.execute_write(

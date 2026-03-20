@@ -27,7 +27,8 @@ class PlanStatus(str, Enum):
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
-    BLOCKED = "blocked"      # Dependencies not met
+    WAITING = "waiting"      # Dependencies in progress (all deps healthy)
+    BLOCKED = "blocked"      # At least one dependency failed/cancelled/paused
     QUEUED = "queued"        # Ready, waiting for worker
     RUNNING = "running"
     COMPLETED = "completed"

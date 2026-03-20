@@ -45,7 +45,13 @@ class PlanSyncService:
         """Write a plan to the context store as a node tree.
 
         Returns a dict mapping task titles to context store node IDs.
-        Empty dict if sync failed. Fire-and-forget safe — never raises, logs errors.
+        The special key ``__plan_root__`` maps to the plan root node.
+        Empty dict if sync failed or context store unreachable.
+        Fire-and-forget safe — never raises, logs errors.
+
+        The returned mapping is also persisted in the ``node_mapping_json``
+        column of the corresponding plan row so that task_lifecycle.py can
+        look up node IDs when pushing status updates.
         """
         try:
             return await self._sync(project_name, repo_path, plan_data, plan_id, project_id)
@@ -70,16 +76,22 @@ class PlanSyncService:
         summary = plan_data.get("summary", "")
 
         # Create root plan node
+        plan_attrs = {
+            "plan_type": "orchestration",
+            "status": "draft",
+            "orch_plan_id": plan_id,
+            "orch_project_id": project_id,
+        }
+        # Store plan-level rationale if present (why this approach was chosen)
+        plan_rationale = plan_data.get("rationale")
+        if plan_rationale:
+            plan_attrs["rationale"] = plan_rationale
+
         plan_node_id = await self._ctx.create_root_node(cs_project_id, {
             "nodeType": "plan",
             "name": project_name,
             "value": summary,
-            "attributes": {
-                "plan_type": "orchestration",
-                "status": "draft",
-                "orch_plan_id": plan_id,
-                "orch_project_id": project_id,
-            },
+            "attributes": plan_attrs,
         })
         if not plan_node_id:
             logger.debug("Could not create plan root node, skipping plan sync")
@@ -156,9 +168,10 @@ class PlanSyncService:
                 (json.dumps(node_mapping), plan_id),
             )
 
+        task_count = sum(1 for k in node_mapping if k != "__plan_root__")
         logger.info(
             "Plan synced to context store: plan_node=%s, project=%s, tasks_mapped=%d",
-            plan_node_id, cs_project_id, len(node_mapping),
+            plan_node_id, cs_project_id, task_count,
         )
         return node_mapping
 
@@ -173,13 +186,16 @@ class PlanSyncService:
             phase_name = phase.get("name", "Unnamed Phase")
             phase_desc = phase.get("description", "")
 
+            phase_attrs: dict = {"status": "pending"}
+            phase_rationale = phase.get("rationale")
+            if phase_rationale:
+                phase_attrs["rationale"] = phase_rationale
+
             phase_node_id = await self._ctx.create_node(plan_node_id, {
                 "nodeType": "plan_phase",
                 "name": phase_name,
                 "value": phase_desc,
-                "attributes": {
-                    "status": "pending",
-                },
+                "attributes": phase_attrs,
             })
             if not phase_node_id:
                 continue
@@ -222,6 +238,14 @@ class PlanSyncService:
         rationale = task.get("rationale")
         if rationale:
             attrs["rationale"] = rationale
+
+        # Preserve alternatives considered and confidence
+        alternatives = task.get("alternatives_considered")
+        if alternatives:
+            attrs["alternatives_considered"] = alternatives
+        confidence = task.get("confidence")
+        if confidence:
+            attrs["confidence"] = str(confidence)
 
         # Preserve requirement traceability
         req_ids = task.get("requirement_ids", [])
@@ -305,42 +329,124 @@ class PlanSyncService:
             return None
 
         # Create the revision node
+        revision_attrs = {
+            "wave_number": str(wave_number),
+            "outcome": outcome,
+            "rationale": rationale,
+            "delta": json.dumps(delta) if isinstance(delta, dict) else str(delta),
+            "observation_count": str(len(observation_ids or [])),
+            "finding_count": str(len(finding_ids or [])),
+        }
+        # Carry forward alternatives if provided in delta
+        if isinstance(delta, dict) and delta.get("alternatives_considered"):
+            revision_attrs["alternatives_considered"] = delta["alternatives_considered"]
+
         revision_id = await self._ctx.create_node(plan_node_id, {
             "nodeType": "revision",
             "name": f"Wave {wave_number} reassessment — {outcome}",
             "value": rationale,
-            "attributes": {
-                "wave_number": str(wave_number),
-                "outcome": outcome,
-                "rationale": rationale,
-                "delta": json.dumps(delta) if isinstance(delta, dict) else str(delta),
-            },
+            "attributes": revision_attrs,
         })
         if not revision_id:
             return None
 
-        # Link revision → observations with CONSTRAINS edges
-        for obs_id in (observation_ids or []):
-            await self._ctx.create_edge({
-                "sourceId": obs_id,
-                "targetId": revision_id,
-                "type": "CONSTRAINS",
-            })
+        # Materialize observations as nodes in context store, then link
+        # with CONSTRAINS edges (observations constrain what the plan can do)
+        linked_obs = 0
+        for obs_db_id in (observation_ids or []):
+            obs_node_id = await self._materialize_observation(
+                plan_node_id, obs_db_id,
+            )
+            if obs_node_id:
+                await self._ctx.create_edge({
+                    "sourceId": obs_node_id,
+                    "targetId": revision_id,
+                    "type": "CONSTRAINS",
+                })
+                linked_obs += 1
 
-        # Link findings → revision with INFORMS edges
-        for finding_id in (finding_ids or []):
-            await self._ctx.create_edge({
-                "sourceId": finding_id,
-                "targetId": revision_id,
-                "type": "INFORMS",
-            })
+        # Materialize findings as nodes in context store, then link
+        # with INFORMS edges (findings inform why the plan changed)
+        linked_findings = 0
+        for finding_db_id in (finding_ids or []):
+            finding_node_id = await self._materialize_finding(
+                plan_node_id, finding_db_id,
+            )
+            if finding_node_id:
+                await self._ctx.create_edge({
+                    "sourceId": finding_node_id,
+                    "targetId": revision_id,
+                    "type": "INFORMS",
+                })
+                linked_findings += 1
 
         logger.info(
-            "Revision synced: revision=%s, plan=%s, wave=%d, observations=%d, findings=%d",
+            "Revision synced: revision=%s, plan=%s, wave=%d, "
+            "observations=%d/%d, findings=%d/%d",
             revision_id, plan_node_id, wave_number,
-            len(observation_ids or []), len(finding_ids or []),
+            linked_obs, len(observation_ids or []),
+            linked_findings, len(finding_ids or []),
         )
         return revision_id
+
+    async def _materialize_observation(
+        self, plan_node_id: str, obs_db_id: str,
+    ) -> str | None:
+        """Look up a sentinel observation by DB ID and create a node in the context store.
+
+        Returns the context store node ID, or None if the observation wasn't found or
+        the node couldn't be created.
+        """
+        row = await self._db.fetchone(
+            "SELECT rule, severity, summary, details_json "
+            "FROM sentinel_observations WHERE id = $1",
+            (obs_db_id,),
+        )
+        if not row:
+            logger.debug("Observation %s not found in DB, skipping", obs_db_id)
+            return None
+
+        return await self._ctx.create_node(plan_node_id, {
+            "nodeType": "observation",
+            "name": (row["summary"] or "Observation")[:200],
+            "value": row["summary"] or "",
+            "attributes": {
+                "source_id": obs_db_id,
+                "rule": row["rule"] or "",
+                "severity": row["severity"] or "",
+                "details": row["details_json"] or "{}",
+            },
+        })
+
+    async def _materialize_finding(
+        self, plan_node_id: str, finding_db_id: str,
+    ) -> str | None:
+        """Look up a knowledge finding by DB ID and create a node in the context store.
+
+        Returns the context store node ID, or None if the finding wasn't found or
+        the node couldn't be created.
+        """
+        row = await self._db.fetchone(
+            "SELECT content, category, confidence, rationale, source_task_title "
+            "FROM project_knowledge WHERE id = $1",
+            (finding_db_id,),
+        )
+        if not row:
+            logger.debug("Finding %s not found in DB, skipping", finding_db_id)
+            return None
+
+        return await self._ctx.create_node(plan_node_id, {
+            "nodeType": "finding",
+            "name": (row["content"] or "Finding")[:200],
+            "value": row["content"] or "",
+            "attributes": {
+                "source_id": finding_db_id,
+                "category": row["category"] or "discovery",
+                "confidence": row["confidence"] or "medium",
+                "rationale": row["rationale"] or "",
+                "source_task_title": row["source_task_title"] or "",
+            },
+        })
 
     async def get_node_mapping(self, plan_id: str) -> dict[str, str]:
         """Load the persisted task title → node ID mapping for a plan."""

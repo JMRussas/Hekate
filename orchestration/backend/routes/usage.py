@@ -60,7 +60,7 @@ async def get_daily_usage(
 ) -> list[dict]:
     """Daily cost breakdown for the last N days. Admin only."""
     rows = await db.fetchall(
-        "SELECT period_key, total_cost_usd, total_prompt_tokens, "
+        "SELECT period_key, budget_periods.total_cost_usd, total_prompt_tokens, "
         "total_completion_tokens, api_call_count "
         "FROM budget_periods WHERE period_type = 'daily' "
         "ORDER BY period_key DESC LIMIT $1",

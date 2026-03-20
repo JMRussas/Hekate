@@ -856,6 +856,11 @@ async def mcp_dispatch(task: dict):
     return await _odin.dispatch_task_mcp(task)
 
 
+@app.get("/ping")
+async def ping():
+    return {"message": "pong"}
+
+
 @app.post("/mcp/teardown/{server_name}")
 async def mcp_teardown(server_name: str):
     """Tear down a specific MCP server process."""

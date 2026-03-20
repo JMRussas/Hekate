@@ -4,11 +4,14 @@ Read this when you need to understand the system design, component relationships
 
 ## Overview
 
-Hekate is a three-component AI agent platform:
+Hekate is a six-component AI agent platform:
 
+- **Gods Pipeline** (Python) — **Active execution engine.** Event-driven pipeline with 6 gods: Athena (planning), Odin (dispatch/lifecycle), Hermes (async CLI execution), Mimir (verification), Hephaestus (git), Tyche (budget). Communicates via Postgres relay table.
+- **Orchestration** (Python/FastAPI) — API layer, DB, dashboard. Legacy execution services (executor.py, task_lifecycle.py, sentinel/) still present but being replaced by gods.
 - **Extension** (TypeScript) — VSCode fleet control center. Manages projects, monitors tasks, streams events.
-- **Orchestration** (Python/FastAPI) — Task execution engine. Plans work via Claude, decomposes into dependency waves, dispatches to model tiers, verifies results.
 - **Context Store** (C#/.NET) — Agent memory. Graph DB (AGE) + vector search (pgvector) for storing plans, conversations, and code indices.
+- **Hades** (Python/FastAPI) — Admin service for NSSM service management, deploy, log tailing.
+- **LLM Gateway** (Python/FastMCP) — Proxy service running as user (not LocalSystem) to access CLI OAuth tokens for LLM providers.
 
 ## Data Flow
 
@@ -16,20 +19,36 @@ Hekate is a three-component AI agent platform:
 Extension (VSCode)
     │  fetch + Bearer token
     ▼
-Orchestration API (:5200)
-    ├── Projects, plans, task lifecycle (decompose → dispatch → execute → verify)
-    ├── MCP server for external agents (Claude Code, Gemini, Codex)
-    └── CLI executors for local task dispatch (tools/local_executor.py)
+Gods Pipeline (Odin/run_pipeline.py)
+    ├── Event relay (god_relay_events Postgres table)
+    ├── Athena → plan (Gemini L1-L5)
+    ├── Odin → dispatch + lifecycle (provider selection, wave progression)
+    ├── Hermes → execute (Claude Code CLI, async non-blocking)
+    ├── Mimir → verify (LLM Gateway /v1/chat)
+    ├── Hephaestus → git staging
+    └── Tyche → budget tracking
     │
-    │  one-way seeding (tools/seed_hekate_roadmap.py)
+    ▼
+Orchestration API (:5200)
+    ├── REST API (projects, tasks, chat, usage, events, odin)
+    ├── Postgres/SQLite DB (shared with gods pipeline)
+    ├── Dashboard (React frontend)
+    └── MCP server for external agents
+    │
     ▼
 Context Store API (:5102)
     ├── PostgreSQL + AGE graph + pgvector embeddings
     ├── Plans, conversations, code indices
     └── Context router for agent memory retrieval
+
+LLM Gateway (:5210)
+    └── CLI OAuth proxy — runs as user, not LocalSystem
+
+Hades (:5201)
+    └── NSSM admin — service management, deploy, logs
 ```
 
-**Key:** Extension ↔ Orchestration are tightly coupled (REST + SSE). Context Store is decoupled — receives data via manual seeding, no runtime dependency from orchestration.
+**Key:** Extension ↔ Orchestration are tightly coupled (REST + SSE). Context Store is decoupled — receives data via seeding + plan_sync. Gods observe orchestration via Postgres events (god_events table) and intervene via orchestration API. LLM Gateway bridges CLI auth gap for NSSM services.
 
 ## Component Integration
 
@@ -85,11 +104,14 @@ Local task execution bypassing the REST API — direct SQLite access:
 | Component | Depends On | Used By |
 |-----------|-----------|---------|
 | Extension | Orchestration API | User (VSCode) |
-| Orchestration API | SQLite, Anthropic API, Ollama | Extension, MCP clients, CLI executors |
+| Orchestration API | Postgres/SQLite, Anthropic API, Ollama, LLM Gateway | Extension, MCP clients, CLI executors, Gods |
 | CLI executors | SQLite (direct), claude/gemini/codex CLIs, Ollama | Manual / cron |
 | MCP Server | Orchestration API (HTTP) | Claude Code sessions |
 | Context Store API | PostgreSQL + AGE + pgvector | Seeding tools, direct queries |
 | Supervisor | SQLite (direct) | Manual / cron |
+| Gods (Odin) | Postgres (god_events), Orchestration API | Orchestration (interventions) |
+| LLM Gateway | CLI OAuth tokens | Orchestration, Gods |
+| Hades | NSSM, filesystem | Admin (deploy, service mgmt) |
 
 ## Gotchas & Pitfalls
 

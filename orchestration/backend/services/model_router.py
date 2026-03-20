@@ -247,10 +247,44 @@ for _name, _overrides in _STRATEGY_OVERRIDES.items():
 
 
 def recommend_tier(task_type: str, complexity: str) -> ModelTier:
-    """Get the recommended model tier based on the active routing strategy."""
+    """Get the recommended model tier based on the active routing strategy.
+
+    Checks historical execution data for models that should be avoided
+    for this task type, and falls back to alternatives if needed.
+    """
     strategy = cfg("routing_strategy", "best")
     tier_map = _STRATEGY_MAPS.get(strategy, _STRATEGY_MAPS["best"])
-    return tier_map.get((task_type, complexity), ModelTier.CLAUDE_CODE)
+    recommended = tier_map.get((task_type, complexity), ModelTier.CLAUDE_CODE)
+
+    # Check if the learner suggests avoiding this model
+    try:
+        from backend.services.learning.execution_learner import get_learner
+        learner = get_learner()
+        model_id = get_model_id(recommended)
+        avoid, reason = learner.should_avoid_model(model_id, task_type)
+        if avoid:
+            # Try to find a better alternative from the tier map
+            override = learner.get_routing_override(task_type, model_id)
+            if override:
+                # Map the model ID back to a tier
+                for tier in ModelTier:
+                    if get_model_id(tier) == override:
+                        logger.info(
+                            "Learning override: %s → %s for %s/%s (%s)",
+                            recommended.value, tier.value, task_type, complexity, reason,
+                        )
+                        return tier
+            # If no override found but model is bad, escalate to Claude Code
+            if recommended != ModelTier.CLAUDE_CODE:
+                logger.info(
+                    "Learning avoidance: %s → claude_code for %s/%s (%s)",
+                    recommended.value, task_type, complexity, reason,
+                )
+                return ModelTier.CLAUDE_CODE
+    except Exception:
+        pass  # Learning module unavailable — use static routing
+
+    return recommended
 
 
 # Maps ModelTier to the provider name used in provider_quotas config.
