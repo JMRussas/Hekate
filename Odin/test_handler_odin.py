@@ -284,10 +284,10 @@ class TestOdinLifecycle:
 
     @pytest.mark.asyncio
     async def test_project_failed_when_deadlocked(self, orch_db):
-        """All tasks blocked, none pending/running → deadlock → project_failed."""
+        """All tasks blocked with unsatisfied deps → deadlock → project_failed."""
         await _seed_project(orch_db, status="executing")
         await _seed_task(orch_db, "t1", wave=0, status="failed")
-        await _seed_task(orch_db, "t2", wave=0, status="blocked")
+        await _seed_task(orch_db, "t2", wave=0, status="blocked", depends_on=["t1"])
 
         event = Event("task_verified", {
             "project_id": "proj-1",

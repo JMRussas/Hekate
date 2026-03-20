@@ -208,8 +208,8 @@ class TestAsyncHermesLaunch:
 
         emits = await runner.handle_dispatch(event)
 
-        skipped = next((e for e in emits if e.payload.get("status") == "skipped"), None)
-        assert skipped is not None
+        # Non-pending tasks return None silently (dedup from replay)
+        assert emits is None
 
         await runner.shutdown(timeout=0.1)
 
