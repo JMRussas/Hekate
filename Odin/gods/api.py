@@ -247,6 +247,33 @@ def create_app(
     # Services (provider status)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Usage (stubs — return empty data so dashboard doesn't 404)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/usage/budget")
+    async def get_budget():
+        return {
+            "daily_limit": 5.0, "daily_spent": 0.0,
+            "monthly_limit": 50.0, "monthly_spent": 0.0,
+        }
+
+    @app.get("/api/usage/summary")
+    async def get_usage_summary():
+        return {"total_cost": 0.0, "total_tasks": 0, "by_tier": {}}
+
+    @app.get("/api/usage/daily")
+    async def get_daily_usage():
+        return []
+
+    @app.get("/api/usage/by-project")
+    async def get_usage_by_project():
+        return []
+
+    # ------------------------------------------------------------------
+    # Services
+    # ------------------------------------------------------------------
+
     @app.get("/api/services")
     async def list_services():
         """Check which providers/services are available."""
