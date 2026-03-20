@@ -699,3 +699,130 @@ class TestLifecycleEfficiency:
         wave_events = [e for e in emits if e.event_type == "wave_complete"]
         assert len(wave_events) == 1
         assert wave_events[0].payload["wave"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TaskDefinition backoff integration in odin_handle_diagnosis
+# ---------------------------------------------------------------------------
+
+class TestRetryBackoff:
+    @pytest.mark.asyncio
+    async def test_retry_uses_backoff_delay(self, orch_db):
+        """retry_as_is should store retry_after in context_json using TaskDefinition."""
+        await _seed_project(orch_db, status="executing")
+        await _seed_task(orch_db, "t1", wave=0, status="failed", error="timeout")
+
+        event = Event("task_diagnosis", {
+            "task_id": "t1",
+            "project_id": "proj-1",
+            "fix_type": "retry_as_is",
+            "root_cause": "timeout",
+        }, "odin")
+
+        before = time.time()
+        emits = await odin_handle_diagnosis(event, orch_db)
+        after = time.time()
+
+        row = await orch_db.fetchone(
+            "SELECT context_json FROM tasks WHERE id = ?", ("t1",))
+        ctx = json.loads(row["context_json"])
+        assert "retry_after" in ctx, "retry_after must be set in context_json"
+        # retry_after should be in the future (delay > 0)
+        assert ctx["retry_after"] >= before, "retry_after should be >= invocation time"
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff_increases_delay(self, orch_db):
+        """Higher retry_count should produce a longer delay for complex tasks."""
+        await _seed_project(orch_db, status="executing")
+
+        # Seed task with retry_count=0 (first failure)
+        await orch_db.execute_write(
+            "INSERT INTO tasks (id, project_id, title, task_type, complexity, "
+            "status, error, retry_count, max_retries, context_json, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("t1", "proj-1", "Task t1", "code", "complex",
+             "failed", "timeout", 0, 5, "{}", time.time()),
+        )
+
+        event0 = Event("task_diagnosis", {
+            "task_id": "t1",
+            "project_id": "proj-1",
+            "fix_type": "retry_as_is",
+        }, "odin")
+
+        await odin_handle_diagnosis(event0, orch_db)
+        row0 = await orch_db.fetchone(
+            "SELECT context_json, retry_count FROM tasks WHERE id = ?", ("t1",))
+        ctx0 = json.loads(row0["context_json"])
+        delay0 = ctx0["retry_after"] - time.time()
+
+        # Put it back to failed with higher retry_count
+        await orch_db.execute_write(
+            "UPDATE tasks SET status = 'failed', error = 'timeout' WHERE id = ?",
+            ("t1",),
+        )
+
+        event1 = Event("task_diagnosis", {
+            "task_id": "t1",
+            "project_id": "proj-1",
+            "fix_type": "retry_as_is",
+        }, "odin")
+
+        await odin_handle_diagnosis(event1, orch_db)
+        row1 = await orch_db.fetchone(
+            "SELECT context_json FROM tasks WHERE id = ?", ("t1",))
+        ctx1 = json.loads(row1["context_json"])
+        delay1 = ctx1["retry_after"] - time.time()
+
+        # Exponential: attempt 1 delay < attempt 2 delay
+        assert delay1 > delay0, (
+            f"Exponential backoff should increase: delay0={delay0:.0f}s, delay1={delay1:.0f}s"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_skips_tasks_before_retry_after(self, orch_db):
+        """odin_dispatch should not dispatch tasks whose retry_after is in the future."""
+        await _seed_project(orch_db, status="executing")
+        # Task with retry_after 1 hour from now
+        future_ctx = json.dumps({"retry_after": time.time() + 3600})
+        await orch_db.execute_write(
+            "INSERT INTO tasks (id, project_id, title, task_type, status, wave, "
+            "context_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("t1", "proj-1", "Task t1", "code", "pending", 0,
+             future_ctx, time.time()),
+        )
+        # Task with no retry_after — should dispatch
+        await _seed_task(orch_db, "t2", wave=0, status="pending")
+
+        event = Event("tick", {"project_id": "proj-1"}, "odin")
+
+        with patch("gods.handlers.odin._get_provider_availability", new_callable=AsyncMock) as mock_prov:
+            mock_prov.return_value = {"claude_code": True, "gemini_cli": True, "ollama": True}
+            emits = await odin_dispatch(event, orch_db)
+
+        commands = [e for e in (emits or []) if e.event_type == "dispatch_command"]
+        dispatched_ids = {c.payload["task_id"] for c in commands}
+        assert "t2" in dispatched_ids, "t2 (no retry_after) should be dispatched"
+        assert "t1" not in dispatched_ids, "t1 (retry_after in future) should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_reassign_tier_uses_backoff_delay(self, orch_db):
+        """reassign_tier should also store retry_after in context_json."""
+        await _seed_project(orch_db, status="executing")
+        await _seed_task(orch_db, "t1", wave=0, status="failed", error="rate limit")
+
+        event = Event("task_diagnosis", {
+            "task_id": "t1",
+            "project_id": "proj-1",
+            "fix_type": "reassign_tier",
+            "new_tier": "gemini_cli",
+        }, "odin")
+
+        before = time.time()
+        await odin_handle_diagnosis(event, orch_db)
+
+        row = await orch_db.fetchone(
+            "SELECT context_json FROM tasks WHERE id = ?", ("t1",))
+        ctx = json.loads(row["context_json"])
+        assert "retry_after" in ctx, "reassign_tier should also set retry_after"
+        assert ctx["retry_after"] >= before

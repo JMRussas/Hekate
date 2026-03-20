@@ -19,6 +19,7 @@ import httpx
 
 from gods.pipeline import Event, Emit
 from gods import safe_json
+from gods.task_definition import apply_defaults
 
 logger = logging.getLogger("gods.handlers.odin")
 
@@ -36,6 +37,28 @@ def _val(row, key, default=None):
         return row[0]
     except (IndexError, KeyError):
         return default
+
+async def _get_task_type_complexity(db, task_id: str) -> tuple[str, str]:
+    """Load task_type and complexity from DB, defaulting to code/medium."""
+    row = await db.fetchone(
+        "SELECT task_type, complexity FROM tasks WHERE id = $1", (task_id,)
+    )
+    if row:
+        return (row.get("task_type") or "code"), (row.get("complexity") or "medium")
+    return "code", "medium"
+
+
+async def _load_context_json(db, task_id: str) -> dict:
+    """Load and parse context_json from a task, returning a dict."""
+    ctx_row = await db.fetchone(
+        "SELECT context_json FROM tasks WHERE id = $1", (task_id,)
+    )
+    try:
+        existing = _val(ctx_row, "context_json", "{}")
+        return safe_json.loads_dict(existing) if isinstance(existing, str) else (existing or {})
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
 
 # Statuses that satisfy dependency requirements
 _DEP_SATISFIED = ("completed",)
@@ -254,8 +277,8 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
 
     # Find ready tasks: pending, in current wave, all deps completed
     # Note: real DB may not have 'complexity' column — use COALESCE
-    ready = await db.fetchall(
-        "SELECT t.id, t.task_type, t.priority "
+    ready_raw = await db.fetchall(
+        "SELECT t.id, t.task_type, t.priority, t.context_json "
         "FROM tasks t "
         "LEFT JOIN task_deps d ON d.task_id = t.id "
         "LEFT JOIN tasks dep ON dep.id = d.depends_on "
@@ -265,6 +288,19 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
         "ORDER BY t.priority ASC",
         ("completed", project_id, "pending", current_wave),
     )
+
+    # Filter out tasks with retry_after in the future
+    now = time.time()
+    ready = []
+    for task_row in ready_raw:
+        ctx_str = task_row.get("context_json") or "{}"
+        ctx = safe_json.loads_dict(ctx_str) if isinstance(ctx_str, str) else (ctx_str or {})
+        retry_after = ctx.get("retry_after")
+        if retry_after and retry_after > now:
+            logger.debug("Odin: skipping task %s — retry_after in %ds",
+                         task_row["id"][:8], int(retry_after - now))
+            continue
+        ready.append(task_row)
 
     # Count running for concurrency limits
     running_row = await db.fetchone(
@@ -483,28 +519,56 @@ async def odin_handle_diagnosis(event: Event, db) -> list[Emit] | None:
                 "reason": f"Max retries exhausted ({retry_count}/{max_retries})",
             }, source="odin"))
         else:
+            # Compute backoff delay via TaskDefinition
+            task_type, complexity = await _get_task_type_complexity(db, task_id)
+            td = apply_defaults(task_type, complexity)
+            delay = td.compute_retry_delay(retry_count)
+            retry_after = time.time() + delay
+
+            # Store retry_after in context_json
+            ctx = await _load_context_json(db, task_id)
+            ctx["retry_after"] = retry_after
+
             await db.execute_write(
-                "UPDATE tasks SET status = $1, retry_count = $2, error = NULL, updated_at = $3 WHERE id = $4",
-                ("pending", retry_count + 1, time.time(), task_id),
+                "UPDATE tasks SET status = $1, retry_count = $2, error = NULL, "
+                "context_json = $3, updated_at = $4 WHERE id = $5",
+                ("pending", retry_count + 1, json.dumps(ctx), time.time(), task_id),
             )
+            logger.info("Odin: task %s retry in %ds (attempt %d, %s backoff)",
+                        task_id[:8], delay, retry_count + 1, td.retry_logic.value)
             emits.append(Emit("task_reset", {
                 "task_id": task_id,
                 "project_id": project_id,
                 "retry_count": retry_count + 1,
+                "retry_delay": delay,
             }, source="odin"))
 
     elif fix_type == "reassign_tier":
         new_tier = event.payload.get("new_tier", "claude_code")
+
+        # Compute backoff delay via TaskDefinition
+        task_type, complexity = await _get_task_type_complexity(db, task_id)
+        td = apply_defaults(task_type, complexity)
+        delay = td.compute_retry_delay(retry_count)
+        retry_after = time.time() + delay
+
+        # Store retry_after in context_json
+        ctx = await _load_context_json(db, task_id)
+        ctx["retry_after"] = retry_after
+
         await db.execute_write(
             "UPDATE tasks SET status = $1, model_tier = $2, retry_count = $3, "
-            "error = NULL, updated_at = $4 WHERE id = $5",
-            ("pending", new_tier, retry_count + 1, time.time(), task_id),
+            "error = NULL, context_json = $4, updated_at = $5 WHERE id = $6",
+            ("pending", new_tier, retry_count + 1, json.dumps(ctx), time.time(), task_id),
         )
+        logger.info("Odin: task %s retry in %ds (attempt %d, %s backoff)",
+                    task_id[:8], delay, retry_count + 1, td.retry_logic.value)
         emits.append(Emit("task_reset", {
             "task_id": task_id,
             "project_id": project_id,
             "new_tier": new_tier,
             "retry_count": retry_count + 1,
+            "retry_delay": delay,
         }, source="odin"))
 
     elif fix_type == "modify_prompt":

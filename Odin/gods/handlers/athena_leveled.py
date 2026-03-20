@@ -282,12 +282,18 @@ async def _decompose_plan(
     plan: dict,
     plan_id: str,
     db,
+    plan_config: dict | None = None,
 ) -> int:
     """Decompose plan into task rows. No monolith imports.
+
+    Attaches Conductor-style TaskDefinition to each task's context_json
+    based on task_type and complexity. If the task dict contains an explicit
+    "task_definition" key (from L3+ planning), that overrides defaults.
 
     Returns the number of tasks created.
     """
     import uuid
+    from gods.task_definition import TaskDefinition, apply_defaults, merge_with_plan_config
 
     now = time.time()
     all_tasks: list[dict] = []
@@ -306,6 +312,21 @@ async def _decompose_plan(
 
             status = "pending" if wave == 0 and not deps else "blocked"
 
+            # Build TaskDefinition: explicit override or type-based defaults
+            if "task_definition" in task:
+                td = TaskDefinition.from_dict(task["task_definition"])
+            else:
+                td = apply_defaults(
+                    task.get("task_type", "code"),
+                    task.get("complexity", "medium"),
+                )
+
+            # Merge with plan-level config if present
+            td = merge_with_plan_config(td, plan_config)
+
+            # Build context_json with task_definition embedded
+            context = {"task_definition": td.to_dict()}
+
             all_tasks.append({
                 "id": task_id,
                 "title": task.get("title", f"Task {i}"),
@@ -314,17 +335,18 @@ async def _decompose_plan(
                 "wave": wave,
                 "deps": deps,
                 "status": status,
+                "context_json": json.dumps(context),
             })
         wave += 1
 
     for task in all_tasks:
         await db.execute_write(
             "INSERT OR IGNORE INTO tasks (id, project_id, plan_id, title, description, "
-            "task_type, wave, status, created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            "task_type, wave, status, context_json, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
             (task["id"], project_id, plan_id, task["title"],
              task["description"], task["task_type"], task["wave"],
-             task["status"], now, now),
+             task["status"], task["context_json"], now, now),
         )
         for dep_id in task["deps"]:
             await db.execute_write(

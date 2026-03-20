@@ -289,7 +289,7 @@ class HekateEngine:
                                 "INSERT INTO god_relay_events "
                                 "(event_type, source, payload, severity, created_at) "
                                 "VALUES ($1, $2, $3, $4, $5)",
-                                ("project_tick", "heartbeat",
+                                ("heartbeat_tick", "heartbeat",
                                  json.dumps({"project_id": pid}),
                                  "info", time.time()),
                             )
@@ -446,11 +446,18 @@ class HekateEngine:
         project_id: str,
         plan: dict,
         plan_id: str | None = None,
+        plan_config: dict | None = None,
     ) -> int:
         """Decompose a plan into task rows. No monolith imports.
 
+        Attaches Conductor-style TaskDefinition to each task's context_json
+        based on task_type and complexity. If the task dict contains an explicit
+        "task_definition" key (from L3+ planning), that overrides defaults.
+
         Returns the number of tasks created.
         """
+        from gods.task_definition import TaskDefinition, apply_defaults, merge_with_plan_config
+
         if not plan_id:
             plan_id = uuid.uuid4().hex[:12]
 
@@ -482,6 +489,21 @@ class HekateEngine:
 
                 status = "pending" if wave == 0 and not deps else "blocked"
 
+                # Build TaskDefinition: explicit override or type-based defaults
+                if "task_definition" in task:
+                    td = TaskDefinition.from_dict(task["task_definition"])
+                else:
+                    td = apply_defaults(
+                        task.get("task_type", "code"),
+                        task.get("complexity", "medium"),
+                    )
+
+                # Merge with plan-level config if present
+                td = merge_with_plan_config(td, plan_config)
+
+                # Build context_json with task_definition embedded
+                context = {"task_definition": td.to_dict()}
+
                 all_tasks.append({
                     "id": task_id,
                     "title": task.get("title", f"Task {i}"),
@@ -490,6 +512,7 @@ class HekateEngine:
                     "wave": wave,
                     "deps": deps,
                     "status": status,
+                    "context_json": json.dumps(context),
                 })
             wave += 1
 
@@ -497,11 +520,11 @@ class HekateEngine:
         for task in all_tasks:
             await self.db.execute_write(
                 "INSERT INTO tasks (id, project_id, plan_id, title, description, "
-                "task_type, wave, status, created_at, updated_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                "task_type, wave, status, context_json, created_at, updated_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                 (task["id"], project_id, plan_id, task["title"],
                  task["description"], task["task_type"], task["wave"],
-                 task["status"], now, now),
+                 task["status"], task["context_json"], now, now),
             )
 
             # Write deps
@@ -577,6 +600,16 @@ async def _setup_db_with_init(self):
                 await self.db.execute_write(stmt, ())
             except Exception:
                 pass
+
+    # Verify key tables exist
+    expected_tables = ["projects", "tasks", "task_deps", "plans", "god_relay_events", "god_registry"]
+    for table_name in expected_tables:
+        row = await self.db.fetchone(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=$1",
+            (table_name,),
+        )
+        if not row:
+            logger.warning("Schema validation: expected table '%s' is missing after setup", table_name)
 
 
 HekateEngine.setup_db = _setup_db_with_init

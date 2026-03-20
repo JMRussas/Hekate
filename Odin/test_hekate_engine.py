@@ -427,3 +427,77 @@ class TestStartupRecovery:
 
         row = await engine.db.fetchone("SELECT status FROM tasks WHERE id = $1", ("auto-1",))
         assert row["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# 8. Decompose attaches TaskDefinition
+# ---------------------------------------------------------------------------
+
+class TestDecomposeTaskDefinition:
+    @pytest.mark.asyncio
+    async def test_decompose_attaches_task_definition(self):
+        """Engine decompose_plan should attach task_definition in context_json."""
+        from gods.engine import create_engine
+
+        engine = create_engine(db_path=":memory:")
+        await engine.setup_db()
+
+        project_id = await engine.create_project(name="TD Test", requirements="X")
+
+        plan = {
+            "phases": [{
+                "name": "Core",
+                "tasks": [
+                    {"title": "Code task", "task_type": "code"},
+                    {"title": "Research task", "task_type": "research"},
+                ],
+            }],
+        }
+
+        await engine.decompose_plan(project_id, plan)
+
+        tasks = await engine.db.fetchall(
+            "SELECT title, context_json FROM tasks WHERE project_id = $1",
+            (project_id,),
+        )
+        for task_row in tasks:
+            ctx = json.loads(task_row["context_json"])
+            assert "task_definition" in ctx, f"Missing task_definition in {task_row['title']}"
+            td = ctx["task_definition"]
+            assert "retry_count" in td
+            assert "timeout_seconds" in td
+
+    @pytest.mark.asyncio
+    async def test_decompose_respects_task_definition_override(self):
+        """If task dict has task_definition key, use it instead of defaults."""
+        from gods.engine import create_engine
+
+        engine = create_engine(db_path=":memory:")
+        await engine.setup_db()
+
+        project_id = await engine.create_project(name="Override", requirements="X")
+
+        plan = {
+            "phases": [{
+                "name": "Core",
+                "tasks": [
+                    {
+                        "title": "Custom",
+                        "task_type": "code",
+                        "task_definition": {
+                            "retry_count": 7,
+                            "timeout_seconds": 5000,
+                        },
+                    },
+                ],
+            }],
+        }
+
+        await engine.decompose_plan(project_id, plan)
+
+        task = await engine.db.fetchone(
+            "SELECT context_json FROM tasks WHERE project_id = $1", (project_id,),
+        )
+        td = json.loads(task["context_json"])["task_definition"]
+        assert td["retry_count"] == 7
+        assert td["timeout_seconds"] == 5000

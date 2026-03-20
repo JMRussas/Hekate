@@ -355,6 +355,16 @@ class Pipeline:
     # ------------------------------------------------------------------
 
     async def _dispatch(self, event: Event):
+        # Validate payload is a dict — wrap if not
+        if not isinstance(event.payload, dict):
+            event = Event(
+                event.event_type,
+                {"raw": str(event.payload)},
+                event.source,
+                event.timestamp,
+                event.severity,
+            )
+
         for reg in self._handlers:
             if reg.event_type != event.event_type:
                 continue

@@ -17,6 +17,7 @@ Flow:
       → project_planned
 """
 
+import json
 import pytest
 import pytest_asyncio
 import time
@@ -428,3 +429,163 @@ class TestAthenaLeveledEdgeCases:
 
         narration = [e for e in emits if e.event_type == "narration"]
         assert len(narration) > 0, "Should emit narration events during planning"
+
+
+# ---------------------------------------------------------------------------
+# TaskDefinition wiring in _decompose_plan
+# ---------------------------------------------------------------------------
+
+class TestDecomposeAttachesTaskDefinition:
+    """Verify _decompose_plan attaches Conductor-style TaskDefinition to context_json."""
+
+    @pytest_asyncio.fixture
+    async def decompose_db(self, sqlite_db):
+        """DB with full task schema including plan_id and context_json."""
+        await sqlite_db.execute_write("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                requirements TEXT,
+                status TEXT DEFAULT 'draft',
+                config_json TEXT DEFAULT '{}',
+                updated_at REAL
+            )
+        """)
+        await sqlite_db.execute_write("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                plan_id TEXT,
+                title TEXT,
+                description TEXT,
+                task_type TEXT DEFAULT 'code',
+                complexity TEXT DEFAULT 'medium',
+                status TEXT DEFAULT 'pending',
+                wave INTEGER DEFAULT 0,
+                context_json TEXT DEFAULT '{}',
+                created_at REAL,
+                updated_at REAL
+            )
+        """)
+        await sqlite_db.execute_write("""
+            CREATE TABLE IF NOT EXISTS task_deps (
+                task_id TEXT,
+                depends_on TEXT,
+                PRIMARY KEY (task_id, depends_on)
+            )
+        """)
+        await sqlite_db.execute_write("""
+            CREATE TABLE IF NOT EXISTS plans (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                version INTEGER DEFAULT 1,
+                model_used TEXT,
+                prompt_tokens INTEGER DEFAULT 0,
+                completion_tokens INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0.0,
+                plan_json TEXT,
+                status TEXT DEFAULT 'draft',
+                created_at REAL,
+                node_mapping TEXT DEFAULT '{}'
+            )
+        """)
+        return sqlite_db
+
+    @pytest.mark.asyncio
+    async def test_decompose_attaches_task_definition(self, decompose_db):
+        """Each decomposed task should have a task_definition in context_json."""
+        from gods.handlers.athena_leveled import _decompose_plan
+
+        plan = {
+            "phases": [{
+                "name": "Core",
+                "tasks": [
+                    {"title": "Build API", "description": "REST API", "task_type": "code"},
+                    {"title": "Write tests", "description": "Unit tests", "task_type": "test"},
+                ],
+            }],
+        }
+
+        count = await _decompose_plan("proj-1", plan, "plan-1", decompose_db)
+        assert count == 2
+
+        tasks = await decompose_db.fetchall(
+            "SELECT context_json FROM tasks WHERE project_id = ?", ("proj-1",),
+        )
+        for task_row in tasks:
+            ctx = json.loads(task_row["context_json"])
+            assert "task_definition" in ctx, "context_json must contain task_definition"
+            td = ctx["task_definition"]
+            assert "retry_count" in td
+            assert "timeout_seconds" in td
+            assert "retry_logic" in td
+
+    @pytest.mark.asyncio
+    async def test_decompose_uses_task_type_defaults(self, decompose_db):
+        """Task definitions should vary by task_type — research gets different defaults than code."""
+        from gods.handlers.athena_leveled import _decompose_plan
+
+        plan = {
+            "phases": [{
+                "name": "Mixed",
+                "tasks": [
+                    {"title": "Research options", "description": "Investigate", "task_type": "research"},
+                    {"title": "Implement feature", "description": "Code it",
+                     "task_type": "code", "complexity": "complex"},
+                ],
+            }],
+        }
+
+        await _decompose_plan("proj-2", plan, "plan-2", decompose_db)
+
+        tasks = await decompose_db.fetchall(
+            "SELECT title, context_json FROM tasks WHERE project_id = ? ORDER BY title",
+            ("proj-2",),
+        )
+        assert len(tasks) == 2
+
+        # Research task
+        research = next(t for t in tasks if "Research" in t["title"])
+        research_td = json.loads(research["context_json"])["task_definition"]
+        assert research_td["retry_count"] == 2  # research default
+        assert research_td["timeout_seconds"] == 300
+
+        # Complex code task
+        code = next(t for t in tasks if "Implement" in t["title"])
+        code_td = json.loads(code["context_json"])["task_definition"]
+        assert code_td["retry_count"] == 5  # complex code default
+        assert code_td["retry_logic"] == "EXPONENTIAL_BACKOFF"
+        assert code_td["timeout_seconds"] == 1200
+
+    @pytest.mark.asyncio
+    async def test_decompose_respects_plan_override(self, decompose_db):
+        """If a task dict contains task_definition, use it instead of defaults."""
+        from gods.handlers.athena_leveled import _decompose_plan
+
+        plan = {
+            "phases": [{
+                "name": "Custom",
+                "tasks": [
+                    {
+                        "title": "Custom task",
+                        "description": "Has explicit definition",
+                        "task_type": "code",
+                        "task_definition": {
+                            "retry_count": 10,
+                            "timeout_seconds": 9999,
+                            "retry_logic": "LINEAR_BACKOFF",
+                        },
+                    },
+                ],
+            }],
+        }
+
+        await _decompose_plan("proj-3", plan, "plan-3", decompose_db)
+
+        task = await decompose_db.fetchone(
+            "SELECT context_json FROM tasks WHERE project_id = ?", ("proj-3",),
+        )
+        td = json.loads(task["context_json"])["task_definition"]
+        assert td["retry_count"] == 10
+        assert td["timeout_seconds"] == 9999
+        assert td["retry_logic"] == "LINEAR_BACKOFF"

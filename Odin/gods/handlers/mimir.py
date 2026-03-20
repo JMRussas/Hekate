@@ -302,10 +302,14 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
                 "reason": quality["reason"],
             }, source="mimir")]
 
-        # Reset for retry
+        # Reset for retry — re-read context_json to minimize race window
+        fresh = await db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
+        fresh_ctx_str = fresh.get("context_json", "{}") if fresh else "{}"
         try:
-            ctx = safe_json.loads_dict(context_json) if isinstance(context_json, str) else context_json
+            ctx = safe_json.loads_dict(fresh_ctx_str) if isinstance(fresh_ctx_str, str) else fresh_ctx_str
         except (json.JSONDecodeError, TypeError):
+            ctx = {}
+        if not isinstance(ctx, dict):
             ctx = {}
         ctx["verification_feedback"] = quality["reason"]
 
@@ -358,6 +362,12 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
     elif not isinstance(result, dict):
         result = {"verdict": "human_needed", "confidence": 0.0, "feedback": str(result)[:200]}
 
+    # Ensure required keys exist
+    if "verdict" not in result:
+        result["verdict"] = "human_needed"
+    if "confidence" not in result:
+        result["confidence"] = 0.0
+
     verdict = result.get("verdict", "human_needed")
     feedback = result.get("feedback", "")
 
@@ -391,9 +401,11 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
                 "reason": f"Verification gaps after {retry_count} retries: {feedback}",
             }, source="mimir")]
 
-        # Reset for retry with feedback
+        # Reset for retry with feedback — re-read context_json to minimize race window
+        fresh = await db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
+        fresh_ctx_str = fresh.get("context_json", "{}") if fresh else "{}"
         try:
-            ctx = safe_json.loads_dict(context_json) if isinstance(context_json, str) else context_json
+            ctx = safe_json.loads_dict(fresh_ctx_str) if isinstance(fresh_ctx_str, str) else fresh_ctx_str
         except (json.JSONDecodeError, TypeError):
             ctx = {}
         if not isinstance(ctx, dict):

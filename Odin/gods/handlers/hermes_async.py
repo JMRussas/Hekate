@@ -201,12 +201,15 @@ class HermesRunner:
 
         try:
             t0 = time.time()
-            result = await self._run_cli_background(
-                provider=provider,
-                prompt=prompt,
-                cwd=cwd,
-                task_id=task_id,
-                project_id=project_id,
+            result = await asyncio.wait_for(
+                self._run_cli_background(
+                    provider=provider,
+                    prompt=prompt,
+                    cwd=cwd,
+                    task_id=task_id,
+                    project_id=project_id,
+                ),
+                timeout=self.default_timeout * 1.2,
             )
             elapsed = time.time() - t0
 
