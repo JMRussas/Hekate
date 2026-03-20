@@ -55,6 +55,8 @@ async def verify_db(sqlite_db):
             context_json TEXT DEFAULT '{}',
             retry_count INTEGER DEFAULT 0,
             max_retries INTEGER DEFAULT 3,
+            verification_status TEXT,
+            verification_notes TEXT,
             updated_at REAL
         )
     """)
@@ -239,9 +241,11 @@ class TestMimirReview:
             }
             emits = await mimir_review(event, verify_db)
 
-        rejected = next((e for e in emits if e.event_type == "review_rejected"), None)
-        assert rejected is not None
-        assert "dependency injection" in rejected.payload["feedback"]
+        # Review is advisory — always emits review_passed, verdict in payload
+        passed = next((e for e in emits if e.event_type == "review_passed"), None)
+        assert passed is not None
+        assert passed.payload["verdict"] == "changes_requested"
+        assert "dependency injection" in passed.payload["feedback"]
 
 
 # ---------------------------------------------------------------------------
