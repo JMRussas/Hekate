@@ -157,7 +157,7 @@ else:
 log("Restarting service via Hades...")
 
 status, resp = http_post("http://localhost:5201/services/HekateEngine/restart", data=None)
-if status == 200 and isinstance(resp, dict) and resp.get("result"):
+if status == 200:
     print("  Hades restarted HekateEngine")
 else:
     print(f"  Hades restart failed (status={status}): {resp}")
