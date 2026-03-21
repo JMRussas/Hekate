@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from backend.config import ANTHROPIC_API_KEY, OLLAMA_HOSTS, cfg
+from backend.config import ANTHROPIC_API_KEY, OLLAMA_URL, cfg
 
 logger = logging.getLogger("orchestration.model_discovery")
 
@@ -173,7 +173,7 @@ async def _fetch_openai(client: httpx.AsyncClient) -> ProviderResult:
 
 async def _fetch_ollama(client: httpx.AsyncClient) -> ProviderResult:
     # Use the first configured Ollama host.
-    host_url = next(iter(OLLAMA_HOSTS.values()), "http://localhost:11434")
+    host_url = OLLAMA_URL
     url = f"{host_url.rstrip('/')}/api/tags"
     try:
         resp = await client.get(url, timeout=5.0)

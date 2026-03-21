@@ -20,7 +20,7 @@ import numpy as np
 from backend.config import (
     OLLAMA_EMBED_MODEL,
     OLLAMA_EMBED_TIMEOUT,
-    OLLAMA_HOSTS,
+    OLLAMA_URL,
     RAG_DATABASES,
     RAG_EMBED_DIMENSIONS,
 )
@@ -148,7 +148,7 @@ class RAGIndexCache:
 
 async def _embed_query(text: str, http_client: httpx.AsyncClient | None = None) -> np.ndarray | None:
     """Embed a query string via Ollama."""
-    host = OLLAMA_HOSTS.get("local", "http://localhost:11434")
+    host = OLLAMA_URL
     url = f"{host}/api/embeddings"
     body = {"model": OLLAMA_EMBED_MODEL, "prompt": f"search_query: {text}"}
 

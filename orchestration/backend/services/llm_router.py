@@ -20,14 +20,14 @@ from typing import TYPE_CHECKING, Optional
 
 import httpx
 
-from backend.config import cfg
+from backend.config import LLM_GATEWAY_URL, OLLAMA_URL, cfg
 
 if TYPE_CHECKING:
     from backend.services.prompt_renderer import PromptSpec
 
 logger = logging.getLogger("orchestration.llm_router")
 
-_GATEWAY_URL = cfg("llm.gateway_url", "http://localhost:5210")
+_GATEWAY_URL = LLM_GATEWAY_URL
 
 
 def _get_planning_providers() -> list[str]:
@@ -140,7 +140,7 @@ async def _call_cli_direct(provider: str, system_prompt: str, user_message: str,
 async def _call_ollama_direct(system_prompt: str, user_message: str,
                               model: Optional[str] = None) -> LLMResponse:
     """Direct Ollama call — fallback when gateway is unavailable."""
-    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    ollama_url = OLLAMA_URL
     ollama_model = model or os.environ.get("OLLAMA_MODEL", cfg("ollama.default_model", "qwen3.5:latest"))
 
     messages = [

@@ -7,7 +7,7 @@
 
 import httpx
 
-from backend.config import OLLAMA_DEFAULT_MODEL, OLLAMA_GENERATE_TIMEOUT, OLLAMA_HOSTS
+from backend.config import OLLAMA_DEFAULT_MODEL, OLLAMA_GENERATE_TIMEOUT, OLLAMA_HOSTS, OLLAMA_URL
 from backend.tools.base import Tool
 
 
@@ -47,7 +47,7 @@ class LocalLLMTool(Tool):
         model = params.get("model", OLLAMA_DEFAULT_MODEL)
         host_key = params.get("host", "local")
 
-        host_url = OLLAMA_HOSTS.get(host_key, OLLAMA_HOSTS.get("local", "http://localhost:11434"))
+        host_url = OLLAMA_HOSTS.get(host_key, OLLAMA_URL)
         url = f"{host_url}/api/generate"
 
         body = {

@@ -92,6 +92,7 @@ MAX_CONCURRENT = cfg("anthropic.max_concurrent", 3)
 API_TIMEOUT = cfg("anthropic.timeout", 120)
 
 # Ollama
+OLLAMA_URL = cfg("ollama.url", "http://localhost:11434")
 OLLAMA_HOSTS = cfg("ollama.hosts", {"local": "http://localhost:11434"})
 OLLAMA_DEFAULT_MODEL = cfg("ollama.default_model", "qwen3.5:latest")
 OLLAMA_EMBED_MODEL = cfg("ollama.embed_model", "nomic-embed-text")
@@ -168,6 +169,9 @@ REVIEW_CYCLE_ENABLED = cfg("review_cycle.enabled", False)
 REVIEW_MAX_ITERATIONS = cfg("review_cycle.max_iterations", 2)
 REVIEW_AUTO_COMMIT = cfg("review_cycle.auto_commit", True)
 REVIEW_PR_ON_WAVE = cfg("review_cycle.pr_on_wave_complete", True)
+
+# LLM Gateway (proxy for CLI OAuth tokens, port 5210)
+LLM_GATEWAY_URL = cfg("llm_gateway.url", "http://localhost:5210")
 
 # Model pricing
 MODEL_PRICING = cfg("model_pricing", {})

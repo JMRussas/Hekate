@@ -168,7 +168,8 @@ async def chat(request: ChatRequest, _user: dict = Depends(get_current_user)):
 
 async def _chat_ollama(request: ChatRequest, full_prompt: str) -> ChatResponse:
     """Route chat to Ollama HTTP API with native message support."""
-    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    from backend.config import OLLAMA_URL
+    ollama_url = OLLAMA_URL
     ollama_model = request.model or os.environ.get("OLLAMA_MODEL", cfg("ollama.default_model", "qwen3.5:latest"))
 
     # Build Ollama messages array if conversation history provided

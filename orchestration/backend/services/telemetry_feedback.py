@@ -15,7 +15,7 @@ import httpx
 
 from backend.config import (
     OLLAMA_EMBED_MODEL,
-    OLLAMA_HOSTS,
+    OLLAMA_URL,
     TELEMETRY_FEEDBACK_EMBED_OUTCOMES,
     TELEMETRY_FEEDBACK_ENABLED,
 )
@@ -147,7 +147,7 @@ async def _generate_embedding(
         f"Description: {task_description[:500]}"
     )
 
-    ollama_url = next(iter(OLLAMA_HOSTS.values()), "http://localhost:11434")
+    ollama_url = OLLAMA_URL
 
     try:
         async with httpx.AsyncClient(timeout=_EMBED_TIMEOUT) as client:

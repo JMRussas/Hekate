@@ -24,7 +24,7 @@ import time
 import httpx
 from starlette.responses import StreamingResponse
 
-from backend.config import ANTHROPIC_API_KEY, cfg
+from backend.config import ANTHROPIC_API_KEY, OLLAMA_URL, cfg
 from backend.services.context_store_client import ContextStoreClient
 from backend.tools.registry import ToolRegistry
 
@@ -33,7 +33,7 @@ logger = logging.getLogger("orchestration.chat_agent")
 MAX_ROUNDS = 4
 MAX_CONTEXT_TOKENS = int(cfg("chat.context_limit", 100000))
 MAX_OUTPUT_TOKENS = int(cfg("chat.max_tokens", 4096))
-OLLAMA_URL = os.environ.get("OLLAMA_URL", cfg("ollama.url", "http://localhost:11434"))
+# OLLAMA_URL imported from config
 DEFAULT_MODEL = cfg("chat.default_model", "qwen3.5:latest")
 
 # @mention → (backend, model_id, display_name)

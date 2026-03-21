@@ -17,8 +17,8 @@ import httpx
 from backend.config import (
     OLLAMA_DEFAULT_MODEL,
     OLLAMA_GENERATE_TIMEOUT,
-    OLLAMA_HOSTS,
     OLLAMA_MAX_TOOL_ROUNDS,
+    OLLAMA_URL,
 )
 from backend.services.prompt_renderer import (
     ContextEntry,
@@ -48,7 +48,7 @@ async def run_ollama_task(*, task_row, http_client, budget, tool_registry=None) 
         task_row = dict(task_row)
 
     model = OLLAMA_DEFAULT_MODEL
-    host_url = OLLAMA_HOSTS.get("local", "http://localhost:11434")
+    host_url = OLLAMA_URL
 
     # Build context via PromptSpec → OllamaRenderer
     context = json.loads(task_row["context_json"]) if task_row["context_json"] else []

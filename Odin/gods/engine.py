@@ -187,10 +187,11 @@ async def _call_gateway(
 class HekateEngine:
     """Unified Hekate orchestration engine."""
 
-    def __init__(self, db: DB, pipeline: Pipeline, hermes_runner=None):
+    def __init__(self, db: DB, pipeline: Pipeline, hermes_runner=None, mimir_runner=None):
         self.db = db
         self.pipeline = pipeline
         self.hermes_runner = hermes_runner
+        self.mimir_runner = mimir_runner
         self.running = False
         self._tick_task: asyncio.Task | None = None
 
@@ -259,6 +260,8 @@ class HekateEngine:
                 pass
         if self.hermes_runner:
             await self.hermes_runner.shutdown(timeout=10.0)
+        if self.mimir_runner:
+            await self.mimir_runner.shutdown(timeout=10.0)
         logger.info("Hekate engine stopped")
 
     async def _tick_loop(self):
@@ -577,12 +580,14 @@ async def _init_engine(engine: HekateEngine):
     engine.pipeline.db = db
 
     # Register handlers
-    hermes = register_all_handlers(
+    hermes, mimir = register_all_handlers(
         engine.pipeline,
         max_concurrent=engine._max_concurrent,
     )
     engine.hermes_runner = hermes
+    engine.mimir_runner = mimir
     hermes.db = db
+    mimir.db = db
 
 
 # Patch create_engine to auto-init on setup_db

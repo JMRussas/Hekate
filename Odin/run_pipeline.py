@@ -178,14 +178,14 @@ async def run(args):
 
     # Build pipeline with async hermes
     pipeline = Pipeline(db)
-    hermes = register_all_handlers(
+    hermes, mimir = register_all_handlers(
         pipeline,
         max_concurrent=args.max_concurrent,
     )
     await pipeline.restore_cursor()
 
-    logger.info("Pipeline ready — %d handlers registered, hermes max_concurrent=%d",
-                len(pipeline._handlers), args.max_concurrent)
+    logger.info("Pipeline ready — %d handlers registered, hermes max_concurrent=%d, mimir max_concurrent=%d",
+                len(pipeline._handlers), args.max_concurrent, mimir.max_concurrent)
 
     # Handle --reset
     if args.reset:
@@ -227,6 +227,7 @@ async def run(args):
         except KeyboardInterrupt:
             logger.info("Shutting down...")
             await hermes.shutdown(timeout=30.0)
+            await mimir.shutdown(timeout=10.0)
             logger.info("Pipeline stopped")
 
     await conn.close()

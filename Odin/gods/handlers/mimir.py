@@ -1,17 +1,22 @@
-"""Mimir handler — verification, review, knowledge extraction.
+"""Mimir handler — non-blocking verification, review, knowledge extraction.
 
-Receives worker_event:completed and:
-  1. Runs output verification (does output match task requirements?)
-  2. Emits task_verified or task_rejected
-  3. Optionally extracts knowledge from successful completions
+MimirRunner manages background LLM verification:
+  - handle_verify: receives worker_event:completed, launches background task, returns immediately
+  - _verify_task: background coroutine that calls LLM verifier, writes results to relay
+  - shutdown: gracefully waits for in-flight verifications
 
-Also handles code review (mimir_review):
-  - Checks code quality
-  - Emits review_passed or review_rejected
+The pipeline never blocks on LLM verification. Results appear in the relay
+table and get picked up by odin on the next tick.
+
+Also handles (still synchronous, they're fast):
+  - mimir_review: code quality review
+  - mimir_handle_review_rejection: reset task on review rejection
+  - mimir_handle_task_rejection: emit tick for re-dispatch
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -216,193 +221,176 @@ async def _extract_knowledge(
 
 
 # ---------------------------------------------------------------------------
-# mimir_verify — worker_event:completed → task_verified / task_rejected
+# MimirRunner — async verification with in-flight tracking
 # ---------------------------------------------------------------------------
 
-async def mimir_verify(event: Event, db) -> list[Emit] | None:
-    """Verify a completed task's output.
+class MimirRunner:
+    """Manages async LLM verification with in-flight tracking.
 
-    Receives worker_event with status=completed.
-    Calls LLM verifier, emits task_verified or task_rejected.
-    On rejection, resets task to pending with feedback.
+    Mirrors HermesRunner pattern: launch background task, return immediately,
+    write results to the relay table for the pipeline to pick up.
     """
-    task_id = event.payload.get("task_id")
-    project_id = event.payload.get("project_id")
-    status = event.payload.get("status")
 
-    # Only verify completed tasks
-    if status != "completed":
-        return None
+    def __init__(self, db, *, max_concurrent: int = 4):
+        self.db = db
+        self.max_concurrent = max_concurrent
 
-    if not task_id:
-        return [Emit("mimir_error", {"error": "No task_id"}, source="mimir")]
+        # In-flight tracking: task_id -> asyncio.Task
+        self._tasks: dict[str, asyncio.Task] = {}
 
-    # Fetch task
-    row = await db.fetchone(
-        "SELECT title, description, output_text, retry_count, max_retries, context_json, "
-        "verification_status FROM tasks WHERE id = $1",
-        (task_id,),
-    )
-    if not row:
-        return [Emit("mimir_error", {
-            "error": f"Task {task_id} not found",
-        }, source="mimir")]
+    @property
+    def in_flight(self) -> set[str]:
+        """Set of currently in-flight verification task IDs."""
+        return set(self._tasks.keys())
 
-    # Idempotency guard — if already verified, skip
-    if row.get("verification_status") == "passed":
-        logger.info("Task already verified, skipping")
-        return [Emit("task_verified", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "confidence": 1.0,
-            "already_verified": True,
-        }, source="mimir")]
+    # ------------------------------------------------------------------
+    # Handle verify — launch background task, return immediately
+    # ------------------------------------------------------------------
 
-    title = row["title"]
-    description = row.get("description", "")
-    output_text = row.get("output_text")
-    retry_count = (row.get("retry_count") or 0)
-    max_retries = (row.get("max_retries") or 3)
-    context_json = row.get("context_json") or "{}"
+    async def handle_verify(self, event: Event, db=None) -> list[Emit] | None:
+        """Handle worker_event: launch background verification, return immediately.
 
-    logger.debug("Mimir: verifying task %s | title=%s | output_len=%d | retries=%d/%d",
-                 task_id[:8], title[:30], len(output_text or ""), retry_count, max_retries)
+        Accepts optional db parameter for pipeline compatibility (ignored,
+        uses self.db instead for background task access).
+        """
+        task_id = event.payload.get("task_id")
+        project_id = event.payload.get("project_id")
+        status = event.payload.get("status")
 
-    # Check if task was "already done" — valid completion
-    if output_text and any(phrase in output_text.lower() for phrase in [
-        "already exists", "already done", "already in place", "already has",
-        "already present", "already defined", "already implemented",
-        "nothing to do", "no changes needed", "file already",
-    ]):
-        logger.info("Mimir: task %s output indicates work already done — passing", task_id[:8])
-        await db.execute_write(
-            "UPDATE tasks SET status = $1, verification_status = $2, "
-            "verification_notes = $3, updated_at = $4 WHERE id = $5",
-            ("completed", "passed", "Work already done", time.time(), task_id),
-        )
-        return [Emit("task_verified", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "confidence": 0.8,
-            "already_done": True,
-        }, source="mimir")]
+        # Only verify completed tasks
+        if status != "completed":
+            return None
 
-    # Quick heuristic check first
-    quality = _check_output_quality(output_text)
-    if not quality["passed"]:
-        # Heuristic failure — treat as gaps_found
-        if retry_count >= max_retries:
-            await db.execute_write(
-                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
-                ("needs_review", time.time(), task_id),
-            )
-            return [Emit("needs_human_review", {
+        if not task_id:
+            return [Emit("mimir_error", {"error": "No task_id"}, source="mimir")]
+
+        # Dedup — already verifying?
+        if task_id in self._tasks:
+            logger.debug("Mimir: task %s already being verified, skipping", task_id[:8])
+            return None
+
+        # Concurrency check
+        if len(self._tasks) >= self.max_concurrent:
+            logger.warning("Mimir: verification slots full (%d/%d), deferring task %s",
+                           len(self._tasks), self.max_concurrent, task_id[:8])
+            return [Emit("verification_deferred", {
                 "task_id": task_id,
                 "project_id": project_id,
-                "reason": quality["reason"],
+                "in_flight": len(self._tasks),
+                "max_concurrent": self.max_concurrent,
             }, source="mimir")]
 
-        # Reset for retry — re-read context_json to minimize race window
-        fresh = await db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
-        fresh_ctx_str = fresh.get("context_json", "{}") if fresh else "{}"
-        try:
-            ctx = safe_json.loads_dict(fresh_ctx_str) if isinstance(fresh_ctx_str, str) else fresh_ctx_str
-        except (json.JSONDecodeError, TypeError):
-            ctx = {}
-        if not isinstance(ctx, dict):
-            ctx = {}
-        ctx["verification_feedback"] = quality["reason"]
-
-        await db.execute_write(
-            "UPDATE tasks SET status = $1, retry_count = $2, context_json = $3, updated_at = $4 WHERE id = $5",
-            ("pending", retry_count + 1, json.dumps(ctx), time.time(), task_id),
+        # Fetch task for idempotency check and fast-path decisions
+        row = await self.db.fetchone(
+            "SELECT title, description, output_text, retry_count, max_retries, context_json, "
+            "verification_status FROM tasks WHERE id = $1",
+            (task_id,),
         )
-        return [Emit("task_rejected", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "feedback": quality["reason"],
-        }, source="mimir")]
+        if not row:
+            return [Emit("mimir_error", {
+                "error": f"Task {task_id} not found",
+            }, source="mimir")]
 
-    # LLM verification
-    try:
-        result = await _call_verifier(
-            task_title=title,
-            task_description=description or "",
-            output_text=output_text or "",
-        )
-        logger.info("Mimir: verifier returned type=%s value=%s",
-                     type(result).__name__, str(result)[:200])
-    except Exception as e:
-        logger.error("Mimir: verifier failed for task %s: %s (%s)", task_id[:8], type(e).__name__, e)
-        # If verification service is down/slow but task has output, trust hermes
-        # Don't block the pipeline on verification infrastructure issues
-        if output_text and len(output_text.strip()) > 20:
-            logger.info("Mimir: task %s passing with LOW confidence (0.5) — verification service unavailable", task_id[:8])
-            result = {"verdict": "passed", "confidence": 0.5, "feedback": f"Verification skipped: {type(e).__name__}"}
-        else:
-            await db.execute_write(
-                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
-                ("needs_review", time.time(), task_id),
-            )
-            return [Emit("needs_human_review", {
+        # Idempotency guard -- if already verified, emit immediately (no background task needed)
+        if row.get("verification_status") == "passed":
+            logger.info("Task %s already verified, skipping", task_id[:8])
+            return [Emit("task_verified", {
                 "task_id": task_id,
                 "project_id": project_id,
-                "reason": f"Verification error ({type(e).__name__}): {e}",
+                "confidence": 1.0,
+                "already_verified": True,
             }, source="mimir")]
 
-    # Normalize result — LLM might return array, string, or nested structure
-    if isinstance(result, list) and len(result) > 0:
-        result = result[0] if isinstance(result[0], dict) else {"verdict": "human_needed", "feedback": str(result)[:200]}
-    elif isinstance(result, str):
-        lower = result.lower()
-        if any(w in lower for w in ["passed", "satisf", "correct", "done", "complet"]):
-            result = {"verdict": "passed", "confidence": 0.7, "feedback": result[:200]}
-        else:
-            result = {"verdict": "human_needed", "confidence": 0.0, "feedback": result[:200]}
-    elif not isinstance(result, dict):
-        result = {"verdict": "human_needed", "confidence": 0.0, "feedback": str(result)[:200]}
+        title = row["title"]
+        description = row.get("description", "")
+        output_text = row.get("output_text")
+        retry_count = (row.get("retry_count") or 0)
+        max_retries = (row.get("max_retries") or 3)
 
-    # Ensure required keys exist
-    if "verdict" not in result:
-        result["verdict"] = "human_needed"
-    if "confidence" not in result:
-        result["confidence"] = 0.0
+        # Check if task was "already done" -- fast path, no LLM needed
+        if output_text and any(phrase in output_text.lower() for phrase in [
+            "already exists", "already done", "already in place", "already has",
+            "already present", "already defined", "already implemented",
+            "nothing to do", "no changes needed", "file already",
+        ]):
+            logger.info("Mimir: task %s output indicates work already done -- passing", task_id[:8])
+            await self.db.execute_write(
+                "UPDATE tasks SET status = $1, verification_status = $2, "
+                "verification_notes = $3, updated_at = $4 WHERE id = $5",
+                ("completed", "passed", "Work already done", time.time(), task_id),
+            )
+            return [Emit("task_verified", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "confidence": 0.8,
+                "already_done": True,
+            }, source="mimir")]
 
-    verdict = result.get("verdict", "human_needed")
-    feedback = result.get("feedback", "")
-
-    if verdict == "passed":
-        # Extract knowledge from successful output
-        try:
-            await _extract_knowledge(
+        # Quick heuristic check -- synchronous, no LLM
+        quality = _check_output_quality(output_text)
+        if not quality["passed"]:
+            # Heuristic failure -- handle synchronously (fast)
+            return await self._handle_heuristic_failure(
                 task_id=task_id,
                 project_id=project_id,
-                output_text=output_text or "",
-                db=db,
+                reason=quality["reason"],
+                retry_count=retry_count,
+                max_retries=max_retries,
             )
-        except Exception as ke:
-            logger.warning("Knowledge extraction failed for task %s: %s", task_id[:8], ke)
 
-        return [Emit("task_verified", {
+        # All fast checks passed -- launch background LLM verification
+        bg_task = asyncio.create_task(
+            self._verify_task(
+                task_id=task_id,
+                project_id=project_id,
+                title=title,
+                description=description,
+                output_text=output_text or "",
+                retry_count=retry_count,
+                max_retries=max_retries,
+            ),
+            name=f"mimir-verify-{task_id}",
+        )
+        self._tasks[task_id] = bg_task
+
+        # Cleanup callback
+        bg_task.add_done_callback(lambda t: self._tasks.pop(task_id, None))
+
+        logger.info("Mimir: launched verification for %s (in-flight: %d/%d)",
+                     task_id[:8], len(self._tasks), self.max_concurrent)
+
+        return [Emit("verification_started", {
             "task_id": task_id,
             "project_id": project_id,
-            "confidence": result.get("confidence", 1.0),
         }, source="mimir")]
 
-    elif verdict == "gaps_found":
+    # ------------------------------------------------------------------
+    # Heuristic failure (synchronous, no background task needed)
+    # ------------------------------------------------------------------
+
+    async def _handle_heuristic_failure(
+        self,
+        *,
+        task_id: str,
+        project_id: str,
+        reason: str,
+        retry_count: int,
+        max_retries: int,
+    ) -> list[Emit]:
+        """Handle heuristic-detected failure synchronously."""
         if retry_count >= max_retries:
-            await db.execute_write(
+            await self.db.execute_write(
                 "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
                 ("needs_review", time.time(), task_id),
             )
             return [Emit("needs_human_review", {
                 "task_id": task_id,
                 "project_id": project_id,
-                "reason": f"Verification gaps after {retry_count} retries: {feedback}",
+                "reason": reason,
             }, source="mimir")]
 
-        # Reset for retry with feedback — re-read context_json to minimize race window
-        fresh = await db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
+        # Reset for retry
+        fresh = await self.db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
         fresh_ctx_str = fresh.get("context_json", "{}") if fresh else "{}"
         try:
             ctx = safe_json.loads_dict(fresh_ctx_str) if isinstance(fresh_ctx_str, str) else fresh_ctx_str
@@ -410,32 +398,190 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
             ctx = {}
         if not isinstance(ctx, dict):
             ctx = {}
-        ctx["verification_feedback"] = feedback
+        ctx["verification_feedback"] = reason
 
-        await db.execute_write(
+        await self.db.execute_write(
             "UPDATE tasks SET status = $1, retry_count = $2, context_json = $3, updated_at = $4 WHERE id = $5",
             ("pending", retry_count + 1, json.dumps(ctx), time.time(), task_id),
         )
         return [Emit("task_rejected", {
             "task_id": task_id,
             "project_id": project_id,
-            "feedback": feedback,
+            "feedback": reason,
         }, source="mimir")]
 
-    else:  # human_needed
-        await db.execute_write(
-            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
-            ("needs_review", time.time(), task_id),
-        )
-        return [Emit("needs_human_review", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "reason": feedback or "Verification requires human review",
-        }, source="mimir")]
+    # ------------------------------------------------------------------
+    # Background verification -- runs LLM, writes results to relay
+    # ------------------------------------------------------------------
+
+    async def _verify_task(
+        self,
+        *,
+        task_id: str,
+        project_id: str,
+        title: str,
+        description: str,
+        output_text: str,
+        retry_count: int,
+        max_retries: int,
+    ):
+        """Background coroutine that runs LLM verification and writes results to relay.
+
+        This ALWAYS writes an event to the relay, even on internal errors.
+        Verifications must never silently disappear.
+        """
+        try:
+            result = await _call_verifier(
+                task_title=title,
+                task_description=description,
+                output_text=output_text,
+            )
+            logger.info("Mimir: verifier returned type=%s value=%s",
+                         type(result).__name__, str(result)[:200])
+        except Exception as e:
+            logger.error("Mimir: verifier failed for task %s: %s (%s)", task_id[:8], type(e).__name__, e)
+            # If verification service is down/slow but task has output, trust hermes
+            if output_text and len(output_text.strip()) > 20:
+                logger.info("Mimir: task %s passing with LOW confidence (0.5) -- verification service unavailable", task_id[:8])
+                result = {"verdict": "passed", "confidence": 0.5, "feedback": f"Verification skipped: {type(e).__name__}"}
+            else:
+                await self.db.execute_write(
+                    "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+                    ("needs_review", time.time(), task_id),
+                )
+                await self._write_relay_event("needs_human_review", {
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "reason": f"Verification error ({type(e).__name__}): {e}",
+                })
+                return
+
+        # Normalize result -- LLM might return array, string, or nested structure
+        if isinstance(result, list) and len(result) > 0:
+            result = result[0] if isinstance(result[0], dict) else {"verdict": "human_needed", "feedback": str(result)[:200]}
+        elif isinstance(result, str):
+            lower = result.lower()
+            if any(w in lower for w in ["passed", "satisf", "correct", "done", "complet"]):
+                result = {"verdict": "passed", "confidence": 0.7, "feedback": result[:200]}
+            else:
+                result = {"verdict": "human_needed", "confidence": 0.0, "feedback": result[:200]}
+        elif not isinstance(result, dict):
+            result = {"verdict": "human_needed", "confidence": 0.0, "feedback": str(result)[:200]}
+
+        # Ensure required keys exist
+        if "verdict" not in result:
+            result["verdict"] = "human_needed"
+        if "confidence" not in result:
+            result["confidence"] = 0.0
+
+        verdict = result.get("verdict", "human_needed")
+        feedback = result.get("feedback", "")
+
+        if verdict == "passed":
+            # Extract knowledge from successful output
+            try:
+                await _extract_knowledge(
+                    task_id=task_id,
+                    project_id=project_id,
+                    output_text=output_text,
+                    db=self.db,
+                )
+            except Exception as ke:
+                logger.warning("Knowledge extraction failed for task %s: %s", task_id[:8], ke)
+
+            await self._write_relay_event("task_verified", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "confidence": result.get("confidence", 1.0),
+            })
+
+        elif verdict == "gaps_found":
+            if retry_count >= max_retries:
+                await self.db.execute_write(
+                    "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+                    ("needs_review", time.time(), task_id),
+                )
+                await self._write_relay_event("needs_human_review", {
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "reason": f"Verification gaps after {retry_count} retries: {feedback}",
+                })
+                return
+
+            # Reset for retry with feedback
+            fresh = await self.db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
+            fresh_ctx_str = fresh.get("context_json", "{}") if fresh else "{}"
+            try:
+                ctx = safe_json.loads_dict(fresh_ctx_str) if isinstance(fresh_ctx_str, str) else fresh_ctx_str
+            except (json.JSONDecodeError, TypeError):
+                ctx = {}
+            if not isinstance(ctx, dict):
+                ctx = {}
+            ctx["verification_feedback"] = feedback
+
+            await self.db.execute_write(
+                "UPDATE tasks SET status = $1, retry_count = $2, context_json = $3, updated_at = $4 WHERE id = $5",
+                ("pending", retry_count + 1, json.dumps(ctx), time.time(), task_id),
+            )
+            await self._write_relay_event("task_rejected", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "feedback": feedback,
+            })
+
+        else:  # human_needed
+            await self.db.execute_write(
+                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+                ("needs_review", time.time(), task_id),
+            )
+            await self._write_relay_event("needs_human_review", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "reason": feedback or "Verification requires human review",
+            })
+
+    # ------------------------------------------------------------------
+    # Relay write -- direct insert into god_relay_events
+    # ------------------------------------------------------------------
+
+    async def _write_relay_event(self, event_type: str, payload: dict):
+        """Write an event directly to the relay table."""
+        try:
+            await self.db.execute_write(
+                "INSERT INTO god_relay_events "
+                "(event_type, source, payload, severity, created_at) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                (event_type, "mimir", json.dumps(payload), "info", time.time()),
+            )
+        except Exception as e:
+            logger.error("Mimir: failed to write relay event: %s", e)
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
+    async def shutdown(self, timeout: float = 30.0):
+        """Gracefully shut down -- wait for in-flight verifications."""
+        if not self._tasks:
+            return
+
+        tasks = list(self._tasks.values())
+        logger.info("Mimir: shutting down, waiting for %d in-flight verifications", len(tasks))
+
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=timeout)
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=2.0)
+        except Exception as e:
+            logger.warning("Mimir: shutdown error: %s", e)
+
+        self._tasks.clear()
 
 
 # ---------------------------------------------------------------------------
-# mimir_review — code quality review
+# mimir_review -- code quality review (synchronous, fast enough)
 # ---------------------------------------------------------------------------
 
 async def mimir_review(event: Event, db) -> list[Emit] | None:
@@ -467,7 +613,7 @@ async def mimir_review(event: Event, db) -> list[Emit] | None:
         )
     except Exception as e:
         logger.error("Mimir: reviewer failed for task %s: %s", task_id[:8], e)
-        # Review failure is non-blocking — pass through as approved
+        # Review failure is non-blocking -- pass through as approved
         return [Emit("review_passed", {
             "task_id": task_id,
             "project_id": project_id,
@@ -482,7 +628,7 @@ async def mimir_review(event: Event, db) -> list[Emit] | None:
     verdict = result.get("verdict", "approved")
     feedback = result.get("feedback", "")
 
-    # Review is advisory — never rejects. Feedback stored for reference.
+    # Review is advisory -- never rejects. Feedback stored for reference.
     # A human decides if feedback warrants reopening the task.
     if feedback:
         await db.execute_write(
@@ -499,11 +645,11 @@ async def mimir_review(event: Event, db) -> list[Emit] | None:
 
 
 # ---------------------------------------------------------------------------
-# mimir_handle_review_rejection — review_rejected → reset task
+# mimir_handle_review_rejection -- review_rejected -> reset task
 # ---------------------------------------------------------------------------
 
 async def mimir_handle_review_rejection(event: Event, db) -> list[Emit] | None:
-    """Handle review_rejected — reset task to pending with review feedback."""
+    """Handle review_rejected -- reset task to pending with review feedback."""
     task_id = event.payload.get("task_id")
     project_id = event.payload.get("project_id")
     feedback = event.payload.get("feedback", "")
@@ -542,11 +688,11 @@ async def mimir_handle_review_rejection(event: Event, db) -> list[Emit] | None:
 
 
 # ---------------------------------------------------------------------------
-# mimir_handle_task_rejection — task_rejected → emit tick for re-dispatch
+# mimir_handle_task_rejection -- task_rejected -> emit tick for re-dispatch
 # ---------------------------------------------------------------------------
 
 async def mimir_handle_task_rejection(event: Event, db) -> list[Emit] | None:
-    """Handle task_rejected — emit tick so odin re-dispatches."""
+    """Handle task_rejected -- emit tick so odin re-dispatches."""
     project_id = event.payload.get("project_id")
 
     if not project_id:
@@ -555,3 +701,19 @@ async def mimir_handle_task_rejection(event: Event, db) -> list[Emit] | None:
     return [Emit("tick", {
         "project_id": project_id,
     }, source="mimir")]
+
+
+# ---------------------------------------------------------------------------
+# Legacy alias for backwards compatibility
+# ---------------------------------------------------------------------------
+
+# Old tests may import mimir_verify directly. Provide a stub that
+# creates a temporary runner. In production, use MimirRunner.handle_verify.
+async def mimir_verify(event: Event, db) -> list[Emit] | None:
+    """Legacy synchronous verify -- creates a one-shot MimirRunner.
+
+    Prefer MimirRunner.handle_verify in production (registered via registration.py).
+    This exists only for backwards compatibility with tests that import mimir_verify.
+    """
+    runner = MimirRunner(db=db, max_concurrent=4)
+    return await runner.handle_verify(event, db)

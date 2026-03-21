@@ -62,7 +62,7 @@ class TestPipelineLifespan:
         assert "odin_start" in handler_names
         assert "odin_dispatch" in handler_names
         assert "handle_dispatch" in handler_names
-        assert "mimir_verify" in handler_names
+        assert "handle_verify" in handler_names
 
 
 # ---------------------------------------------------------------------------

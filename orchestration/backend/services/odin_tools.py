@@ -562,7 +562,8 @@ async def _get_resource_health(db: Database, bus: SentinelBus, args: dict) -> st
     # Ollama
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-            resp = await client.get("http://localhost:11434/api/tags")
+            from backend.config import OLLAMA_URL
+            resp = await client.get(f"{OLLAMA_URL}/api/tags")
             if resp.status_code == 200:
                 data = resp.json()
                 model_count = len(data.get("models", []))
@@ -615,7 +616,8 @@ async def _get_provider_status(db: Database, bus: SentinelBus, args: dict) -> st
     import httpx
     import os
 
-    gateway_url = os.environ.get("LLM_GATEWAY_URL", "http://localhost:5210")
+    from backend.config import LLM_GATEWAY_URL
+    gateway_url = LLM_GATEWAY_URL
     lines = ["Provider Status (via LLM Gateway):"]
 
     try:

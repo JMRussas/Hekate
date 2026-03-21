@@ -30,7 +30,7 @@ import uuid
 
 import httpx
 
-from backend.config import cfg
+from backend.config import LLM_GATEWAY_URL, OLLAMA_URL, cfg
 from backend.services.llm_router import _resolve_cmd
 from backend.services.sentinel.bus import SentinelBus
 from backend.services.sentinel.decision_logger import DecisionLogger
@@ -39,8 +39,7 @@ logger = logging.getLogger("orchestration.odin")
 
 MAX_ROUNDS = 4
 TICK_INTERVAL = int(cfg("odin.tick_interval", 30))
-OLLAMA_URL = os.environ.get("OLLAMA_URL", cfg("ollama.url", "http://localhost:11434"))
-LLM_GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", cfg("llm_gateway.url", "http://localhost:5210"))
+# OLLAMA_URL, LLM_GATEWAY_URL imported from config
 ODIN_PROVIDER = cfg("odin.provider", "claude")  # "claude" or "ollama"
 ODIN_MODEL = cfg("odin.model", "sonnet")  # claude: sonnet/haiku/opus, ollama: qwen3.5:latest etc
 STALENESS_THRESHOLD = int(cfg("odin.staleness_seconds", 300))
