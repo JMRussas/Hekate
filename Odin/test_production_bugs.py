@@ -30,6 +30,7 @@ async def db(sqlite_db):
         """CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY, project_id TEXT, title TEXT,
             description TEXT DEFAULT '', task_type TEXT DEFAULT 'code',
+            complexity TEXT DEFAULT 'medium',
             status TEXT DEFAULT 'pending', model_tier TEXT DEFAULT 'claude_code',
             wave INTEGER DEFAULT 0, priority INTEGER DEFAULT 0,
             output_text TEXT, error TEXT, context_json TEXT DEFAULT '{}',

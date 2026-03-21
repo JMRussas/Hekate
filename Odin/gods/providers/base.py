@@ -75,8 +75,13 @@ class CLIProvider(ABC):
         prompt: str,
         cwd: str,
         timeout: float = 600,
+        on_process: Any = None,
     ) -> StandardResult:
         """Full execution: build cmd → launch subprocess → capture → parse.
+
+        Args:
+            on_process: Optional callback(proc) invoked after subprocess creation,
+                        allowing callers to track the process handle for cleanup.
 
         Override _run_subprocess in tests.
         """
@@ -95,6 +100,9 @@ class CLIProvider(ABC):
             env=env,
             limit=10 * 1024 * 1024,
         )
+
+        if on_process is not None:
+            on_process(proc)
 
         proc.stdin.write(stdin_text.encode("utf-8"))
         await proc.stdin.drain()

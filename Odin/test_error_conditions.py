@@ -48,7 +48,8 @@ async def db(sqlite_db):
             context_json TEXT DEFAULT '{}', retry_count INTEGER DEFAULT 0,
             max_retries INTEGER DEFAULT 3, cost_usd REAL DEFAULT 0,
             prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,
-            model_used TEXT, started_at REAL, completed_at REAL, updated_at REAL
+            model_used TEXT, started_at REAL, completed_at REAL, updated_at REAL,
+            verification_status TEXT, verification_notes TEXT
         )""",
         """CREATE TABLE IF NOT EXISTS task_deps (
             task_id TEXT, depends_on TEXT,

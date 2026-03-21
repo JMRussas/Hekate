@@ -251,16 +251,9 @@ class HermesRunner:
                 if not has_tests:
                     tdd_warning = "No test files mentioned in output"
 
-            # Store result in task row
-            await self.db.execute_write(
-                "UPDATE tasks SET status = $1, output_text = $2, cost_usd = $3, "
-                "prompt_tokens = $4, completion_tokens = $5, model_used = $6, "
-                "completed_at = $7, updated_at = $8 WHERE id = $9",
-                ("completed", output, cost, prompt_tokens, completion_tokens,
-                 model_used, time.time(), time.time(), task_id),
-            )
-
-            # Write completion event to relay
+            # Write relay event FIRST — if this fails, leave task as "running"
+            # so it gets detected as stuck and retried. This prevents split-brain
+            # where DB says "completed" but Mimir never sees the relay event.
             payload = {
                 "task_id": task_id,
                 "project_id": project_id,
@@ -273,13 +266,25 @@ class HermesRunner:
             if tdd_warning:
                 payload["tdd_warning"] = tdd_warning
 
-            await self._write_relay_event("worker_event", payload)
+            await self._write_relay_event_strict("worker_event", payload)
+
+            # Relay write succeeded — now safe to mark task completed in DB
+            await self.db.execute_write(
+                "UPDATE tasks SET status = $1, output_text = $2, cost_usd = $3, "
+                "prompt_tokens = $4, completion_tokens = $5, model_used = $6, "
+                "completed_at = $7, updated_at = $8 WHERE id = $9",
+                ("completed", output, cost, prompt_tokens, completion_tokens,
+                 model_used, time.time(), time.time(), task_id),
+            )
 
             logger.info("Hermes: task %s completed in %.1fs (cost=$%.4f)", task_id[:8], elapsed, cost)
 
         except asyncio.TimeoutError as e:
             error_msg = f"Timeout: {e}" if str(e) else "CLI execution timed out"
             logger.error("Hermes: task %s timed out", task_id[:8])
+
+            # Kill the orphaned subprocess
+            await self._kill_process(task_id)
 
             await self.db.execute_write(
                 "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
@@ -295,6 +300,8 @@ class HermesRunner:
 
         except asyncio.CancelledError:
             logger.info("Hermes: task %s cancelled", task_id[:8])
+            # Kill the orphaned subprocess
+            await self._kill_process(task_id)
             # Shield DB writes from cancellation — these MUST complete
             try:
                 await asyncio.shield(self.db.execute_write(
@@ -330,6 +337,27 @@ class HermesRunner:
             # Always stop heartbeat and clean up process ref
             self._stop_heartbeat(task_id)
             self._processes.pop(task_id, None)
+
+    # ------------------------------------------------------------------
+    # Process cleanup
+    # ------------------------------------------------------------------
+
+    async def _kill_process(self, task_id: str):
+        """Terminate and kill the subprocess for a task, if tracked."""
+        proc = self._processes.get(task_id)
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            # Give it 2s to exit gracefully, then force-kill
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+            logger.info("Hermes: killed subprocess for task %s (pid=%s)", task_id[:8], proc.pid)
+        except (ProcessLookupError, OSError) as e:
+            logger.debug("Hermes: process already gone for task %s: %s", task_id[:8], e)
 
     # ------------------------------------------------------------------
     # Heartbeat
@@ -385,6 +413,7 @@ class HermesRunner:
                 prompt=prompt,
                 cwd=cwd,
                 timeout=self.default_timeout,
+                on_process=lambda proc: self._processes.__setitem__(task_id, proc),
             )
             return {
                 "output": result.output,
@@ -403,7 +432,7 @@ class HermesRunner:
     # ------------------------------------------------------------------
 
     async def _write_relay_event(self, event_type: str, payload: dict):
-        """Write an event directly to the relay table."""
+        """Write an event directly to the relay table (best-effort, swallows errors)."""
         try:
             await self.db.execute_write(
                 "INSERT INTO god_relay_events "
@@ -413,6 +442,19 @@ class HermesRunner:
             )
         except Exception as e:
             logger.error("Failed to write relay event: %s", e)
+
+    async def _write_relay_event_strict(self, event_type: str, payload: dict):
+        """Write an event to the relay table — raises on failure.
+
+        Used for completion events where the relay write MUST succeed before
+        we update the task DB row, preventing split-brain.
+        """
+        await self.db.execute_write(
+            "INSERT INTO god_relay_events "
+            "(event_type, source, payload, severity, created_at) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            (event_type, "hermes", json.dumps(payload), "info", time.time()),
+        )
 
     # ------------------------------------------------------------------
     # Cancellation

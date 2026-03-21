@@ -17,6 +17,7 @@ Also handles (still synchronous, they're fast):
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import re
@@ -238,6 +239,10 @@ class MimirRunner:
         # In-flight tracking: task_id -> asyncio.Task
         self._tasks: dict[str, asyncio.Task] = {}
 
+        # Deferred queue: events that arrived when slots were full.
+        # Drained automatically as in-flight tasks complete.
+        self._deferred: collections.deque[Event] = collections.deque()
+
     @property
     def in_flight(self) -> set[str]:
         """Set of currently in-flight verification task IDs."""
@@ -269,14 +274,16 @@ class MimirRunner:
             logger.debug("Mimir: task %s already being verified, skipping", task_id[:8])
             return None
 
-        # Concurrency check
+        # Concurrency check — queue internally so deferred tasks aren't lost
         if len(self._tasks) >= self.max_concurrent:
-            logger.warning("Mimir: verification slots full (%d/%d), deferring task %s",
-                           len(self._tasks), self.max_concurrent, task_id[:8])
+            logger.warning("Mimir: verification slots full (%d/%d), queuing task %s (%d already queued)",
+                           len(self._tasks), self.max_concurrent, task_id[:8], len(self._deferred))
+            self._deferred.append(event)
             return [Emit("verification_deferred", {
                 "task_id": task_id,
                 "project_id": project_id,
                 "in_flight": len(self._tasks),
+                "queued": len(self._deferred),
                 "max_concurrent": self.max_concurrent,
             }, source="mimir")]
 
@@ -353,8 +360,8 @@ class MimirRunner:
         )
         self._tasks[task_id] = bg_task
 
-        # Cleanup callback
-        bg_task.add_done_callback(lambda t: self._tasks.pop(task_id, None))
+        # Cleanup callback — also drains the deferred queue
+        bg_task.add_done_callback(lambda t: self._on_task_done(task_id))
 
         logger.info("Mimir: launched verification for %s (in-flight: %d/%d)",
                      task_id[:8], len(self._tasks), self.max_concurrent)
@@ -363,6 +370,41 @@ class MimirRunner:
             "task_id": task_id,
             "project_id": project_id,
         }, source="mimir")]
+
+    # ------------------------------------------------------------------
+    # Done callback — cleanup + drain deferred queue
+    # ------------------------------------------------------------------
+
+    def _on_task_done(self, task_id: str):
+        """Synchronous callback from asyncio.Task.add_done_callback.
+
+        Removes the finished task and schedules deferred verifications.
+        """
+        self._tasks.pop(task_id, None)
+        if self._deferred and len(self._tasks) < self.max_concurrent:
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._drain_deferred())
+
+    async def _drain_deferred(self):
+        """Process queued events until slots are full or queue is empty.
+
+        Calls handle_verify for each deferred event. If handle_verify
+        launches a background task, slots fill up normally. If it returns
+        synchronously (already verified, heuristic failure), we keep draining.
+        """
+        while self._deferred and len(self._tasks) < self.max_concurrent:
+            event = self._deferred.popleft()
+            task_id = event.payload.get("task_id", "?")
+            logger.info("Mimir: draining deferred verification for %s (%d queued remain)",
+                        task_id[:8], len(self._deferred))
+            try:
+                emits = await self.handle_verify(event)
+                # Write any relay-worthy emits (verification_started, task_verified, etc.)
+                if emits:
+                    for emit in emits:
+                        await self._write_relay_event(emit.event_type, emit.payload)
+            except Exception as e:
+                logger.error("Mimir: deferred verification failed for %s: %s", task_id[:8], e)
 
     # ------------------------------------------------------------------
     # Heuristic failure (synchronous, no background task needed)
@@ -562,6 +604,11 @@ class MimirRunner:
 
     async def shutdown(self, timeout: float = 30.0):
         """Gracefully shut down -- wait for in-flight verifications."""
+        if self._deferred:
+            logger.warning("Mimir: shutting down with %d deferred verifications still queued",
+                           len(self._deferred))
+            self._deferred.clear()
+
         if not self._tasks:
             return
 
@@ -713,7 +760,24 @@ async def mimir_verify(event: Event, db) -> list[Emit] | None:
     """Legacy synchronous verify -- creates a one-shot MimirRunner.
 
     Prefer MimirRunner.handle_verify in production (registered via registration.py).
-    This exists only for backwards compatibility with tests that import mimir_verify.
+    This exists for backwards compatibility with tests that import mimir_verify.
+    It awaits any background task so the caller gets the final result.
     """
     runner = MimirRunner(db=db, max_concurrent=4)
-    return await runner.handle_verify(event, db)
+    emits = await runner.handle_verify(event, db)
+
+    # Wait for background task to complete and read relay results
+    if runner._tasks:
+        await runner.shutdown(timeout=30.0)
+        # Read the relay event that the background task wrote
+        rows = await db.fetchall(
+            "SELECT event_type, payload FROM god_relay_events "
+            "WHERE source = 'mimir' ORDER BY id DESC LIMIT 1",
+            params=(),
+        )
+        if rows:
+            relay_type = rows[0]["event_type"]
+            relay_payload = safe_json.loads_dict(rows[0]["payload"])
+            return [Emit(relay_type, relay_payload, source="mimir")]
+
+    return emits
