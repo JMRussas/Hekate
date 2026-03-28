@@ -56,24 +56,29 @@ class TaskActionRequest(BaseModel):
 
 def create_app(
     db_path: str | None = None,
+    dsn: str | None = None,
     max_concurrent: int = 4,
     frontend_dist: str | None = None,
 ) -> FastAPI:
     """Create the Hekate FastAPI app.
 
     Args:
-        db_path: SQLite database path. Defaults to env or orchestration/data/orchestration.db
+        db_path: SQLite database path (fallback if no DSN)
+        dsn: Postgres connection string (takes precedence)
         max_concurrent: Max parallel CLI tasks for hermes
         frontend_dist: Path to frontend/dist/ for static serving
     """
-    if db_path is None:
+    # Postgres DSN from env takes priority
+    if dsn is None:
+        dsn = os.environ.get("ORCHESTRATION_DSN")
+    if db_path is None and dsn is None:
         db_path = os.environ.get(
             "ORCHESTRATION_DB",
             os.path.join(os.path.dirname(os.path.dirname(__file__)),
                          "orchestration", "data", "orchestration.db"),
         )
 
-    engine = create_engine(db_path=db_path, max_concurrent=max_concurrent)
+    engine = create_engine(db_path=db_path, dsn=dsn, max_concurrent=max_concurrent)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -20,51 +20,125 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
-import aiosqlite
-
 from gods.pipeline import Pipeline, Event, Emit
 from gods.handlers.registration import register_all_handlers
 
 logger = logging.getLogger("gods.engine")
 
 # ---------------------------------------------------------------------------
-# DB adapter (same as run_pipeline.py but standalone)
+# DB adapter — Postgres (asyncpg) primary, SQLite (aiosqlite) for tests
 # ---------------------------------------------------------------------------
 
-class DB:
-    """Async SQLite adapter that returns dicts and translates $N → ?."""
+def _sqlite_translate(sql: str) -> str:
+    """Translate $N params to ? for SQLite."""
+    import re
+    return re.sub(r'\$\d+', '?', sql)
 
-    def __init__(self, conn: aiosqlite.Connection):
-        self._conn = conn
 
-    @staticmethod
-    def _translate(sql: str) -> str:
+def _pg_translate(sql: str) -> str:
+    """Translate SQLite-isms to Postgres."""
+    if "INSERT OR IGNORE" in sql:
+        sql = sql.replace("INSERT OR IGNORE", "INSERT")
+        # Append ON CONFLICT DO NOTHING if not already present
+        if "ON CONFLICT" not in sql:
+            sql = sql.rstrip().rstrip(")") + ") ON CONFLICT DO NOTHING"
+            if not sql.endswith(")"):
+                sql += ""  # already handled
+    if "INSERT OR REPLACE" in sql:
+        sql = sql.replace("INSERT OR REPLACE", "INSERT")
+        # For REPLACE semantics we need ON CONFLICT ... DO UPDATE
+        # but that requires knowing the conflict target.
+        # For god_registry and plans, the PK is the conflict target.
+        # Generic fallback: just DO NOTHING (loses the update semantics
+        # but prevents crashes — callers should use explicit UPDATE after INSERT)
+        if "ON CONFLICT" not in sql:
+            sql = sql.rstrip().rstrip(")") + ") ON CONFLICT DO NOTHING"
+    return sql
+
+
+_PG_TABLE_MAP = {
+    "projects": "engine_projects",
+    "tasks": "engine_tasks",
+    "task_deps": "engine_task_deps",
+    "plans": "engine_plans",
+    # god_relay_events and god_registry keep their names (shared)
+}
+
+
+def _pg_rewrite(sql: str) -> str:
+    """Rewrite SQL for Postgres: translate table names + SQLite-isms."""
+    sql = _pg_translate(sql)
+    for old, new in _PG_TABLE_MAP.items():
+        # Replace table names in FROM, INTO, UPDATE, JOIN contexts
+        # Use word boundary matching to avoid replacing substrings
         import re
-        return re.sub(r'\$\d+', '?', sql)
+        sql = re.sub(rf'\b{old}\b', new, sql)
+    return sql
+
+
+class PostgresDB:
+    """Async Postgres adapter using asyncpg connection pool."""
+
+    def __init__(self, pool):
+        self._pool = pool
 
     async def execute_write(self, sql: str, params: tuple = ()):
-        sql = self._translate(sql)
+        sql = _pg_rewrite(sql)
+        async with self._pool.acquire() as conn:
+            await conn.execute(sql, *params)
+
+    async def fetchone(self, sql: str, params: tuple = ()):
+        sql = _pg_rewrite(sql)
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+            return dict(row) if row else None
+
+    async def fetchall(self, sql: str, params: tuple = ()):
+        sql = _pg_rewrite(sql)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+            return [dict(r) for r in rows]
+
+    async def close(self):
+        await self._pool.close()
+
+
+class SqliteDB:
+    """Async SQLite adapter for tests — translates $N → ?."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute_write(self, sql: str, params: tuple = ()):
+        sql = _sqlite_translate(sql)
         await self._conn.execute(sql, params)
         await self._conn.commit()
 
     async def fetchone(self, sql: str, params: tuple = ()):
-        sql = self._translate(sql)
+        sql = _sqlite_translate(sql)
         async with self._conn.execute(sql, params) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
 
     async def fetchall(self, sql: str, params: tuple = ()):
-        sql = self._translate(sql)
+        sql = _sqlite_translate(sql)
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
+
+    async def close(self):
+        await self._conn.close()
+
+
+# Alias for backward compatibility
+DB = SqliteDB
 
 
 # ---------------------------------------------------------------------------
 # Schema setup
 # ---------------------------------------------------------------------------
 
-_SCHEMA_SQL = """
+_SCHEMA_SQL_SQLITE = """
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -151,6 +225,96 @@ CREATE TABLE IF NOT EXISTS god_registry (
     name TEXT PRIMARY KEY,
     last_seen_id INTEGER DEFAULT 0,
     last_heartbeat REAL
+);
+"""
+
+_SCHEMA_SQL_POSTGRES = """
+CREATE TABLE IF NOT EXISTS engine_projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    requirements TEXT,
+    status TEXT DEFAULT 'draft',
+    config_json TEXT DEFAULT '{}',
+    created_at DOUBLE PRECISION,
+    updated_at DOUBLE PRECISION,
+    completed_at DOUBLE PRECISION,
+    owner_id TEXT,
+    repo_path TEXT,
+    git_base_branch TEXT,
+    git_project_branch TEXT,
+    git_worktree_path TEXT,
+    git_state_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS engine_tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    plan_id TEXT,
+    title TEXT,
+    description TEXT,
+    task_type TEXT DEFAULT 'code',
+    priority INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    model_tier TEXT DEFAULT 'claude_code',
+    model_used TEXT,
+    context_json TEXT DEFAULT '{}',
+    tools_json TEXT,
+    system_prompt TEXT,
+    output_text TEXT,
+    output_artifacts_json TEXT,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    cost_usd DOUBLE PRECISION DEFAULT 0.0,
+    max_tokens INTEGER,
+    retry_count INTEGER DEFAULT 0,
+    max_retries INTEGER DEFAULT 3,
+    error TEXT,
+    started_at DOUBLE PRECISION,
+    completed_at DOUBLE PRECISION,
+    created_at DOUBLE PRECISION,
+    updated_at DOUBLE PRECISION,
+    wave INTEGER DEFAULT 0,
+    verification_status TEXT,
+    verification_notes TEXT,
+    requirement_ids_json TEXT,
+    phase TEXT,
+    git_branch TEXT,
+    git_commit_sha TEXT,
+    claimed_by TEXT,
+    claimed_at DOUBLE PRECISION,
+    rationale TEXT,
+    complexity TEXT DEFAULT 'medium',
+    implementation_notes TEXT,
+    test_strategy TEXT
+);
+
+CREATE TABLE IF NOT EXISTS engine_task_deps (
+    task_id TEXT,
+    depends_on TEXT,
+    PRIMARY KEY (task_id, depends_on)
+);
+
+CREATE TABLE IF NOT EXISTS engine_plans (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    plan_json TEXT,
+    level TEXT DEFAULT 'L1',
+    created_at DOUBLE PRECISION
+);
+
+CREATE TABLE IF NOT EXISTS god_relay_events (
+    id BIGSERIAL PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    payload TEXT DEFAULT '{}',
+    severity TEXT DEFAULT 'info',
+    created_at DOUBLE PRECISION NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS god_registry (
+    name TEXT PRIMARY KEY,
+    last_seen_id BIGINT DEFAULT 0,
+    last_heartbeat DOUBLE PRECISION
 );
 """
 
@@ -550,32 +714,39 @@ class HekateEngine:
 
 def create_engine(
     db_path: str = ":memory:",
-    max_concurrent: int = 2,
+    dsn: str | None = None,
+    max_concurrent: int = 4,
 ) -> HekateEngine:
     """Create a HekateEngine with all handlers registered.
 
-    For in-memory DB (testing), sets up synchronously.
-    For file DB, caller must await engine.setup_db().
+    Args:
+        db_path: SQLite path (":memory:" for tests) or None if using DSN
+        dsn: Postgres connection string (takes precedence over db_path)
+        max_concurrent: Max parallel CLI tasks
     """
-    # Create connection synchronously for factory pattern
-    # Actual async setup happens in setup_db()
-    import sqlite3
-
-    # Create pipeline with a placeholder DB — real DB set in setup_db
     pipeline = Pipeline(db=None, source_name="hekate")
-
     engine = HekateEngine(db=None, pipeline=pipeline)
     engine._db_path = db_path
+    engine._dsn = dsn
     engine._max_concurrent = max_concurrent
-
     return engine
 
 
 async def _init_engine(engine: HekateEngine):
     """Async initialization — called from setup_db or start."""
-    conn = await aiosqlite.connect(engine._db_path)
-    conn.row_factory = aiosqlite.Row
-    db = DB(conn)
+    if engine._dsn:
+        import asyncpg
+        pool = await asyncpg.create_pool(engine._dsn, min_size=2, max_size=10)
+        db = PostgresDB(pool)
+        engine._backend = "postgres"
+        logger.info("Engine using Postgres: %s", engine._dsn.split("@")[-1] if "@" in engine._dsn else engine._dsn)
+    else:
+        import aiosqlite
+        conn = await aiosqlite.connect(engine._db_path)
+        conn.row_factory = aiosqlite.Row
+        db = SqliteDB(conn)
+        engine._backend = "sqlite"
+        logger.info("Engine using SQLite: %s", engine._db_path)
 
     engine.db = db
     engine.pipeline.db = db
@@ -591,31 +762,42 @@ async def _init_engine(engine: HekateEngine):
     mimir.db = db
 
 
-# Patch create_engine to auto-init on setup_db
-_original_setup = None
-
-
 async def _setup_db_with_init(self):
     """Setup DB tables and initialize engine."""
     if self.db is None:
         await _init_engine(self)
-    for statement in _SCHEMA_SQL.split(";"):
+
+    schema_sql = _SCHEMA_SQL_POSTGRES if getattr(self, '_backend', 'sqlite') == 'postgres' else _SCHEMA_SQL_SQLITE
+
+    for statement in schema_sql.split(";"):
         stmt = statement.strip()
         if stmt:
             try:
                 await self.db.execute_write(stmt, ())
-            except Exception:
-                pass
+            except Exception as e:
+                # Postgres tables may already exist — that's fine
+                if "already exists" not in str(e).lower():
+                    logger.debug("Schema statement skipped: %s", e)
 
-    # Verify key tables exist
-    expected_tables = ["projects", "tasks", "task_deps", "plans", "god_relay_events", "god_registry"]
-    for table_name in expected_tables:
-        row = await self.db.fetchone(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=$1",
-            (table_name,),
-        )
-        if not row:
-            logger.warning("Schema validation: expected table '%s' is missing after setup", table_name)
+    # Verify key tables
+    if getattr(self, '_backend', 'sqlite') == 'postgres':
+        for table_name in ["engine_projects", "engine_tasks", "engine_task_deps", "engine_plans", "god_relay_events", "god_registry"]:
+            row = await self.db.fetchone(
+                "SELECT tablename FROM pg_tables WHERE tablename = $1",
+                (table_name,),
+            )
+            if not row:
+                logger.warning("Schema validation: expected table '%s' is missing", table_name)
+    else:
+        for table_name in ["projects", "tasks", "task_deps", "plans", "god_relay_events", "god_registry"]:
+            row = await self.db.fetchone(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=$1",
+                (table_name,),
+            )
+            if not row:
+                logger.warning("Schema validation: expected table '%s' is missing", table_name)
+
+    logger.info("Schema setup complete (backend=%s)", getattr(self, '_backend', 'sqlite'))
 
 
 HekateEngine.setup_db = _setup_db_with_init

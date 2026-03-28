@@ -27,7 +27,8 @@ def main():
     parser = argparse.ArgumentParser(description="Hekate Engine")
     parser.add_argument("--port", type=int, default=5200, help="Port (default 5200)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host (default 0.0.0.0)")
-    parser.add_argument("--db", type=str, help="SQLite database path")
+    parser.add_argument("--db", type=str, help="SQLite database path (ignored if --dsn or ORCHESTRATION_DSN set)")
+    parser.add_argument("--dsn", type=str, help="Postgres DSN (e.g. postgresql://postgres:postgres@localhost:5433/code_storage)")
     parser.add_argument("--max-concurrent", type=int, default=4, help="Max parallel CLI tasks")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--frontend", type=str, help="Path to frontend dist/ directory")
@@ -44,12 +45,15 @@ def main():
     if args.debug:
         logging.getLogger("gods").setLevel(logging.DEBUG)
 
-    # DB path
-    db_path = args.db or os.environ.get(
-        "ORCHESTRATION_DB",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "..", "orchestration", "data", "orchestration.db"),
-    )
+    # DB — Postgres DSN takes priority over SQLite path
+    dsn = args.dsn or os.environ.get("ORCHESTRATION_DSN")
+    db_path = None
+    if not dsn:
+        db_path = args.db or os.environ.get(
+            "ORCHESTRATION_DB",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "..", "orchestration", "data", "orchestration.db"),
+        )
 
     # Frontend
     frontend = args.frontend or os.path.join(
@@ -63,13 +67,15 @@ def main():
     # Create app
     app = create_app(
         db_path=db_path,
+        dsn=dsn,
         max_concurrent=args.max_concurrent,
         frontend_dist=frontend,
     )
 
+    db_label = dsn.split("@")[-1] if dsn and "@" in dsn else (dsn or db_path)
     logging.getLogger("gods.api").info(
         "Starting Hekate on %s:%d (db=%s, max_concurrent=%d, frontend=%s)",
-        args.host, args.port, db_path, args.max_concurrent,
+        args.host, args.port, db_label, args.max_concurrent,
         "yes" if frontend else "no",
     )
 
