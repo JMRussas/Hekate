@@ -60,6 +60,9 @@ class HermesRunner:
         # Serializes the concurrency check + task registration to prevent
         # two concurrent dispatch_command events from both seeing len < max
         self._dispatch_lock = asyncio.Lock()
+        # Deferred dispatch queue — tasks queued when slots are full,
+        # drained when a slot opens (in _on_task_done callback)
+        self._deferred: list[tuple[Event, Any]] = []
         # Consecutive best-effort relay write failures — escalates to critical at threshold
         self._relay_failure_count = 0
         self._relay_failure_threshold = 3
@@ -96,14 +99,13 @@ class HermesRunner:
                     "project_id": project_id,
                 }, source="hermes")]
 
-            # Concurrency check
+            # Concurrency check — queue if full, drain when slot opens
             if len(self._tasks) >= self.max_concurrent:
-                return [Emit("slots_full", {
-                    "task_id": task_id,
-                    "project_id": project_id,
-                    "in_flight": len(self._tasks),
-                    "max_concurrent": self.max_concurrent,
-                }, source="hermes")]
+                self._deferred.append((event, db))
+                logger.info("Hermes: queued %s (deferred: %d, in-flight: %d/%d)",
+                            task_id[:8], len(self._deferred),
+                            len(self._tasks), self.max_concurrent)
+                return None
 
             # Fetch task
             row = await self.db.fetchone(
@@ -170,7 +172,7 @@ class HermesRunner:
             self._tasks[task_id] = bg_task
 
         # Set up cleanup callback outside the lock (add_done_callback is synchronous)
-        bg_task.add_done_callback(lambda t: self._tasks.pop(task_id, None))
+        bg_task.add_done_callback(lambda t: self._on_task_done(task_id))
 
         logger.info("Hermes: launched %s via %s (in-flight: %d/%d)",
                      task_id[:8], provider, len(self._tasks), self.max_concurrent)
@@ -180,6 +182,24 @@ class HermesRunner:
             "project_id": project_id,
             "provider": provider,
         }, source="hermes")]
+
+    # ------------------------------------------------------------------
+    # Deferred queue drain — called when a slot opens
+    # ------------------------------------------------------------------
+
+    def _on_task_done(self, task_id: str):
+        """Cleanup callback when a task finishes. Drains deferred queue."""
+        self._tasks.pop(task_id, None)
+        if self._deferred:
+            asyncio.get_event_loop().create_task(self._drain_deferred())
+
+    async def _drain_deferred(self):
+        """Process queued dispatch events now that a slot is available."""
+        while self._deferred and len(self._tasks) < self.max_concurrent:
+            event, db = self._deferred.pop(0)
+            task_id = event.payload.get("task_id", "?")[:8]
+            logger.info("Hermes: draining deferred %s (remaining: %d)", task_id, len(self._deferred))
+            await self.handle_dispatch(event, db)
 
     # ------------------------------------------------------------------
     # Background monitor — runs CLI, writes results to relay

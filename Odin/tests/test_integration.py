@@ -415,8 +415,8 @@ class TestPipelineSmoke:
             }), "info", time.time()),
         )
 
-        # Wait for lifecycle handler to unblock wave 1
-        await asyncio.sleep(2)
+        # Wait for pipeline tick to process task_verified → odin_lifecycle → unblock
+        await asyncio.sleep(8)
 
         # Check wave 1 task was unblocked
         t1 = await db.fetchone("SELECT status FROM tasks WHERE id = $1", ("smoke_t1",))
