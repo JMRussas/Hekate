@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--port", type=int, default=5200, help="Port (default 5200)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host (default 0.0.0.0)")
     parser.add_argument("--db", type=str, help="SQLite database path")
-    parser.add_argument("--max-concurrent", type=int, default=2, help="Max parallel CLI tasks")
+    parser.add_argument("--max-concurrent", type=int, default=4, help="Max parallel CLI tasks")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--frontend", type=str, help="Path to frontend dist/ directory")
     args = parser.parse_args()

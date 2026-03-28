@@ -56,7 +56,7 @@ class TaskActionRequest(BaseModel):
 
 def create_app(
     db_path: str | None = None,
-    max_concurrent: int = 2,
+    max_concurrent: int = 4,
     frontend_dist: str | None = None,
 ) -> FastAPI:
     """Create the Hekate FastAPI app.
@@ -228,6 +228,49 @@ def create_app(
         )
         row = await e.db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
         return row or {"id": task_id, "status": "pending"}
+
+    @app.post("/api/tasks/{task_id}/verify")
+    async def verify_task(task_id: str, req: Request):
+        """Submit verification verdict — called by Mimir agent via prometheus MCP."""
+        e: HekateEngine = app.state.engine
+        body = await req.json()
+        verdict = body.get("verdict", "human_needed")
+        feedback = body.get("feedback", "")
+        confidence = body.get("confidence", 1.0)
+
+        row = await e.db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
+        if not row:
+            raise HTTPException(404, f"Task {task_id} not found")
+
+        max_retries = row.get("max_retries") or 3
+
+        if verdict == "passed":
+            await e.db.execute_write(
+                "UPDATE tasks SET verification_status = $1, verification_notes = $2, updated_at = $3 WHERE id = $4",
+                ("passed", feedback[:500] if feedback else None, time.time(), task_id),
+            )
+            return {"accepted": True, "message": "Task verified as passed."}
+        elif verdict == "gaps_found":
+            retry_count = row.get("retry_count") or 0
+            if retry_count < max_retries:
+                await e.db.execute_write(
+                    "UPDATE tasks SET status = $1, verification_status = $2, verification_notes = $3, "
+                    "retry_count = retry_count + 1, updated_at = $4 WHERE id = $5",
+                    ("pending", "gaps_found", feedback[:500], time.time(), task_id),
+                )
+                return {"accepted": True, "message": "Task will be retried with feedback."}
+            else:
+                await e.db.execute_write(
+                    "UPDATE tasks SET status = $1, verification_status = $2, verification_notes = $3, updated_at = $4 WHERE id = $5",
+                    ("needs_review", "gaps_found", feedback[:500], time.time(), task_id),
+                )
+                return {"accepted": True, "message": "Max retries reached, needs human review."}
+        else:
+            await e.db.execute_write(
+                "UPDATE tasks SET status = $1, verification_status = $2, verification_notes = $3, updated_at = $4 WHERE id = $5",
+                ("needs_review", "human_needed", feedback[:500], time.time(), task_id),
+            )
+            return {"accepted": True, "message": "Flagged for human review."}
 
     @app.post("/api/tasks/{task_id}/review")
     async def review_task(task_id: str, req: TaskActionRequest):
