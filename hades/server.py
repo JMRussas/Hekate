@@ -179,6 +179,31 @@ def _run(cmd: list[str], timeout: int = 30, cwd: str | None = None) -> dict:
         return {"returncode": -1, "stdout": "", "stderr": f"Command not found: {cmd[0]}"}
 
 
+async def _run_async(cmd: list[str], timeout: int = 30, cwd: str | None = None) -> dict:
+    """Run a subprocess asynchronously and return structured result."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return {
+            "returncode": proc.returncode,
+            "stdout": stdout.decode(errors="replace").strip(),
+            "stderr": stderr.decode(errors="replace").strip(),
+        }
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return {"returncode": -1, "stdout": "", "stderr": f"Timeout after {timeout}s"}
+    except FileNotFoundError:
+        return {"returncode": -1, "stdout": "", "stderr": f"Command not found: {cmd[0]}"}
+
+
 def _nssm_status(service: str) -> str:
     """Get NSSM service status."""
     result = _run(["nssm", "status", service])
@@ -187,34 +212,42 @@ def _nssm_status(service: str) -> str:
     return result["stderr"] or "UNKNOWN"
 
 
+async def _nssm_status_async(service: str) -> str:
+    """Get NSSM service status asynchronously."""
+    result = await _run_async(["nssm", "status", service], timeout=10)
+    if result["returncode"] == 0:
+        return result["stdout"].strip()
+    return result["stderr"] or "UNKNOWN"
+
+
 async def _stop_and_wait(service: str, timeout: int = 20) -> str:
     """Stop a service via NSSM and poll until SERVICE_STOPPED or timeout."""
-    _run(["nssm", "stop", service], timeout=15)
+    await _run_async(["nssm", "stop", service], timeout=15)
     for _ in range(timeout):
-        status = _nssm_status(service)
+        status = await _nssm_status_async(service)
         if status == "SERVICE_STOPPED":
             return status
         await asyncio.sleep(1)
-    return _nssm_status(service)
+    return await _nssm_status_async(service)
 
 
 async def _start_and_health(service: str, retries: int = 15) -> dict:
     """Start a service and wait for health check to pass."""
-    _run(["nssm", "start", service], timeout=15)
+    await _run_async(["nssm", "start", service], timeout=15)
     info = SERVICES.get(service, {})
     health_url = info.get("health")
     if not health_url:
         await asyncio.sleep(1)
-        return {"nssm_status": _nssm_status(service)}
+        return {"nssm_status": await _nssm_status_async(service)}
 
     for _ in range(retries):
         await asyncio.sleep(1)
-        status = _nssm_status(service)
+        status = await _nssm_status_async(service)
         if status == "SERVICE_RUNNING":
             h = await _health_check(health_url)
             if h["status"] == "ok":
                 return {"nssm_status": status, "health": h}
-    return {"nssm_status": _nssm_status(service), "health": await _health_check(health_url)}
+    return {"nssm_status": await _nssm_status_async(service), "health": await _health_check(health_url)}
 
 
 def _validate_service(name: str) -> None:
@@ -353,7 +386,7 @@ async def list_services():
     """Get status of all known NSSM services."""
     results = {}
     for name, info in SERVICES.items():
-        status = _nssm_status(name)
+        status = await _nssm_status_async(name)
         entry = {"nssm_status": status, "port": info.get("port")}
 
         # Health check for running services with health endpoints
@@ -396,7 +429,7 @@ async def get_service(name: str):
     """Get status of a specific NSSM service."""
     _validate_service(name)
     info = SERVICES[name]
-    status = _nssm_status(name)
+    status = await _nssm_status_async(name)
     result = {"service": name, "nssm_status": status, "port": info.get("port")}
 
     if status == "SERVICE_RUNNING" and info.get("health"):
@@ -436,10 +469,14 @@ async def create_service(req: CreateServiceRequest):
     if req.stderr_log:
         _run(["nssm", "set", req.name, "AppStderr", req.stderr_log])
 
-    # 4. Environment variables
+    # 4. Environment variables — must use REG_MULTI_SZ, one entry per line.
+    # nssm set with a single string concatenates all vars into one env var name.
     if req.env_vars:
-        env_str = " ".join(f"{k}={v}" for k, v in req.env_vars.items())
-        _run(["nssm", "set", req.name, "AppEnvironmentExtra", env_str])
+        vals = [f"{k}={v}" for k, v in req.env_vars.items()]
+        ps_vals = ",".join(f'"{v}"' for v in vals)
+        _run(["powershell", "-NoProfile", "-Command",
+              f'Set-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{req.name}\\Parameters" '
+              f'-Name AppEnvironmentExtra -Value @({ps_vals}) -Type MultiString'])
 
     # 5. Register in config
     entry = {
@@ -455,7 +492,7 @@ async def create_service(req: CreateServiceRequest):
     _save_services(SERVICES)
 
     log.info("Created service: %s -> %s", req.name, req.app)
-    return {"action": "create", "service": req.name, "nssm_status": _nssm_status(req.name), **entry}
+    return {"action": "create", "service": req.name, "nssm_status": await _nssm_status_async(req.name), **entry}
 
 
 @app.delete("/services/{name}")
@@ -470,7 +507,7 @@ async def remove_service(name: str, confirm: bool = False):
         raise HTTPException(400, "Cannot remove the admin service from itself")
 
     # Stop if running
-    status = _nssm_status(name)
+    status = await _nssm_status_async(name)
     if status == "SERVICE_RUNNING":
         await _stop_and_wait(name)
 
@@ -593,6 +630,14 @@ async def deploy(req: DeployRequest = DeployRequest()):
                 steps.append({"step": "error", "detail": "dotnet publish failed"})
                 return {"action": "deploy", "success": False, "steps": steps}
 
+        # --- 2b. Copy context-store Python tools ---
+        cs_tools_src = SOURCE_ROOT / "context-store" / "tools"
+        cs_tools_dst = HEKATE_ROOT / "context-store" / "tools"
+        if cs_tools_src.exists():
+            if cs_tools_dst.exists():
+                shutil.rmtree(cs_tools_dst)
+            shutil.copytree(cs_tools_src, cs_tools_dst, ignore=shutil.ignore_patterns("__pycache__"))
+
         # --- 3. Copy orchestration source ---
         orch_src = SOURCE_ROOT / "orchestration"
         orch_dst = HEKATE_ROOT / "orchestration"
@@ -629,6 +674,23 @@ async def deploy(req: DeployRequest = DeployRequest()):
         if src_svc_json.exists() and not dst_svc_json.exists():
             shutil.copy2(src_svc_json, dst_svc_json)
         steps.append({"step": "copy_hades", "status": "ok"})
+
+        # --- 4b. Copy Odin ---
+        odin_src = SOURCE_ROOT / "Odin"
+        odin_dst = HEKATE_ROOT / "Odin"
+        if odin_src.exists():
+            for subdir in ["gods"]:
+                src = odin_src / subdir
+                dst = odin_dst / subdir
+                if src.exists():
+                    if dst.exists():
+                        shutil.rmtree(dst)
+                    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+            for fname in ["run_pipeline.py", "requirements.txt"]:
+                src = odin_src / fname
+                if src.exists():
+                    shutil.copy2(src, odin_dst / fname)
+        steps.append({"step": "copy_odin", "status": "ok"})
 
         # --- 5. Copy scripts ---
         scripts_src = SOURCE_ROOT / "scripts"
@@ -755,7 +817,7 @@ async def exec_command(req: ExecRequest):
         raise HTTPException(400, f"Unknown shell '{req.shell}'. Valid: bash, cmd, powershell")
 
     log.info("Exec [%s] cwd=%s timeout=%d: %s", req.shell, cwd, timeout, req.command[:200])
-    result = _run(cmd, timeout=timeout, cwd=cwd)
+    result = await _run_async(cmd, timeout=timeout, cwd=cwd)
     log.info("Exec finished with returncode %d", result["returncode"])
 
     return {

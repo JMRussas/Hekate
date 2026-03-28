@@ -50,7 +50,8 @@ SIBLING_GAP = 100
 # AGE graph name (must match init.sql)
 AGE_GRAPH = "code_graph"
 
-mcp = FastMCP("agent-context")
+_PORT = int(os.environ.get("MCP_PORT", "0"))
+mcp = FastMCP("agent-context", port=_PORT) if _PORT else FastMCP("agent-context")
 
 
 # --- Helpers ---
@@ -767,4 +768,7 @@ def _parse_agtype(val) -> str | None:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    if _PORT:
+        mcp.run(transport="sse")
+    else:
+        mcp.run()

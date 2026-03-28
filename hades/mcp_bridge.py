@@ -15,8 +15,9 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 HADES_URL = os.environ.get("HADES_URL", "http://localhost:5201")
+_PORT = int(os.environ.get("MCP_PORT", "0"))
 
-mcp = FastMCP("hades")
+mcp = FastMCP("hades", port=_PORT) if _PORT else FastMCP("hades")
 log = logging.getLogger("hades-mcp")
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
@@ -264,4 +265,7 @@ def system_info() -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    mcp.run()
+    if _PORT:
+        mcp.run(transport="sse")
+    else:
+        mcp.run()

@@ -1,26 +1,16 @@
 {
   "mcpServers": {
     "agent-context": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["tools/agent-context-mcp/server.py"],
-      "env": {}
+      "type": "sse",
+      "url": "http://localhost:5213/sse"
     },
-    "context-skills": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["tools/skills-mcp/server.py"],
-      "env": {
-        "OLLAMA_URL": "http://localhost:11434"
-      }
+    "hades": {
+      "type": "sse",
+      "url": "http://localhost:5211/sse"
     },
-    "comfyui-mcp": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["tools/comfyui-mcp/server.py"],
-      "env": {
-        "COMFYUI_URL": "http://127.0.0.1:8188"
-      }
+    "prometheus": {
+      "type": "sse",
+      "url": "http://localhost:5212/sse"
     }
   }
 }
