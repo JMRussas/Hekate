@@ -13,6 +13,9 @@ from gods.handlers.mimir import MimirRunner
 from gods.providers.base import ProviderRegistry
 
 from gods.handlers.athena_leveled import athena_plan_leveled, athena_reassess_standalone
+from gods.handlers.athena_l0 import athena_l0
+from gods.handlers.athena_deepen import athena_deepen
+from gods.handlers.athena_complete import athena_bubble_up, athena_materialize
 from gods.handlers.odin import (
     odin_start, odin_tick, odin_dispatch,
     odin_lifecycle, odin_handle_diagnosis,
@@ -55,7 +58,15 @@ def register_all_handlers(
     )
 
     # Athena — planning
+    # Old planner: handles projects without use_node_tree_planner flag (default)
     pipeline.register("project_created", athena_plan_leveled)
+    # New parallel node tree planner: handles projects with use_node_tree_planner=True
+    # athena_l0 self-filters based on config_json — both can be registered safely
+    pipeline.register("project_created", athena_l0)
+    # Node tree handlers (fan-out deepening + completion propagation)
+    pipeline.register("plan_node_created", athena_deepen)
+    pipeline.register("plan_node_complete", athena_bubble_up)
+    pipeline.register("plan_node_executable", athena_materialize)
     pipeline.register("wave_complete", athena_reassess_standalone)
 
     # Odin — orchestration

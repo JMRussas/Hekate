@@ -181,6 +181,13 @@ class ReviewAction(BaseModel):
     feedback: str = Field(default="", max_length=10_000)
 
 
+class VerifyAction(BaseModel):
+    """Verification verdict submitted by an agent (e.g. Mimir agent)."""
+    verdict: str = Field(..., pattern="^(passed|gaps_found|human_needed)$")
+    feedback: str = Field(default="", max_length=10_000)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
 class BulkTaskAction(BaseModel):
     """Perform an action on multiple tasks at once."""
     action: str = Field(..., pattern="^(retry|cancel)$")

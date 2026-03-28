@@ -54,21 +54,46 @@ MAX_REVIEW_CYCLES = 2
 
 async def _call_gateway(
     *,
-    provider: str = "gemini",
+    provider: str = "claude",
+    model: str | None = None,
     system_prompt: str,
     user_message: str,
     gateway_url: str = "http://localhost:5210",
-    timeout: float = 120.0,
+    timeout: float = 300.0,
+    history: list[dict] | None = None,
 ) -> str:
-    """Call LLM Gateway, return text response."""
+    """Call LLM Gateway, return text response.
+
+    If history is provided, it is a list of prior turns:
+        [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
+    These are concatenated into the user_message so the model sees the full conversation.
+    The gateway only accepts a single user_message string, so multi-turn is simulated
+    by formatting the history inline.
+    """
     import httpx
+
+    if history:
+        # Format prior turns inline so the model has full context
+        prior = ""
+        for turn in history:
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            label = "User" if role == "user" else "Assistant"
+            prior += f"\n\n[{label}]: {content}"
+        full_message = f"{prior}\n\n[User]: {user_message}"
+    else:
+        full_message = user_message
+
     try:
+        body: dict = {
+            "provider": provider,
+            "system_prompt": system_prompt,
+            "user_message": full_message,
+        }
+        if model:
+            body["model"] = model
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(f"{gateway_url}/v1/chat", json={
-                "provider": provider,
-                "system_prompt": system_prompt,
-                "user_message": user_message,
-            })
+            resp = await client.post(f"{gateway_url}/v1/chat", json=body)
             resp.raise_for_status()
             return resp.json().get("text", "")
     except httpx.HTTPStatusError as e:
@@ -79,7 +104,7 @@ async def _call_gateway(
         raise RuntimeError(
             f"Cannot connect to LLM Gateway at {gateway_url}: {e}"
         ) from e
-    except TimeoutError as e:
+    except (httpx.ReadTimeout, httpx.TimeoutException, TimeoutError) as e:
         raise RuntimeError(
             f"LLM Gateway request timed out after {timeout}s"
         ) from e
@@ -130,7 +155,7 @@ async def _generate_l1(
         "INSERT OR REPLACE INTO plans (id, project_id, version, model_used, prompt_tokens, "
         "completion_tokens, cost_usd, plan_json, status, created_at, node_mapping) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        (plan_id, project_id, 1, "gemini", 0, 0, 0.0,
+        (plan_id, project_id, 1, "claude", 0, 0, 0.0,
          json.dumps(plan), "draft", time.time(), "{}"),
     )
 
@@ -192,7 +217,7 @@ async def _deepen_plan(
         "INSERT OR REPLACE INTO plans (id, project_id, version, model_used, prompt_tokens, "
         "completion_tokens, cost_usd, plan_json, status, created_at, node_mapping) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        (plan_id, project_id, 1, "gemini", 0, 0, 0.0,
+        (plan_id, project_id, 1, "claude", 0, 0, 0.0,
          json.dumps(plan), "draft", time.time(), "{}"),
     )
 
@@ -230,7 +255,7 @@ async def _thorough_review(
     text = await _call_gateway(
         system_prompt=system_prompt,
         user_message=f"Project: {project_name}\n\nRequirements:\n{requirements}\n\nPlan:\n{plan_json[:4000]}",
-        provider="gemini",
+        provider="claude",
     )
 
     result = validate_verdict(text)
@@ -437,6 +462,7 @@ def _load_config(config_json: str | None) -> PlanConfig:
             target_level=raw.get("target_level", "auto"),
             direct_write=raw.get("direct_write", True),
             max_concurrent=raw.get("max_concurrent", 2),
+            use_node_tree_planner=raw.get("use_node_tree_planner", False),
         )
     except (json.JSONDecodeError, TypeError):
         return PlanConfig()
@@ -474,6 +500,10 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
 
     # Guard: skip if already beyond draft
     if status not in ("draft",):
+        return []
+
+    # Guard: skip if project uses the new parallel node-tree planner
+    if config.use_node_tree_planner:
         return []
 
     # Lock to planning
@@ -672,7 +702,7 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
         return emits
 
     except Exception as e:
-        logger.error("Athena leveled: planning failed for %s: %s", project_id, e)
+        logger.error("Athena leveled: planning failed for %s: %s", project_id, e, exc_info=True)
         await db.execute_write(
             "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
             ("failed", time.time(), project_id),

@@ -7,10 +7,13 @@
 #  Used by:    app.py
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 import sys
+import time
+import uuid
 from typing import Optional
 
 import traceback
@@ -18,11 +21,12 @@ import traceback
 import httpx
 
 from dependency_injector.wiring import inject, Provide
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.config import cfg
 from backend.container import Container
+from backend.db.connection import Database
 from backend.middleware.auth import get_current_user
 from backend.services.planner import PlannerService
 
@@ -292,6 +296,98 @@ async def browse_directories(
         return {"directories": [], "current": abs_path, "error": "Permission denied"}
 
     return {"directories": dirs, "current": abs_path}
+
+
+class PlanNodeChildrenRequest(BaseModel):
+    children: list[dict]
+
+
+@router.post("/plan-nodes/{node_id}/children")
+@inject
+async def submit_plan_node_children(
+    node_id: str,
+    request: PlanNodeChildrenRequest,
+    _user: dict = Depends(get_current_user),
+    db: Database = Depends(Provide[Container.db]),
+):
+    """Save child plan_nodes submitted by a planning sub-agent.
+
+    Called by the planning agent via the prometheus MCP submit_plan_children tool.
+    Writes child rows and emits plan_node_created events via the god_relay_events table.
+    """
+    # Load parent node
+    node = await db.fetchone("SELECT * FROM plan_nodes WHERE id = $1", (node_id,))
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Plan node {node_id} not found")
+
+    project_id = node["project_id"]
+    plan_id = node["plan_id"]
+    index_path = node["index_path"]
+    child_level = (node["level"] or 0) + 1
+    project_context = node["project_context"] or ""
+
+    # Count existing children (for index continuity)
+    cnt_row = await db.fetchone(
+        "SELECT COUNT(*) as cnt FROM plan_nodes WHERE project_id = $1 AND parent_index = $2",
+        (project_id, index_path),
+    )
+    start_idx = (cnt_row["cnt"] if cnt_row else 0) + 1
+
+    now = time.time()
+    node_ids: list[str] = []
+    relay_events: list[dict] = []
+
+    for i, child in enumerate(request.children, start=start_idx):
+        child_id = uuid.uuid4().hex[:12]
+        child_index = f"{index_path}.{i}"
+        child_title = child.get("title", f"Node {child_index}")
+
+        dep_indices = child.get("depends_on_indices", [])
+        dep_paths = [f"{index_path}.{d + 1}" for d in dep_indices if isinstance(d, int)]
+        child["depends_on_paths"] = dep_paths
+
+        await db.execute_write(
+            "INSERT OR IGNORE INTO plan_nodes "
+            "(id, plan_id, project_id, index_path, level, status, title, "
+            "content_json, project_context, parent_index, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            (
+                child_id, plan_id, project_id, child_index, child_level,
+                "stub", child_title, json.dumps(child),
+                project_context, index_path, now, now,
+            ),
+        )
+        node_ids.append(child_id)
+
+        # Emit plan_node_created via relay table for the gods pipeline to pick up
+        relay_payload = json.dumps({
+            "project_id": project_id,
+            "node_id": child_id,
+            "index_path": child_index,
+            "level": child_level,
+            "plan_id": plan_id,
+        })
+        relay_events.append((
+            uuid.uuid4().hex[:12],
+            "plan_node_created",
+            relay_payload,
+            "prometheus_mcp",
+            now,
+        ))
+
+    for relay_row in relay_events:
+        await db.execute_write(
+            "INSERT INTO god_relay_events (id, event_type, payload, source, created_at) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            relay_row,
+        )
+
+    logger.info(
+        "submit_plan_node_children: saved %d children under node %s for project %s",
+        len(node_ids), index_path, project_id[:8],
+    )
+
+    return {"saved": len(node_ids), "node_ids": node_ids}
 
 
 class PlanRequest(BaseModel):

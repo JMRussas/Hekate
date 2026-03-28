@@ -17,7 +17,7 @@ from backend.container import Container
 from backend.db.connection import Database
 from backend.middleware.auth import get_current_user
 from backend.models.enums import TaskSortField, TaskStatus
-from backend.models.schemas import BulkTaskAction, ReviewAction, TaskOut, TaskUpdate
+from backend.models.schemas import BulkTaskAction, ReviewAction, TaskOut, TaskUpdate, VerifyAction
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -412,6 +412,61 @@ async def review_task(
 
     updated = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
     return TaskOut(**await _row_to_dict(updated, db))
+
+
+@router.post("/{task_id}/verify")
+@inject
+async def verify_task(
+    task_id: str,
+    body: VerifyAction,
+    db: Database = Depends(Provide[Container.db]),
+) -> dict:
+    """Submit a verification verdict for a completed task.
+
+    Internal endpoint — called by the Mimir agent running on localhost.
+    No auth required: the task ID is a UUID and marking a task verified
+    is not a security-sensitive operation.
+    """
+    row = await db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
+    if not row:
+        raise HTTPException(404, f"Task {task_id} not found")
+    if row["status"] not in (TaskStatus.COMPLETED, TaskStatus.RUNNING):
+        raise HTTPException(400, f"Cannot verify task in '{row['status']}' state")
+
+    retry_count = row.get("retry_count") or 0
+    max_retries = row.get("max_retries") or MAX_TASK_RETRIES
+
+    if body.verdict == "passed":
+        await db.execute_write(
+            "UPDATE tasks SET verification_status = $1, verification_notes = $2, updated_at = $3 WHERE id = $4",
+            ("passed", body.feedback[:500] if body.feedback else None, time.time(), task_id),
+        )
+        return {"accepted": True, "message": "Task marked as verified."}
+
+    elif body.verdict == "gaps_found":
+        if retry_count >= max_retries:
+            await db.execute_write(
+                "UPDATE tasks SET status = $1, verification_status = $2, verification_notes = $3, updated_at = $4 WHERE id = $5",
+                (TaskStatus.NEEDS_REVIEW, "gaps_found", body.feedback[:500], time.time(), task_id),
+            )
+            return {"accepted": True, "message": "Max retries reached. Task sent to human review."}
+
+        ctx = json.loads(row["context_json"]) if row["context_json"] else []
+        if body.feedback:
+            ctx.append({"type": "verification_feedback", "content": body.feedback})
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, verification_status = $2, verification_notes = $3, "
+            "context_json = $4, retry_count = $5, output_text = NULL, completed_at = NULL, updated_at = $6 WHERE id = $7",
+            (TaskStatus.PENDING, "gaps_found", body.feedback[:500], json.dumps(ctx), retry_count + 1, time.time(), task_id),
+        )
+        return {"accepted": True, "message": "Task reset for retry with verification feedback."}
+
+    else:  # human_needed
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, verification_status = $2, verification_notes = $3, updated_at = $4 WHERE id = $5",
+            (TaskStatus.NEEDS_REVIEW, "human_needed", body.feedback[:500], time.time(), task_id),
+        )
+        return {"accepted": True, "message": "Task flagged for human review."}
 
 
 @router.post("/{task_id}/expand", status_code=201)

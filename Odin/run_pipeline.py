@@ -30,6 +30,7 @@ import aiosqlite
 
 from gods.pipeline import Pipeline, Emit
 from gods.handlers.registration import register_all_handlers
+from gods.handlers.odin import run_startup_recovery
 
 logging.basicConfig(
     level=logging.INFO,
@@ -183,6 +184,10 @@ async def run(args):
         max_concurrent=args.max_concurrent,
     )
     await pipeline.restore_cursor()
+
+    # Run startup recovery — re-triggers stuck/draft projects, replays lost deferred verifications
+    await run_startup_recovery(db)
+    await mimir.replay_deferred_from_relay()
 
     logger.info("Pipeline ready — %d handlers registered, hermes max_concurrent=%d, mimir max_concurrent=%d",
                 len(pipeline._handlers), args.max_concurrent, mimir.max_concurrent)

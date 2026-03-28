@@ -245,6 +245,7 @@ class HekateEngine:
     async def start(self):
         """Start the pipeline tick loop."""
         await self.recover_stuck_tasks()
+        await self.pipeline.restore_cursor()
         self.running = True
         self._tick_task = asyncio.create_task(self._tick_loop(), name="hekate-pipeline")
         logger.info("Hekate engine started")

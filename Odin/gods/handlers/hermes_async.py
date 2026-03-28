@@ -57,6 +57,12 @@ class HermesRunner:
         self._processes: dict[str, Any] = {}
         # Heartbeat tasks: task_id → asyncio.Task
         self._heartbeats: dict[str, asyncio.Task] = {}
+        # Serializes the concurrency check + task registration to prevent
+        # two concurrent dispatch_command events from both seeing len < max
+        self._dispatch_lock = asyncio.Lock()
+        # Consecutive best-effort relay write failures — escalates to critical at threshold
+        self._relay_failure_count = 0
+        self._relay_failure_threshold = 3
 
     @property
     def in_flight(self) -> set[str]:
@@ -80,88 +86,90 @@ class HermesRunner:
         if not task_id:
             return [Emit("hermes_error", {"error": "No task_id"}, source="hermes")]
 
-        # Dedup — already running?
-        if task_id in self._tasks:
-            return [Emit("task_already_running", {
-                "task_id": task_id,
-                "project_id": project_id,
-            }, source="hermes")]
+        # Serialized check-and-register: prevents two concurrent dispatches from
+        # both seeing len < max_concurrent and both launching (race condition).
+        async with self._dispatch_lock:
+            # Dedup — already running?
+            if task_id in self._tasks:
+                return [Emit("task_already_running", {
+                    "task_id": task_id,
+                    "project_id": project_id,
+                }, source="hermes")]
 
-        # Concurrency check
-        if len(self._tasks) >= self.max_concurrent:
-            return [Emit("slots_full", {
-                "task_id": task_id,
-                "project_id": project_id,
-                "in_flight": len(self._tasks),
-                "max_concurrent": self.max_concurrent,
-            }, source="hermes")]
+            # Concurrency check
+            if len(self._tasks) >= self.max_concurrent:
+                return [Emit("slots_full", {
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "in_flight": len(self._tasks),
+                    "max_concurrent": self.max_concurrent,
+                }, source="hermes")]
 
-        # Fetch task
-        row = await self.db.fetchone(
-            "SELECT id, title, description, task_type, status, model_tier, context_json "
-            "FROM tasks WHERE id = $1",
-            (task_id,),
-        )
-        if not row:
-            return [Emit("hermes_error", {
-                "error": f"Task {task_id} not found",
-                "task_id": task_id,
-            }, source="hermes")]
+            # Fetch task
+            row = await self.db.fetchone(
+                "SELECT id, title, description, task_type, status, model_tier, context_json "
+                "FROM tasks WHERE id = $1",
+                (task_id,),
+            )
+            if not row:
+                return [Emit("hermes_error", {
+                    "error": f"Task {task_id} not found",
+                    "task_id": task_id,
+                }, source="hermes")]
 
-        status = row["status"]
-        title = row["title"]
-        description = row.get("description", "")
-        task_type = row.get("task_type", "code")
-        context_json = row.get("context_json")
+            status = row["status"]
+            title = row["title"]
+            description = row.get("description", "")
+            task_type = row.get("task_type", "code")
+            context_json = row.get("context_json")
 
-        # Guard: only execute pending/queued tasks
-        if status not in ("pending", "queued"):
-            # Don't emit skipped events for non-pending tasks — this is normal
-            # dedup from replay. Just return silently.
-            logger.debug("Hermes: task %s is %s, skipping (normal dedup)", task_id[:8], status)
-            return None
+            # Guard: only execute pending/queued tasks
+            if status not in ("pending", "queued"):
+                logger.debug("Hermes: task %s is %s, skipping (normal dedup)", task_id[:8], status)
+                return None
 
-        # Set task → running
-        await self.db.execute_write(
-            "UPDATE tasks SET status = $1, started_at = $2, updated_at = $3 WHERE id = $4",
-            ("running", time.time(), time.time(), task_id),
-        )
+            # Set task → running
+            await self.db.execute_write(
+                "UPDATE tasks SET status = $1, started_at = $2, updated_at = $3 WHERE id = $4",
+                ("running", time.time(), time.time(), task_id),
+            )
 
-        # Resolve working directory
-        proj_row = await self.db.fetchone(
-            "SELECT repo_path FROM projects WHERE id = $1", (project_id,))
-        cwd = proj_row.get("repo_path", ".") if proj_row else "."
+            # Resolve working directory
+            proj_row = await self.db.fetchone(
+                "SELECT repo_path FROM projects WHERE id = $1", (project_id,))
+            cwd = proj_row.get("repo_path", ".") if proj_row else "."
 
-        # Build prompt
-        prompt = f"# Task: {title}\n\n{description or ''}"
-        if context_json and context_json != "{}":
-            try:
-                ctx = safe_json.loads_dict(context_json) if isinstance(context_json, str) else context_json
-                if isinstance(ctx, dict):
-                    if ctx.get("verification_feedback"):
-                        prompt += f"\n\n# Previous feedback:\n{ctx['verification_feedback']}"
-                    if ctx.get("prompt_guidance"):
-                        prompt += f"\n\n# Guidance:\n{ctx['prompt_guidance']}"
-                    if ctx.get("review_feedback"):
-                        prompt += f"\n\n# Review feedback:\n{ctx['review_feedback']}"
-            except (json.JSONDecodeError, TypeError):
-                pass
+            # Build prompt
+            prompt = f"# Task: {title}\n\n{description or ''}"
+            if context_json and context_json != "{}":
+                try:
+                    ctx = safe_json.loads_dict(context_json) if isinstance(context_json, str) else context_json
+                    if isinstance(ctx, dict):
+                        if ctx.get("verification_feedback"):
+                            prompt += f"\n\n# Previous feedback:\n{ctx['verification_feedback']}"
+                        if ctx.get("prompt_guidance"):
+                            prompt += f"\n\n# Guidance:\n{ctx['prompt_guidance']}"
+                        if ctx.get("review_feedback"):
+                            prompt += f"\n\n# Review feedback:\n{ctx['review_feedback']}"
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
-        # Launch background task
-        bg_task = asyncio.create_task(
-            self._monitor_task(
-                task_id=task_id,
-                project_id=project_id,
-                provider=provider,
-                prompt=prompt,
-                cwd=cwd,
-                task_type=task_type,
-            ),
-            name=f"hermes-{task_id}",
-        )
-        self._tasks[task_id] = bg_task
+            # Launch background task — registered inside the lock so the slot
+            # count is updated before any concurrent dispatch can re-check.
+            bg_task = asyncio.create_task(
+                self._monitor_task(
+                    task_id=task_id,
+                    project_id=project_id,
+                    provider=provider,
+                    prompt=prompt,
+                    cwd=cwd,
+                    task_type=task_type,
+                ),
+                name=f"hermes-{task_id}",
+            )
+            self._tasks[task_id] = bg_task
 
-        # Set up cleanup callback
+        # Set up cleanup callback outside the lock (add_done_callback is synchronous)
         bg_task.add_done_callback(lambda t: self._tasks.pop(task_id, None))
 
         logger.info("Hermes: launched %s via %s (in-flight: %d/%d)",
@@ -364,12 +372,23 @@ class HermesRunner:
     # ------------------------------------------------------------------
 
     async def _heartbeat_loop(self, task_id: str, project_id: str, provider: str):
-        """Emit periodic heartbeat events while a task is running."""
+        """Emit periodic heartbeat events while a task is running.
+
+        Also updates updated_at on the task row so odin_tick's stuck-task
+        detection doesn't reset legitimately long-running tasks. A task is
+        only considered stuck if it has had NO heartbeat for > threshold seconds.
+        """
         start = time.time()
         try:
             while True:
                 await asyncio.sleep(self.heartbeat_interval)
-                uptime = time.time() - start
+                now = time.time()
+                uptime = now - start
+                # Update updated_at so the stuck-task watchdog sees a live signal
+                await self.db.execute_write(
+                    "UPDATE tasks SET updated_at = $1 WHERE id = $2",
+                    (now, task_id),
+                )
                 await self._write_relay_event("heartbeat", {
                     "task_id": task_id,
                     "project_id": project_id,
@@ -432,7 +451,10 @@ class HermesRunner:
     # ------------------------------------------------------------------
 
     async def _write_relay_event(self, event_type: str, payload: dict):
-        """Write an event directly to the relay table (best-effort, swallows errors)."""
+        """Write an event directly to the relay table (best-effort, swallows errors).
+
+        Tracks consecutive failures and escalates to critical after threshold.
+        """
         try:
             await self.db.execute_write(
                 "INSERT INTO god_relay_events "
@@ -440,8 +462,17 @@ class HermesRunner:
                 "VALUES ($1, $2, $3, $4, $5)",
                 (event_type, "hermes", json.dumps(payload), "info", time.time()),
             )
+            self._relay_failure_count = 0  # reset on success
         except Exception as e:
+            self._relay_failure_count += 1
             logger.error("Failed to write relay event: %s", e)
+            if self._relay_failure_count >= self._relay_failure_threshold:
+                logger.critical(
+                    "Hermes: %d consecutive relay write failures — "
+                    "god_relay_events table may be unavailable. "
+                    "Pipeline events are being dropped.",
+                    self._relay_failure_count,
+                )
 
     async def _write_relay_event_strict(self, event_type: str, payload: dict):
         """Write an event to the relay table — raises on failure.

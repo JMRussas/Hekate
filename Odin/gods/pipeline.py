@@ -258,18 +258,39 @@ class Pipeline:
             logger.warning("Pipeline: reset failed: %s", e)
 
     async def restore_cursor(self):
-        """Restore _last_seen_id from god_registry table."""
+        """Restore _last_seen_id from god_registry table.
+
+        On restart, we start from MAX(id) - 50 to catch any events emitted
+        just before shutdown, without replaying thousands of old events.
+        """
         try:
+            # Restore persisted cursor
             row = await self.db.fetchone(
                 "SELECT last_seen_id FROM god_registry WHERE name = $1",
                 (self.source_name,),
             )
+            persisted = 0
             if row:
-                val = row[0] if isinstance(row, (list, tuple)) else row["last_seen_id"]
-                self._last_seen_id = int(val) if val else 0
-                logger.info("Pipeline: restored cursor to %d", self._last_seen_id)
-            else:
-                logger.info("Pipeline: no saved cursor found, starting from 0")
+                val = row[0] if isinstance(row, (list, tuple)) else row.get("last_seen_id")
+                persisted = int(val) if val else 0
+
+            # Find the current max event ID and skip old backlog
+            max_id = 0
+            try:
+                rows = await self.db.fetchall(
+                    "SELECT id FROM god_relay_events ORDER BY id DESC LIMIT 1"
+                )
+                if rows:
+                    r = rows[0]
+                    val = r[0] if isinstance(r, (list, tuple)) else r.get("id")
+                    max_id = int(val) if val else 0
+            except Exception as ex:
+                logger.warning("Pipeline: could not read max event id: %s", ex)
+
+            # Start from MAX(id) - 50 to catch recent events, skip old backlog
+            self._last_seen_id = max(persisted, max(0, max_id - 50))
+            logger.info("Pipeline: restored cursor to %d (persisted=%d, max_id=%d)",
+                        self._last_seen_id, persisted, max_id)
         except Exception as e:
             logger.warning("Pipeline: cursor restore failed: %s", e)
 

@@ -223,23 +223,171 @@ async def odin_start(event: Event, db) -> list[Emit] | None:
 # odin_tick — periodic scan of all executing projects
 # ---------------------------------------------------------------------------
 
+# Tasks stuck in 'running' longer than this are considered dead (crashed executor)
+_STUCK_TASK_THRESHOLD_S = 600
+
+# Projects stuck in 'planning' longer than this are considered hung
+_STUCK_PLANNING_THRESHOLD_S = 300
+
+
 async def odin_tick(event: Event, db) -> list[Emit] | None:
-    """Scan all executing projects and emit a per-project tick for each."""
+    """Scan executing projects and emit project_ticks. Also reset stuck tasks/projects."""
+    now = time.time()
+    emits: list[Emit] = []
+
+    # --- Project ticks for executing projects ---
     rows = await db.fetchall(
         "SELECT id FROM projects WHERE status = $1",
         ("executing",),
     )
-    if not rows:
-        return None
-
-    emits: list[Emit] = []
     for row in rows:
-        pid = row["id"]
         emits.append(Emit("project_tick", {
-            "project_id": pid,
+            "project_id": row["id"],
+        }, source="odin"))
+
+    # --- Stuck running tasks: executor crashed, never wrote a completion event ---
+    stuck_tasks = await db.fetchall(
+        "SELECT id, project_id, status, updated_at FROM tasks "
+        "WHERE status = $1 AND updated_at < $2",
+        ("running", now - _STUCK_TASK_THRESHOLD_S),
+    )
+    for task_row in stuck_tasks:
+        task_id = task_row["id"]
+        project_id = task_row["project_id"]
+        logger.warning(
+            "Odin: task %s stuck in 'running' for %.0fs — resetting to 'pending'",
+            task_id[:8], now - task_row["updated_at"],
+        )
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+            ("pending", now, task_id),
+        )
+        emits.append(Emit("task_stuck_reset", {
+            "task_id": task_id,
+            "project_id": project_id,
+            "stuck_seconds": int(now - task_row["updated_at"]),
+        }, source="odin"))
+
+    # --- Stuck planning projects: athena crashed mid-plan ---
+    stuck_planning = await db.fetchall(
+        "SELECT id, status, updated_at FROM projects "
+        "WHERE status = $1 AND updated_at < $2",
+        ("planning", now - _STUCK_PLANNING_THRESHOLD_S),
+    )
+    for proj_row in stuck_planning:
+        proj_id = proj_row["id"]
+        logger.warning(
+            "Odin: project %s stuck in 'planning' for %.0fs — resetting to 'draft'",
+            proj_id[:8], now - proj_row["updated_at"],
+        )
+        await db.execute_write(
+            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
+            ("draft", now, proj_id),
+        )
+        emits.append(Emit("project_stuck_reset", {
+            "project_id": proj_id,
+            "stuck_seconds": int(now - proj_row["updated_at"]),
+            "previous_status": "planning",
         }, source="odin"))
 
     return emits or None
+
+
+# ---------------------------------------------------------------------------
+# run_startup_recovery — re-trigger projects that were lost across a restart
+# ---------------------------------------------------------------------------
+
+# How old a draft project must be (with no recent relay activity) before
+# we consider it stuck and re-emit project_created
+_DRAFT_RECOVERY_THRESHOLD_S = 60
+
+# How old a planning project must be before we reset it to draft on startup
+_PLANNING_RECOVERY_THRESHOLD_S = 300
+
+
+async def run_startup_recovery(db) -> None:
+    """Scan for projects that survived a service restart in an intermediate state.
+
+    Called once on startup after cursor restore. Writes recovery events directly
+    to god_relay_events so the pipeline picks them up on its first tick.
+
+    1. Draft projects with no recent relay activity → write project_created to relay
+       (their planning event was skipped by cursor restoration's -50 window)
+    2. Planning projects stuck > threshold → reset to draft, write project_stuck_reset
+
+    Safe to call multiple times — idempotent.
+    """
+    now = time.time()
+
+    # --- Re-trigger draft projects that have gone silent ---
+    draft_rows = await db.fetchall(
+        "SELECT id, status, updated_at FROM projects WHERE status = $1",
+        ("draft",),
+    )
+    for row in draft_rows:
+        proj_id = row["id"]
+        updated_at = row.get("updated_at") or 0
+
+        # Skip very recently created/updated projects — they may still be starting
+        if now - updated_at < _DRAFT_RECOVERY_THRESHOLD_S:
+            continue
+
+        # Check if there's been any relay activity for this project using
+        # json_extract for correctness and index efficiency
+        recent = await db.fetchone(
+            "SELECT id FROM god_relay_events "
+            "WHERE json_extract(payload, '$.project_id') = $1 "
+            "ORDER BY id DESC LIMIT 1",
+            (proj_id,),
+        )
+        if recent:
+            continue
+
+        logger.info(
+            "Odin: startup recovery — writing project_created to relay for stuck draft %s",
+            proj_id[:8],
+        )
+        await db.execute_write(
+            "INSERT INTO god_relay_events "
+            "(event_type, source, payload, severity, created_at) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            ("project_created", "odin_recovery",
+             json.dumps({"project_id": proj_id}),
+             "info", now),
+        )
+
+    # --- Reset planning projects stuck across a restart ---
+    planning_rows = await db.fetchall(
+        "SELECT id, status, updated_at FROM projects WHERE status = $1",
+        ("planning",),
+    )
+    for row in planning_rows:
+        proj_id = row["id"]
+        updated_at = row.get("updated_at") or 0
+
+        if now - updated_at < _PLANNING_RECOVERY_THRESHOLD_S:
+            continue
+
+        logger.warning(
+            "Odin: startup recovery — resetting stuck 'planning' project %s to 'draft'",
+            proj_id[:8],
+        )
+        await db.execute_write(
+            "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
+            ("draft", now, proj_id),
+        )
+        await db.execute_write(
+            "INSERT INTO god_relay_events "
+            "(event_type, source, payload, severity, created_at) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            ("project_stuck_reset", "odin_recovery",
+             json.dumps({
+                 "project_id": proj_id,
+                 "stuck_seconds": int(now - updated_at),
+                 "previous_status": "planning",
+             }),
+             "warning", now),
+        )
 
 
 # ---------------------------------------------------------------------------

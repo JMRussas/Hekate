@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-LLM Gateway — HTTP proxy for CLI-authenticated LLM providers.
+LLM Gateway — conversation runtime for Claude and other LLM providers.
 
-Persistent CLI sessions eliminate per-request startup overhead:
-  - Claude: single process with --input-format stream-json
-  - Gemini: warm process pool (spawn ahead, reuse)
-  - Ollama: direct HTTP (already fast)
+Three transports, one runtime:
+  POST /v1/chat                  — HTTP one-shot (backward compat)
+  POST /v1/conversation/stream   — SSE streaming, multi-turn via conversation_id
+  WS   /v1/conversation          — WebSocket full-duplex, multi-turn
+
+All Claude traffic uses persistent ClaudeConversation sessions
+(--input-format stream-json --output-format stream-json).
 
 Port: 5210
-Health: GET /health
-Chat:  POST /v1/chat
 """
 
 import asyncio
@@ -23,13 +24,16 @@ import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from sessions import get_or_create, close_session, run_cleanup_loop
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -60,6 +64,14 @@ class ChatResponse(BaseModel):
     text: str
     provider: str
     model: Optional[str] = None
+
+
+class ConversationStreamRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+    model: Optional[str] = "claude-sonnet-4-6"
+    mcp_config: Optional[str] = None
+    allowed_tools: Optional[list[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +270,13 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("%s CLI not found", name)
 
+    # Start idle session cleanup background task
+    cleanup_task = asyncio.create_task(run_cleanup_loop())
+
     logger.info("LLM Gateway ready on port %d", PORT)
     yield
+
+    cleanup_task.cancel()
     logger.info("LLM Gateway shutting down")
 
 
@@ -307,8 +324,16 @@ async def chat(req: ChatRequest):
         return ChatResponse(text=text, provider="gemini", model=req.model)
 
     elif req.provider in ("claude", "claude_code"):
-        text = await _claude_session.chat(full_prompt, req.model, timeout)
-        return ChatResponse(text=text, provider="claude", model=req.model)
+        # Use ClaudeConversation for a single-turn session, then close it
+        conv, cid = await get_or_create(None, model=req.model or "claude-sonnet-4-6")
+        text_parts = []
+        try:
+            async for event in conv.send(full_prompt):
+                if event.get("type") == "token":
+                    text_parts.append(event.get("text", ""))
+        finally:
+            await close_session(cid)
+        return ChatResponse(text="".join(text_parts), provider="claude", model=req.model)
 
     elif req.provider == "codex":
         # Codex uses same pattern as Gemini — one-off subprocess
@@ -332,6 +357,153 @@ async def chat(req: ChatRequest):
 
     else:
         raise HTTPException(400, f"Unknown provider: {req.provider}")
+
+
+# ---------------------------------------------------------------------------
+# SSE helpers
+# ---------------------------------------------------------------------------
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _stream_conversation(conv, message: str) -> AsyncIterator[str]:
+    """Yield SSE strings from a conversation.send() call."""
+    try:
+        async for event in conv.send(message):
+            event_type = event.get("type", "")
+            if event_type == "token":
+                yield _sse("token", {"text": event.get("text", "")})
+            elif event_type == "tool_call":
+                yield _sse("tool_call", {
+                    "name": event.get("name", ""),
+                    "input": event.get("input", {}),
+                    "id": event.get("id", ""),
+                })
+            elif event_type == "tool_result":
+                yield _sse("tool_result", {
+                    "name": event.get("name", ""),
+                    "resultLength": len(str(event.get("output", ""))),
+                    "id": event.get("id", ""),
+                })
+            elif event_type == "slow":
+                yield _sse("slow", {
+                    "gap_s": event.get("gap_s", 0),
+                    "elapsed_s": event.get("elapsed_s", 0),
+                })
+            elif event_type == "result":
+                yield _sse("result", {
+                    "cost_usd": event.get("cost_usd", 0),
+                    "exit_code": event.get("exit_code", 0),
+                })
+            elif event_type == "error":
+                yield _sse("error", {"message": event.get("message", "")})
+            elif event_type == "done":
+                yield _sse("done", {})
+                return
+    except Exception as e:
+        logger.error("stream_conversation error: %s", e)
+        yield _sse("error", {"message": str(e)})
+        yield _sse("done", {})
+
+
+# ---------------------------------------------------------------------------
+# SSE endpoint: POST /v1/conversation/stream
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/conversation/stream")
+async def conversation_stream(req: ConversationStreamRequest):
+    """SSE streaming conversation endpoint.
+
+    Creates a new session (conversation_id=None) or resumes an existing one.
+    Returns text/event-stream. Always ends with a 'done' event.
+    """
+    conv, cid = await get_or_create(
+        req.conversation_id,
+        model=req.model,
+        mcp_config=req.mcp_config,
+        allowed_tools=req.allowed_tools,
+    )
+
+    async def generate():
+        # First event: conversation_id so client can resume
+        yield _sse("conversation_id", {"conversation_id": cid})
+        async for chunk in _stream_conversation(conv, req.message):
+            yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# WebSocket endpoint: WS /v1/conversation
+# ---------------------------------------------------------------------------
+
+@app.websocket("/v1/conversation")
+async def conversation_ws(websocket: WebSocket):
+    """Full-duplex WebSocket conversation.
+
+    Client sends: {"type": "message", "content": "...", "conversation_id": "..."}
+    Server sends: {"type": "conversation_id"|"token"|"tool_call"|"tool_result"|"slow"|"result"|"done", ...}
+
+    One conversation_id per connection. Resumed via conversation_id in first message.
+    Session is closed when the WebSocket disconnects.
+    """
+    await websocket.accept()
+    cid: Optional[str] = None
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type", "message")
+
+            if msg_type == "close":
+                break
+
+            if msg_type != "message":
+                continue
+
+            content = data.get("content", data.get("message", ""))
+            incoming_cid = data.get("conversation_id")
+
+            # Get or create session (use client-provided cid if present)
+            if cid is None:
+                conv, cid = await get_or_create(
+                    incoming_cid,
+                    model=data.get("model", "claude-sonnet-4-6"),
+                    mcp_config=data.get("mcp_config"),
+                    allowed_tools=data.get("allowed_tools"),
+                )
+                # Tell client which conversation_id to use
+                await websocket.send_json({"type": "conversation_id", "conversation_id": cid})
+            else:
+                conv, _ = await get_or_create(cid)
+
+            # Stream response events
+            async for event in conv.send(content):
+                await websocket.send_json(event)
+                if event.get("type") == "done":
+                    break
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error("WebSocket error: %s", e)
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.send_json({"type": "done"})
+        except Exception:
+            pass
+    finally:
+        if cid:
+            await close_session(cid)
 
 
 # ---------------------------------------------------------------------------

@@ -105,6 +105,7 @@ class PlanConfig:
     target_level: str = "auto"
     direct_write: bool = True
     max_concurrent: int = 2
+    use_node_tree_planner: bool = False  # When True, uses parallel plan node tree (new Athena)
 
 
 # ---------------------------------------------------------------------------
