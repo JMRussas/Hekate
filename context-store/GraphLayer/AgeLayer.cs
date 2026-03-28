@@ -153,17 +153,150 @@ public class AgeLayer
     }
 
     /// <summary>
-    /// Create a directed edge between two nodes identified by their UUIDs.
+    /// Enqueue an edge creation into the outbox. Background worker drains to AGE.
     /// </summary>
     public async Task CreateEdge(Guid fromNodeId, Guid toNodeId, string edgeType)
     {
         if (!ValidEdgeTypes.Contains(edgeType))
             throw new ArgumentException($"Invalid edge type '{edgeType}'. Must be one of: {string.Join(", ", ValidEdgeTypes)}", nameof(edgeType));
 
+        try
+        {
+            await using var conn = new NpgsqlConnection(_connStr);
+            await conn.OpenAsync();
+            await using var cmd = new NpgsqlCommand(
+                "INSERT INTO graph_sync_outbox (operation, node_id, target_node_id, edge_type) " +
+                "VALUES ('create_edge', @from, @to, @etype)",
+                conn);
+            cmd.Parameters.AddWithValue("from", fromNodeId);
+            cmd.Parameters.AddWithValue("to", toNodeId);
+            cmd.Parameters.AddWithValue("etype", edgeType);
+            await cmd.ExecuteNonQueryAsync();
+        }
+        catch (Exception ex)
+        {
+            // Fallback: try direct
+            Console.WriteLine($"[GRAPH]    Warning: outbox insert failed for edge {fromNodeId}→{toNodeId}, trying direct: {ex.Message}");
+            var cypher = "MATCH (a:CodeNode {node_id: '" + fromNodeId + "'}), " +
+                         "(b:CodeNode {node_id: '" + toNodeId + "'}) " +
+                         "CREATE (a)-[:" + edgeType + "]->(b)";
+            await ExecuteCypherNoReturn(cypher);
+        }
+    }
+
+    /// <summary>
+    /// Execute a direct edge creation via Cypher (used by outbox worker, not callers).
+    /// </summary>
+    internal async Task ExecuteEdgeDirect(Guid fromNodeId, Guid toNodeId, string edgeType)
+    {
         var cypher = "MATCH (a:CodeNode {node_id: '" + fromNodeId + "'}), " +
                      "(b:CodeNode {node_id: '" + toNodeId + "'}) " +
                      "CREATE (a)-[:" + edgeType + "]->(b)";
         await ExecuteCypherNoReturn(cypher);
+    }
+
+    /// <summary>
+    /// Execute a direct vertex sync via Cypher (used by outbox worker, not callers).
+    /// </summary>
+    internal async Task ExecuteVertexSyncDirect(Guid nodeId, string nodeType, string? name)
+    {
+        var safeName = EscapeCypher(name ?? "");
+        var safeType = EscapeCypher(nodeType);
+        var cypher = $"MERGE (n:CodeNode {{node_id: '{nodeId}'}}) SET n.node_type = '{safeType}', n.name = '{safeName}'";
+        await ExecuteCypherNoReturn(cypher);
+    }
+
+    // ─── Outbox Drain Worker ────────────────────────────────────────
+
+    private const int MaxAttempts = 5;
+
+    /// <summary>
+    /// Drain pending outbox rows and execute them against AGE.
+    /// Called periodically by a background timer.
+    /// </summary>
+    public async Task<int> DrainOutbox(int batchSize = 50)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        // Read pending rows
+        await using var readCmd = new NpgsqlCommand(
+            "SELECT id, operation, node_id, node_type, name, target_node_id, edge_type, attempts " +
+            "FROM graph_sync_outbox WHERE status = 'pending' ORDER BY id LIMIT @limit",
+            conn);
+        readCmd.Parameters.AddWithValue("limit", batchSize);
+
+        var rows = new List<(long id, string op, Guid nodeId, string? nodeType, string? name, Guid? targetId, string? edgeType, int attempts)>();
+        await using (var reader = await readCmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                rows.Add((
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetGuid(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? (Guid?)null : reader.GetGuid(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.GetInt32(7)
+                ));
+            }
+        }
+
+        if (rows.Count == 0) return 0;
+
+        int synced = 0;
+        foreach (var (id, op, nodeId, nodeType, name, targetId, edgeType, attempts) in rows)
+        {
+            try
+            {
+                if (op == "sync_vertex" && nodeType != null)
+                {
+                    await ExecuteVertexSyncDirect(nodeId, nodeType, name);
+                }
+                else if (op == "create_edge" && targetId.HasValue && edgeType != null)
+                {
+                    await ExecuteEdgeDirect(nodeId, targetId.Value, edgeType);
+                }
+
+                // Mark synced
+                await using var ok = new NpgsqlCommand(
+                    "UPDATE graph_sync_outbox SET status = 'synced', synced_at = now() WHERE id = @id", conn);
+                ok.Parameters.AddWithValue("id", id);
+                await ok.ExecuteNonQueryAsync();
+                synced++;
+            }
+            catch (PostgresException ex)
+            {
+                var newStatus = attempts + 1 >= MaxAttempts ? "failed" : "pending";
+                await using var fail = new NpgsqlCommand(
+                    "UPDATE graph_sync_outbox SET status = @s, attempts = attempts + 1, error = @err WHERE id = @id", conn);
+                fail.Parameters.AddWithValue("s", newStatus);
+                fail.Parameters.AddWithValue("err", ex.MessageText);
+                fail.Parameters.AddWithValue("id", id);
+                await fail.ExecuteNonQueryAsync();
+
+                Console.WriteLine($"[GRAPH]    Outbox {op} failed for {nodeId} (attempt {attempts + 1}): {ex.MessageText}");
+            }
+        }
+
+        if (synced > 0)
+            Console.WriteLine($"[GRAPH]    Outbox drained: {synced}/{rows.Count} synced");
+
+        return synced;
+    }
+
+    /// <summary>
+    /// Count of pending outbox rows (for health checks).
+    /// </summary>
+    public async Task<int> GetOutboxPendingCount()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "SELECT COUNT(*) FROM graph_sync_outbox WHERE status = 'pending'", conn);
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync());
     }
 
     /// <summary>
@@ -292,27 +425,43 @@ public class AgeLayer
         return await ExecuteCypher(cypher, "result");
     }
 
-    // ─── Live Vertex Sync ────────────────────────────────────────────
+    // ─── Live Vertex Sync (via outbox) ─────────────────────────────
 
     /// <summary>
-    /// Sync a single node into AGE as a CodeNode vertex.
-    /// Lightweight alternative to SyncAllVertices for live use — called after
-    /// StoreTurn, CreateThread, and StoreExtractedNode so new nodes are
-    /// immediately queryable in the graph.
+    /// Enqueue a vertex sync into the outbox table. A background worker
+    /// drains the outbox and executes the Cypher. If the worker fails,
+    /// the row stays pending and retries on next drain cycle.
     /// </summary>
     public async Task SyncVertex(Guid nodeId, string nodeType, string? name)
     {
-        var safeName = EscapeCypher(name ?? "");
-        var safeType = EscapeCypher(nodeType);
-        var cypher = $"MERGE (n:CodeNode {{node_id: '{nodeId}'}}) SET n.node_type = '{safeType}', n.name = '{safeName}'";
-
         try
         {
-            await ExecuteCypherNoReturn(cypher);
+            await using var conn = new NpgsqlConnection(_connStr);
+            await conn.OpenAsync();
+            await using var cmd = new NpgsqlCommand(
+                "INSERT INTO graph_sync_outbox (operation, node_id, node_type, name) " +
+                "VALUES ('sync_vertex', @nid, @ntype, @nname)",
+                conn);
+            cmd.Parameters.AddWithValue("nid", nodeId);
+            cmd.Parameters.AddWithValue("ntype", nodeType);
+            cmd.Parameters.AddWithValue("nname", (object?)name ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync();
         }
-        catch (PostgresException ex)
+        catch (Exception ex)
         {
-            Console.WriteLine($"[GRAPH]    Warning: SyncVertex failed for {nodeType} {nodeId}: {ex.MessageText}");
+            // Last resort: try direct Cypher (old behavior) so we don't silently lose the sync
+            Console.WriteLine($"[GRAPH]    Warning: outbox insert failed for {nodeType} {nodeId}, trying direct: {ex.Message}");
+            try
+            {
+                var safeName = EscapeCypher(name ?? "");
+                var safeType = EscapeCypher(nodeType);
+                var cypher = $"MERGE (n:CodeNode {{node_id: '{nodeId}'}}) SET n.node_type = '{safeType}', n.name = '{safeName}'";
+                await ExecuteCypherNoReturn(cypher);
+            }
+            catch (PostgresException ex2)
+            {
+                Console.WriteLine($"[GRAPH]    Warning: direct SyncVertex also failed for {nodeType} {nodeId}: {ex2.MessageText}");
+            }
         }
     }
 

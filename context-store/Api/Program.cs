@@ -18,7 +18,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // --- Configuration ---
 var connStr = Environment.GetEnvironmentVariable("CODESTORAGE_CONNSTR")
-    ?? "Host=localhost;Port=5433;Database=code_storage;Username=postgres;Password=postgres";
+    ?? "Host=localhost;Port=5433;Database=code_storage;Username=postgres;Password=postgres;Maximum Pool Size=20";
 
 if (Environment.GetEnvironmentVariable("CODESTORAGE_CONNSTR") == null)
     Console.WriteLine("[WARN] CODESTORAGE_CONNSTR not set — using POC default credentials");
@@ -80,8 +80,51 @@ var app = builder.Build();
 
 app.UseCors();
 
-// --- Health check ---
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
+// --- Health check (real: Postgres + AGE + Ollama + outbox) ---
+app.MapGet("/api/health", async (CodeStoragePoc.GraphLayer.AgeLayer ageLayer) =>
+{
+    var health = new Dictionary<string, object> { ["status"] = "ok" };
+    try
+    {
+        await using var hconn = new NpgsqlConnection(connStr);
+        await hconn.OpenAsync();
+        await using var hcmd = new NpgsqlCommand("SELECT 1", hconn);
+        await hcmd.ExecuteScalarAsync();
+        health["postgres"] = true;
+    }
+    catch { health["postgres"] = false; health["status"] = "degraded"; }
+
+    try
+    {
+        await using var aconn = new NpgsqlConnection(connStr);
+        await aconn.OpenAsync();
+        await using var acmd = new NpgsqlCommand("SELECT * FROM ag_catalog.ag_graph LIMIT 1", aconn);
+        await acmd.ExecuteScalarAsync();
+        health["age"] = true;
+    }
+    catch { health["age"] = false; health["status"] = "degraded"; }
+
+    try
+    {
+        using var hc = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        var ollamaUrl = Environment.GetEnvironmentVariable("OLLAMA_URL") ?? "http://localhost:11434";
+        var r = await hc.GetAsync(ollamaUrl + "/");
+        health["ollama"] = r.IsSuccessStatusCode;
+    }
+    catch { health["ollama"] = false; }
+
+    try { health["outbox_pending"] = await ageLayer.GetOutboxPendingCount(); }
+    catch { health["outbox_pending"] = -1; }
+
+    return Results.Ok(health);
+});
+
+// --- Graph sync outbox background worker (drains every 3s) ---
+var outboxTimer = new System.Threading.Timer(async _ =>
+{
+    try { await age.DrainOutbox(); }
+    catch (Exception ex) { Console.WriteLine($"[GRAPH]    Outbox drain error: {ex.Message}"); }
+}, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(3));
 
 // --- Chat endpoint (SSE streaming) ---
 app.MapPost("/api/chat", async (HttpContext http, ChatService chat) =>
@@ -493,6 +536,7 @@ catch (Exception ex)
 
 app.Lifetime.ApplicationStopping.Register(() =>
 {
+    outboxTimer.Dispose();
     dispatcher.DisposeAsync().AsTask().GetAwaiter().GetResult();
 });
 

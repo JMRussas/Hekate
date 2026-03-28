@@ -99,6 +99,27 @@ public static class Schema
             // IVFFlat may fail on empty table — will retry after seeding
         }
 
+        // Graph sync outbox — ensures AGE vertex/edge sync is reliable.
+        // Operations write here first, background worker drains to AGE.
+        await Execute(conn, """
+            CREATE TABLE IF NOT EXISTS graph_sync_outbox (
+                id BIGSERIAL PRIMARY KEY,
+                operation TEXT NOT NULL,
+                node_id UUID NOT NULL,
+                node_type TEXT,
+                name TEXT,
+                target_node_id UUID,
+                edge_type TEXT,
+                payload JSONB DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INT NOT NULL DEFAULT 0,
+                error TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                synced_at TIMESTAMPTZ
+            );
+            CREATE INDEX IF NOT EXISTS idx_outbox_status ON graph_sync_outbox(status) WHERE status = 'pending';
+        """);
+
         // Notification trigger: fires NOTIFY on every node mutation
         await Execute(conn, """
             CREATE OR REPLACE FUNCTION notify_node_changed()
