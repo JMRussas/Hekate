@@ -624,35 +624,41 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
 
         # ---------------------------------------------------------------
         # Step 4: Thorough review (Model B, fresh prompt)
+        # Skip review for L1 — it's a quick plan, review adds latency
+        # and often rejects over minor dependency nits.
         # ---------------------------------------------------------------
-        for review_cycle in range(MAX_REVIEW_CYCLES + 1):
-            narrate("Sending plan for thorough review (Model B)...")
+        review = {"approved": True, "confidence": 1.0, "feedback": "", "gaps": []}
+        if current_level.value <= PlanLevel.L1.value:
+            narrate("Skipping review for L1 plan (quick mode)")
+        else:
+            for review_cycle in range(MAX_REVIEW_CYCLES + 1):
+                narrate("Sending plan for thorough review (Model B)...")
 
-            review = await _thorough_review(
-                current_plan, requirements, project_name,
-                level=current_level,
-            )
-
-            if review.get("approved"):
-                narrate(f"Review approved (confidence: {review.get('confidence', 0):.0%})")
-                break
-            else:
-                feedback = review.get("feedback", "")
-                narrate(f"Review rejected: {feedback[:100]}...")
-
-                if review_cycle >= MAX_REVIEW_CYCLES:
-                    narrate("Max review cycles reached, proceeding with current plan")
-                    break
-
-                # Send feedback back to Model A
-                narrate("Sending review feedback to generator...")
-                fixed = await _deepen_plan(
-                    project_id, current_plan, current_level,
-                    conversation_id, requirements, db,
-                    review_feedback=feedback,
+                review = await _thorough_review(
+                    current_plan, requirements, project_name,
+                    level=current_level,
                 )
-                current_plan = fixed
-                conversation_id = fixed.get("conversation_id", conversation_id)
+
+                if review.get("approved"):
+                    narrate(f"Review approved (confidence: {review.get('confidence', 0):.0%})")
+                    break
+                else:
+                    feedback = review.get("feedback", "")
+                    narrate(f"Review rejected: {feedback[:100]}...")
+
+                    if review_cycle >= MAX_REVIEW_CYCLES:
+                        narrate("Max review cycles reached, proceeding with current plan")
+                        break
+
+                    # Send feedback back to Model A
+                    narrate("Sending review feedback to generator...")
+                    fixed = await _deepen_plan(
+                        project_id, current_plan, current_level,
+                        conversation_id, requirements, db,
+                        review_feedback=feedback,
+                    )
+                    current_plan = fixed
+                    conversation_id = fixed.get("conversation_id", conversation_id)
 
         # ---------------------------------------------------------------
         # Step 5: TDD phase (if enabled)

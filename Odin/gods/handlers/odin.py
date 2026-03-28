@@ -137,22 +137,22 @@ _TIER_MAP: dict[tuple[str, str], str] = {
     ("code", "simple"): "claude_code",
     ("code", "medium"): "claude_code",
     ("code", "complex"): "claude_code",
-    ("research", "simple"): "gemini_cli",
-    ("research", "medium"): "gemini_cli",
+    ("research", "simple"): "claude_code",
+    ("research", "medium"): "claude_code",
     ("research", "complex"): "claude_code",
-    ("analysis", "simple"): "gemini_cli",
+    ("analysis", "simple"): "claude_code",
     ("analysis", "medium"): "claude_code",
     ("analysis", "complex"): "claude_code",
-    ("integration", "simple"): "gemini_cli",
+    ("integration", "simple"): "claude_code",
     ("integration", "medium"): "claude_code",
     ("integration", "complex"): "claude_code",
-    ("documentation", "simple"): "gemini_cli",
+    ("documentation", "simple"): "claude_code",
     ("documentation", "medium"): "claude_code",
     ("asset", "simple"): "ollama",
     ("asset", "medium"): "ollama",
 }
 
-_FALLBACK = ["claude_code", "gemini_cli", "ollama"]
+_FALLBACK = ["claude_code", "ollama"]
 
 
 def _select_provider(

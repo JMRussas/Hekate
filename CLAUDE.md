@@ -4,11 +4,11 @@ Unified AI agent platform: gods pipeline (event-driven task execution) + orchest
 
 ## Execution Architecture
 
-**Gods pipeline is the active execution engine.** The monolith orchestration services (executor.py, task_lifecycle.py, sentinel/) are legacy — still deployed but being replaced.
+**Gods pipeline is the active execution engine.** The monolith orchestration services (executor.py, task_lifecycle.py, sentinel/) are legacy — still deployed but replaced.
 
 ```
-Project created → Athena plans (Gemini, L1-L5) → Odin dispatches
-  → Hermes executes (Claude Code CLI, async) → Mimir verifies (LLM Gateway)
+Project created → Athena plans (Claude via LLM Gateway, L1) → Odin dispatches
+  → Hermes executes (Claude Code CLI, async) → Mimir verifies (Claude agent or gateway)
   → Odin manages lifecycle (unblock deps → wave progression → complete)
 ```
 
@@ -25,22 +25,21 @@ Key files: `Odin/gods/pipeline.py` (event loop), `Odin/gods/handlers/registratio
 
 ## Deployment
 
-```bash
-# Full deploy — always use this, never partial copies
-bash scripts/deploy.sh
-```
+Deploy via Hades admin service (MCP tool `mcp__hades-admin__deploy` or HTTP `POST http://localhost:5201/deploy`):
 
-The deploy script (`scripts/deploy.sh`):
-1. Stops all NSSM services
+The deploy handler (`hades/server.py`):
+1. Stops all managed NSSM services
 2. `dotnet publish` context store → `C:\Hekate\context-store\` (binary)
 3. `cp -r` orchestration source → `C:\Hekate\orchestration\` (Python)
-4. Syncs migrations, DB, config
-5. `npm run build` orchestration frontend
-6. Python syntax check on all `.py` files
-7. Starts all NSSM services
-8. Health checks + verification
+4. `cp -r` hades source → `C:\Hekate\hades\`
+5. `cp -r` Odin gods + key files → `C:\Hekate\Odin\`
+6. `cp -r` context-store/tools → `C:\Hekate\context-store\tools\`
+7. Syncs migrations, DB, config
+8. `npm run build` orchestration frontend
+9. Python syntax check on all `.py` files
+10. Starts all NSSM services + health checks
 
-**After any code change**, run the full deploy. No shortcuts — partial deploys cause missing migrations, stale code, broken frontends.
+**After any code change**, run the full deploy. No shortcuts — partial deploys cause stale code.
 
 ## NSSM Services
 
@@ -48,16 +47,19 @@ All services run via NSSM from `C:\Hekate`, **not** from the source repo.
 
 | Service | Binary/Script | Port | Notes |
 |---------|--------------|------|-------|
-| HekateOrchestration | Python 3.11 `run.py` | 5200 | Needs `HOME`, `APPDATA`, `USERPROFILE`, `GEMINI_FORCE_FILE_STORAGE` env vars |
+| HekateEngine | Python 3.11 `run_hekate.py` | 5200 | Gods pipeline + API. Needs `HOME`, `APPDATA`, `USERPROFILE`, `GEMINI_FORCE_FILE_STORAGE` env vars |
 | HekateContextStore | `Api.exe` (dotnet publish) | 5102 | Depends on Docker (Postgres) |
-| HekateServer | `HekateMcp.Server.exe` | 5110 | hekate-mcp code analysis |
-| HekatePythonWorker | `HekateMcp.Worker.Python.exe` | 9200 | |
-| HekateTypeScriptWorker | similar | 9202 | |
-| HekateCppWorker | similar | 9201 | |
+| HekateServer | `HekateMcp.Server.exe` | 5110 | Code analysis (Roslyn/Jedi/TS), HTTP MCP transport |
+| HekatePythonWorker | `HekateMcp.Worker.Python.exe` | 9200 | Jedi worker (internal, not client-facing) |
+| HekateTypeScriptWorker | similar | 9202 | TS worker (internal) |
+| HekateCppWorker | similar | 9201 | C++ worker (internal) |
 | HekateAdmin | Python 3.14 `server.py` | 5201 | Hades — admin service. Needs `PATH` with nssm + python |
-| HekateLLMGateway | Python 3.11 `server.py` | 5210 | LLM proxy — runs as user for CLI OAuth token access |
+| HekateLLMGateway | Python 3.11 `server.py` | 5210 | LLM proxy — LocalSystem with HOME=jruss for CLI OAuth |
+| HekateHadesMcp | Python 3.11 `mcp_bridge.py` | 5211 | Hades MCP bridge (SSE transport) |
+| HekatePrometheusMcp | Python 3.11 `prometheus_mcp.py` | 5212 | Project/task management MCP (SSE transport) |
+| HekateAgentContextMcp | Python 3.11 `server.py` | 5213 | Agent context MCP (SSE transport) |
 
-### NSSM Environment (HekateOrchestration)
+### NSSM Environment (HekateEngine)
 
 The service runs as LocalSystem. These env vars are set via `nssm set AppEnvironmentExtra`:
 - `PATH` — must include: `C:\Program Files\nodejs`, `C:\Users\jruss\AppData\Roaming\npm`, Python311
@@ -68,18 +70,19 @@ The service runs as LocalSystem. These env vars are set via `nssm set AppEnviron
 
 ### Service Management
 
-```bash
-bash scripts/restart.sh status    # check all services
-bash scripts/restart.sh restart   # restart core (Orchestration + Context Store)
-bash scripts/restart.sh restart --all  # restart everything including MCP workers
-```
+Use Hades MCP tools or HTTP API:
+- `mcp__hades-admin__list_services` — check all services
+- `mcp__hades-admin__restart_service(name)` — restart a service
+- `mcp__hades-admin__restart_core` — restart Engine + Context Store
+- `mcp__hades-admin__restart_all` — restart everything
+- `mcp__hades-admin__deploy` — full deploy from source repo
 
 ## Known Fragility
 
 ### CLI Executor Auth Under NSSM
-- **Claude Code**: Works. Auth stored in `~/.claude/.credentials.json` (flat file, readable by LocalSystem with HOME set).
-- **Gemini CLI**: Works with `GEMINI_FORCE_FILE_STORAGE=true`. Token in `~/.gemini/oauth_creds.json`. Without the env var, uses Windows Credential Manager which LocalSystem can't access.
-- **Codex CLI**: Disabled (low quota). Works with `gpt-5.2-codex` model. Auth in `~/.codex/auth.json`. Models `gpt-5.3-codex` and `gpt-5.4` are broken on ChatGPT subscription.
+- **Claude Code**: Works. Auth stored in `~/.claude/.credentials.json` (flat file, readable by LocalSystem with HOME set). First call after restart is slow (60-120s cold start).
+- **Gemini CLI**: Broken (exit code 1, auth issue). All tasks routed to claude_code instead. Token in `~/.gemini/oauth_creds.json`.
+- **Codex CLI**: Disabled (low quota, ChatGPT subscription broken).
 
 ### Executor-Generated Code
 - Executors (Claude/Gemini/Codex) sometimes write broken Python — raw newlines in strings instead of `\n`. The deploy script runs a syntax check before starting services.
@@ -187,23 +190,27 @@ Read **on-demand** when working in the relevant area.
 | Postgres (AGE + pgvector) | 5433 | `context-store/docker-compose.yml` |
 | Context Store API | 5102 | `CODESTORAGE_CONNSTR` env var |
 | Context Store UI | 5179 | Vite dev server |
-| Orchestration API + Dashboard | 5200 | `orchestration/config.json` |
+| Hekate Engine (gods pipeline + API) | 5200 | SQLite DB |
 | Hades (admin) | 5201 | `HEKATE_ROOT`, `HEKATE_SOURCE` env vars |
+| hekate-mcp (code analysis) | 5110 | NSSM `HekateServer`, HTTP MCP transport |
+| LLM Gateway | 5210 | NSSM `HekateLLMGateway` |
+| Hades MCP | 5211 | SSE transport |
+| Prometheus MCP | 5212 | SSE transport |
+| Agent Context MCP | 5213 | SSE transport |
 | Ollama | 11434 | `OLLAMA_URL` env var |
-| hekate-mcp | 5110 | NSSM `HekateServer` |
-| LLM Gateway | 5210 | NSSM `HekateLLMGateway`, Python 3.11 |
 
-## Model Routing
+## Model Routing (Gods Pipeline)
+
+All task types route to `claude_code` via LLM Gateway (port 5210). Gemini disabled.
 
 | Tier | Provider | Used For | Status |
 |------|----------|----------|--------|
-| `claude_code` | Claude Code CLI | Medium/complex code, integration | Active |
-| `gemini_cli` | Gemini CLI | Simple code, research, analysis | Active (needs `GEMINI_FORCE_FILE_STORAGE=true`) |
-| `codex_cli` | Codex CLI | Simple code | Disabled (low quota, use `gpt-5.2-codex` to re-enable) |
-| `ollama` | Ollama (local) | Analysis, documentation | Active |
-| `haiku` | Claude Haiku (API) | Verification, knowledge extraction | Active (routes through CLI if no API key) |
-| `sonnet` | Claude Sonnet (API) | Complex tasks | Active (routes through CLI if no API key) |
-| `opus` | Claude Opus (API) | Critical tasks | Active (routes through CLI if no API key) |
+| `claude_code` | Claude Code CLI | All code, research, analysis, integration, docs | Active — default for everything |
+| `ollama` | Ollama (local) | Asset tasks only | Active |
+| `gemini_cli` | Gemini CLI | — | Disabled (exit code 1, auth broken) |
+| `codex_cli` | Codex CLI | — | Disabled (ChatGPT subscription broken) |
+
+Tier map: `Odin/gods/handlers/odin.py` `_TIER_MAP`. Fallback chain: `["claude_code", "ollama"]`.
 
 ## Environment
 

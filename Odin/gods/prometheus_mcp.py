@@ -25,6 +25,8 @@ from typing import Optional
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("prometheus")
@@ -42,23 +44,36 @@ mcp = FastMCP("prometheus", port=_PORT) if _PORT else FastMCP("prometheus")
 _token: str | None = None
 
 
-async def _login() -> str:
-    """Login and return a Bearer token. Raises on failure."""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{API}/auth/login",
-            json={"email": _HEKATE_EMAIL, "password": _HEKATE_PASSWORD},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["access_token"]
+async def _login() -> str | None:
+    """Login and return a Bearer token. Returns None if auth not available."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{API}/auth/login",
+                json={"email": _HEKATE_EMAIL, "password": _HEKATE_PASSWORD},
+            )
+            if resp.status_code in (404, 501):
+                logger.info("Auth not available (engine has no login endpoint), proceeding without token")
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            return data["access_token"]
+    except httpx.ConnectError:
+        logger.warning("Cannot connect to engine for login, proceeding without token")
+        return None
+
+
+_auth_checked = False
 
 
 async def _auth_headers() -> dict:
-    global _token
-    if not _token:
+    global _token, _auth_checked
+    if not _auth_checked:
+        _auth_checked = True
         _token = await _login()
-    return {"Authorization": f"Bearer {_token}"}
+    if _token:
+        return {"Authorization": f"Bearer {_token}"}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +402,15 @@ async def get_events(project_id: str, limit: int = 20) -> str:
             "source": e.get("source", ""),
         })
     return json.dumps(summary, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+@mcp.custom_route('/health', methods=['GET'])
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({'status': 'ok', 'service': 'prometheus', 'port': 5212})
 
 
 # ---------------------------------------------------------------------------
