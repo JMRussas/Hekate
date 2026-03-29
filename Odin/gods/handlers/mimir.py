@@ -133,95 +133,46 @@ async def _call_verifier(
     task_id: str,
     gateway_url: str = "http://localhost:5210",
 ) -> dict:
-    """Spawn a Claude agent to verify task output via prometheus MCP tools.
+    """Verify task output via LLM gateway and submit verdict to engine API.
 
-    The agent calls task_detail then submit_verification. On any agent
-    failure (no binary, timeout, non-zero exit) falls back to the LLM
-    gateway verifier so verification is never silently skipped.
+    Uses the gateway for LLM judgment, then calls /verify directly to
+    update the DB and emit relay events. The agent subprocess pattern was
+    unreliable (Claude CLI didn't discover MCP tools fast enough).
 
-    Returns one of:
-      {"verdict": "_agent_submitted", ...}  — agent called submit_verification
-      {"verdict": "passed|gaps_found|human_needed", ...}  — gateway fallback
+    Returns {verdict: "passed"|"gaps_found"|"human_needed", confidence: float, feedback: str}.
+    Also calls /verify API to emit relay events for wave progression.
     """
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        logger.warning("Mimir: claude CLI not found, falling back to gateway verifier")
-        return await _call_verifier_gateway(
-            task_title=task_title,
-            task_description=task_description,
-            output_text=output_text,
-            gateway_url=gateway_url,
-        )
+    import httpx
 
-    prompt = (
-        f"You are verifying whether a completed task's output satisfies its requirements.\n\n"
-        f"Task ID: {task_id}\n"
-        f"Task: {task_title}\n\n"
-        f"Steps:\n"
-        f"1. Call task_detail(task_id='{task_id}') to read the full output\n"
-        f"2. Assess whether the output satisfies the task description\n"
-        f"3. Call submit_verification with your verdict:\n"
-        f"   - verdict='passed': output is complete and correct\n"
-        f"   - verdict='gaps_found': output has issues (describe them in feedback)\n"
-        f"   - verdict='human_needed': ambiguous, requires human judgment\n\n"
-        f"You MUST call submit_verification before finishing. Do not just reason — act."
+    # Get verdict from LLM gateway
+    result = await _call_verifier_gateway(
+        task_title=task_title,
+        task_description=task_description,
+        output_text=output_text,
+        gateway_url=gateway_url,
     )
 
-    # Write MCP config to a tempfile so the path is always absolute and clean
-    import tempfile
-    config_content = _MCP_CONFIG_TEMPLATE.format(
-        prometheus_script=_PROMETHEUS_SCRIPT.replace("\\", "/"),
-    )
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False, prefix="mimir_mcp_"
-    ) as f:
-        f.write(config_content)
-        mcp_config_path = f.name
+    verdict = result.get("verdict", "human_needed")
+    feedback = result.get("feedback", "")
+    confidence = result.get("confidence", 0.5)
 
-    allowed_tools = "mcp__prometheus__task_detail,mcp__prometheus__submit_verification"
-    cmd = [
-        claude_bin,
-        "--allowedTools", allowed_tools,
-        "--mcp-config", mcp_config_path,
-        "-p", prompt,
-        "--output-format", "text",
-    ]
-
-    logger.info("Mimir: spawning agent for task %s verification", task_id[:8])
-
+    # Submit verdict to engine API — this emits relay events for wave progression
+    engine_url = os.environ.get("HEKATE_ENGINE_URL", "http://localhost:5200")
     try:
-        returncode, stdout, stderr = await _spawn_agent(cmd, os.environ.copy())  # inherit full env
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(f"{engine_url}/api/tasks/{task_id}/verify", json={
+                "verdict": verdict,
+                "feedback": feedback,
+                "confidence": confidence,
+            })
+            if resp.status_code == 200:
+                logger.info("Mimir: submitted %s verdict for task %s via /verify API", verdict, task_id[:8])
+            else:
+                logger.warning("Mimir: /verify returned %d for task %s", resp.status_code, task_id[:8])
     except Exception as e:
-        logger.error("Mimir: agent spawn error for task %s: %s", task_id[:8], e)
-        returncode, stderr = -1, str(e).encode()
-    finally:
-        try:
-            os.unlink(mcp_config_path)
-        except OSError:
-            pass
+        logger.warning("Mimir: failed to call /verify for task %s: %s", task_id[:8], e)
 
-    if returncode == -1 and stderr == b"timeout":
-        logger.warning("Mimir: agent timed out for task %s, falling back to gateway", task_id[:8])
-        return await _call_verifier_gateway(
-            task_title=task_title,
-            task_description=task_description,
-            output_text=output_text,
-            gateway_url=gateway_url,
-        )
-
-    if returncode != 0:
-        err = stderr.decode(errors="replace")[:300] if isinstance(stderr, bytes) else str(stderr)[:300]
-        logger.warning("Mimir: agent exited %d for task %s (%s), falling back to gateway",
-                       returncode, task_id[:8], err)
-        return await _call_verifier_gateway(
-            task_title=task_title,
-            task_description=task_description,
-            output_text=output_text,
-            gateway_url=gateway_url,
-        )
-
-    logger.info("Mimir: agent completed for task %s", task_id[:8])
-    return {"verdict": "_agent_submitted", "confidence": 1.0, "feedback": ""}
+    return result
 
 
 async def _call_verifier_gateway(

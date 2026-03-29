@@ -80,12 +80,22 @@ def _relay_event_type(db):
 class TestCallVerifier:
 
     @pytest.mark.asyncio
-    async def test_agent_success_returns_agent_submitted(self):
-        """When the agent exits 0, _call_verifier returns _agent_submitted."""
+    async def test_gateway_verifier_returns_verdict_and_calls_verify_api(self):
+        """_call_verifier uses gateway for LLM judgment and calls /verify API."""
         from gods.handlers.mimir import _call_verifier
 
-        with patch("gods.handlers.mimir._spawn_agent", new=AsyncMock(return_value=(0, b"done", b""))) as mock_spawn, \
-             patch("gods.handlers.mimir.shutil.which", return_value="/usr/bin/claude"):
+        gateway_result = {"verdict": "passed", "confidence": 0.9, "feedback": "all good"}
+        with patch("gods.handlers.mimir._call_verifier_gateway", new=AsyncMock(return_value=gateway_result)), \
+             patch("httpx.AsyncClient") as mock_client_cls:
+            # Mock the /verify API call
+            mock_resp = AsyncMock()
+            mock_resp.status_code = 200
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_resp)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
             result = await _call_verifier(
                 task_title="Feature X",
                 task_description="Add feature X",
@@ -93,8 +103,11 @@ class TestCallVerifier:
                 task_id="task-abc-123",
             )
 
-        assert result["verdict"] == "_agent_submitted"
-        assert mock_spawn.called
+        assert result["verdict"] == "passed"
+        # Verify /verify API was called
+        mock_client.post.assert_called_once()
+        call_url = mock_client.post.call_args[0][0]
+        assert "/api/tasks/task-abc-123/verify" in call_url
 
     @pytest.mark.asyncio
     async def test_agent_timeout_falls_back_to_gateway(self):
