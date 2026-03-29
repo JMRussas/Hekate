@@ -27,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -35,6 +36,26 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger("gods.pipeline")
+
+
+def idem_key(*parts: str) -> str:
+    """Build an idempotency key from parts. Returns a short hash.
+
+    Usage: idem_key("hermes", task_id, "dispatch") → deterministic key
+    """
+    raw = "|".join(str(p) for p in parts)
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def is_duplicate_key_error(e: Exception) -> bool:
+    """Check if an exception is a unique/duplicate key constraint violation.
+
+    Works for both asyncpg (UniqueViolationError) and SQLite (UNIQUE constraint failed).
+    """
+    if type(e).__name__ == "UniqueViolationError":
+        return True
+    err = str(e).lower()
+    return "unique" in err or "duplicate" in err or "constraint" in err
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +81,7 @@ class Emit:
     payload: dict[str, Any]
     source: str = ""
     severity: str = "info"
+    idempotency_key: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -569,13 +591,111 @@ class Pipeline:
         source = emit.source or self.source_name
         payload_str = json.dumps(emit.payload, default=str)
         ts = time.time()
+        key = emit.idempotency_key
 
-        await self.db.execute_write(
-            "INSERT INTO god_relay_events "
-            "(event_type, source, payload, severity, created_at) "
-            "VALUES ($1, $2, $3, $4, $5)",
-            (emit.event_type, source, payload_str, emit.severity, ts),
-        )
+        if key:
+            # Idempotent insert — skip if key already exists
+            try:
+                await self.db.execute_write(
+                    "INSERT INTO god_relay_events "
+                    "(event_type, source, payload, severity, idempotency_key, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    (emit.event_type, source, payload_str, emit.severity, key, ts),
+                )
+            except Exception as e:
+                if is_duplicate_key_error(e):
+                    logger.debug("Emit dedup: key %s already exists, skipping", key[:16])
+                    return
+                raise
+        else:
+            await self.db.execute_write(
+                "INSERT INTO god_relay_events "
+                "(event_type, source, payload, severity, created_at) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                (emit.event_type, source, payload_str, emit.severity, ts),
+            )
+
+    async def _emit_on_conn(self, tx, emit: Emit):
+        """Emit an event within an existing transaction."""
+        source = emit.source or self.source_name
+        payload_str = json.dumps(emit.payload, default=str)
+        ts = time.time()
+        key = emit.idempotency_key
+
+        if key:
+            await tx.execute_write(
+                "INSERT INTO god_relay_events "
+                "(event_type, source, payload, severity, idempotency_key, created_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                (emit.event_type, source, payload_str, emit.severity, key, ts),
+            )
+        else:
+            await tx.execute_write(
+                "INSERT INTO god_relay_events "
+                "(event_type, source, payload, severity, created_at) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                (emit.event_type, source, payload_str, emit.severity, ts),
+            )
+
+    async def transition_and_emit(
+        self,
+        task_id: str,
+        new_state: str,
+        emits: list[Emit],
+        *,
+        extra_fields: dict[str, Any] | None = None,
+        extra_sql: str = "",
+        extra_params: tuple = (),
+        source: str = "",
+    ):
+        """Atomically transition a task's state AND write relay events.
+
+        Both the status UPDATE and all relay INSERTs happen in one transaction.
+        If any part fails, everything rolls back — no split-brain.
+        """
+        from gods.task_states import validate_transition
+
+        # Build the UPDATE statement
+        set_parts = ["status = $1", "updated_at = $2"]
+        params: list[Any] = [new_state, time.time()]
+
+        if extra_fields:
+            for col, val in extra_fields.items():
+                idx = len(params) + 1
+                set_parts.append(f"{col} = ${idx}")
+                params.append(val)
+
+        if extra_sql:
+            set_parts.append(extra_sql)
+            params.extend(extra_params)
+
+        task_id_idx = len(params) + 1
+        params.append(task_id)
+
+        update_sql = f"UPDATE tasks SET {', '.join(set_parts)} WHERE id = ${task_id_idx}"
+
+        async with self.db.transaction() as tx:
+            # Check current state for validation
+            row = await tx.fetchone("SELECT status FROM tasks WHERE id = $1", (task_id,))
+            if not row:
+                raise ValueError(f"Task {task_id} not found")
+
+            current = row["status"] if isinstance(row, dict) else row[0]
+            if validate_transition(current, new_state):
+                logger.info("TaskState: %s %s -> %s%s",
+                            task_id[:8], current, new_state,
+                            f" ({source})" if source else "")
+            else:
+                logger.warning("TaskState: INVALID %s %s -> %s%s (allowing — soft enforcement)",
+                               task_id[:8], current, new_state,
+                               f" ({source})" if source else "")
+
+            # Update task status
+            await tx.execute_write(update_sql, tuple(params))
+
+            # Write all emits in the same transaction
+            for e in emits:
+                await self._emit_on_conn(tx, e)
 
     async def emit(
         self,
@@ -583,12 +703,14 @@ class Pipeline:
         payload: dict,
         source: str = "",
         severity: str = "info",
+        idempotency_key: str | None = None,
     ):
         await self._emit(Emit(
             event_type=event_type,
             payload=payload,
             source=source or self.source_name,
             severity=severity,
+            idempotency_key=idempotency_key,
         ))
 
     # ------------------------------------------------------------------

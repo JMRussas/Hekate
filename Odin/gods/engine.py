@@ -17,6 +17,7 @@ import logging
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -76,11 +77,41 @@ def _pg_rewrite(sql: str) -> str:
     return sql
 
 
+class _PgTxProxy:
+    """Transaction-scoped DB proxy — all ops go through the same connection."""
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute_write(self, sql: str, params: tuple = ()):
+        sql = _pg_rewrite(sql)
+        await self._conn.execute(sql, *params)
+
+    async def fetchone(self, sql: str, params: tuple = ()):
+        sql = _pg_rewrite(sql)
+        row = await self._conn.fetchrow(sql, *params)
+        return dict(row) if row else None
+
+    async def fetchall(self, sql: str, params: tuple = ()):
+        sql = _pg_rewrite(sql)
+        rows = await self._conn.fetch(sql, *params)
+        return [dict(r) for r in rows]
+
+
 class PostgresDB:
     """Async Postgres adapter using asyncpg connection pool."""
 
     def __init__(self, pool):
         self._pool = pool
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Atomic transaction — rolls back on exception."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                yield _PgTxProxy(conn)
 
     async def execute_write(self, sql: str, params: tuple = ()):
         sql = _pg_rewrite(sql)
@@ -103,11 +134,50 @@ class PostgresDB:
         await self._pool.close()
 
 
+class _SqliteTxProxy:
+    """Transaction-scoped DB proxy — all ops go through the same connection, no auto-commit."""
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute_write(self, sql: str, params: tuple = ()):
+        sql = _sqlite_translate(sql)
+        await self._conn.execute(sql, params)
+        # No commit — transaction boundary handles it
+
+    async def fetchone(self, sql: str, params: tuple = ()):
+        sql = _sqlite_translate(sql)
+        async with self._conn.execute(sql, params) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def fetchall(self, sql: str, params: tuple = ()):
+        sql = _sqlite_translate(sql)
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+
 class SqliteDB:
     """Async SQLite adapter for tests — translates $N → ?."""
 
     def __init__(self, conn):
         self._conn = conn
+        self._tx_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Atomic transaction — rolls back on exception."""
+        async with self._tx_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield _SqliteTxProxy(self._conn)
+                await self._conn.commit()
+            except Exception:
+                await self._conn.rollback()
+                raise
 
     async def execute_write(self, sql: str, params: tuple = ()):
         sql = _sqlite_translate(sql)
@@ -220,8 +290,11 @@ CREATE TABLE IF NOT EXISTS god_relay_events (
     source TEXT NOT NULL,
     payload TEXT DEFAULT '{}',
     severity TEXT DEFAULT 'info',
+    idempotency_key TEXT,
     created_at REAL NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_idempotency
+    ON god_relay_events (idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS god_registry (
     name TEXT PRIMARY KEY,
@@ -312,8 +385,11 @@ CREATE TABLE IF NOT EXISTS god_relay_events (
     source TEXT NOT NULL,
     payload TEXT DEFAULT '{}',
     severity TEXT DEFAULT 'info',
+    idempotency_key TEXT,
     created_at DOUBLE PRECISION NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_idempotency
+    ON god_relay_events (idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS god_registry (
     name TEXT PRIMARY KEY,
@@ -375,6 +451,25 @@ class HekateEngine:
                     await self.db.execute_write(stmt, ())
                 except Exception:
                     pass  # Table already exists
+
+        # Idempotent migrations — add columns to existing tables
+        for migration in [
+            "ALTER TABLE god_relay_events ADD COLUMN idempotency_key TEXT",
+        ]:
+            try:
+                await self.db.execute_write(migration, ())
+            except Exception:
+                pass  # Column already exists
+
+        # Ensure unique index on idempotency_key (idempotent)
+        try:
+            await self.db.execute_write(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_idempotency "
+                "ON god_relay_events (idempotency_key) WHERE idempotency_key IS NOT NULL",
+                (),
+            )
+        except Exception:
+            pass
 
     async def recover_stuck_tasks(self):
         """Reset tasks/projects stuck from a previous crash.

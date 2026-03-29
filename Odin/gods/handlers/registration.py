@@ -18,7 +18,7 @@ from gods.handlers.athena_deepen import athena_deepen
 from gods.handlers.athena_complete import athena_bubble_up, athena_materialize
 from gods.handlers.odin import (
     odin_start, odin_tick, odin_dispatch,
-    odin_lifecycle, odin_handle_diagnosis,
+    odin_lifecycle, make_odin_handle_diagnosis,
 )
 from gods.handlers.mimir import (
     mimir_review,
@@ -79,7 +79,7 @@ def register_all_handlers(
     pipeline.register("project_tick", odin_dispatch)
     pipeline.register("tick", odin_tick)
     pipeline.register("task_verified", odin_lifecycle)
-    pipeline.register("task_diagnosis", odin_handle_diagnosis)
+    pipeline.register("task_diagnosis", make_odin_handle_diagnosis(pipeline))
 
     # Hermes — async execution (non-blocking)
     pipeline.register("dispatch_command", hermes.handle_dispatch)

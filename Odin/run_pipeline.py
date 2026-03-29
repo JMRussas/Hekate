@@ -19,6 +19,7 @@ import os
 import sys
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 # Add Odin to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -50,17 +51,51 @@ DB_PATH = os.environ.get(
 # Thin DB adapter — wraps aiosqlite to match the protocol our handlers expect
 # ---------------------------------------------------------------------------
 
+class _SqliteTxProxy:
+    """Transaction-scoped proxy — no auto-commit."""
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute_write(self, sql: str, params: tuple = ()):
+        await self._conn.execute(SqliteDB._translate(sql), params)
+
+    async def fetchone(self, sql: str, params: tuple = ()):
+        async with self._conn.execute(SqliteDB._translate(sql), params) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def fetchall(self, sql: str, params: tuple = ()):
+        async with self._conn.execute(SqliteDB._translate(sql), params) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
 class SqliteDB:
     """Adapter that translates $N placeholders to ? for SQLite."""
 
     def __init__(self, conn: aiosqlite.Connection):
         self._conn = conn
+        self._tx_lock = asyncio.Lock()
 
     @staticmethod
     def _translate(sql: str) -> str:
         """Convert $1, $2, ... to ? for SQLite."""
         import re
         return re.sub(r'\$\d+', '?', sql)
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Atomic transaction — rolls back on exception."""
+        async with self._tx_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield _SqliteTxProxy(self._conn)
+                await self._conn.commit()
+            except Exception:
+                await self._conn.rollback()
+                raise
 
     async def execute_write(self, sql: str, params: tuple = ()):
         sql = self._translate(sql)
@@ -97,12 +132,17 @@ async def ensure_tables(db: SqliteDB):
             source TEXT NOT NULL,
             payload TEXT DEFAULT '{}',
             severity TEXT DEFAULT 'info',
+            idempotency_key TEXT,
             created_at REAL NOT NULL
         )
     """)
     await db.execute_write("""
         CREATE INDEX IF NOT EXISTS idx_relay_type_created
             ON god_relay_events (event_type, created_at)
+    """)
+    await db.execute_write("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_idempotency
+            ON god_relay_events (idempotency_key) WHERE idempotency_key IS NOT NULL
     """)
     await db.execute_write("""
         CREATE TABLE IF NOT EXISTS god_registry (
@@ -112,6 +152,11 @@ async def ensure_tables(db: SqliteDB):
             config_json TEXT DEFAULT '{}'
         )
     """)
+    # Idempotent migration — add column to existing table
+    try:
+        await db.execute_write("ALTER TABLE god_relay_events ADD COLUMN idempotency_key TEXT")
+    except Exception:
+        pass  # Column already exists
     logger.info("Relay tables ready")
 
 

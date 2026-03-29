@@ -19,7 +19,7 @@ import re
 import time
 from typing import Any, TYPE_CHECKING
 
-from gods.pipeline import Event, Emit
+from gods.pipeline import Event, Emit, idem_key, is_duplicate_key_error
 from gods import safe_json
 from gods.task_states import transition_task
 
@@ -110,7 +110,7 @@ class HermesRunner:
 
             # Fetch task
             row = await self.db.fetchone(
-                "SELECT id, title, description, task_type, status, model_tier, context_json "
+                "SELECT id, title, description, task_type, status, model_tier, context_json, retry_count "
                 "FROM tasks WHERE id = $1",
                 (task_id,),
             )
@@ -125,6 +125,7 @@ class HermesRunner:
             description = row.get("description", "")
             task_type = row.get("task_type", "code")
             context_json = row.get("context_json")
+            retry_count = row.get("retry_count", 0) or 0
 
             # Guard: only execute pending/queued tasks
             if status not in ("pending", "queued"):
@@ -196,6 +197,7 @@ class HermesRunner:
                     cwd=cwd,
                     task_type=task_type,
                     add_dirs=add_dirs,
+                    retry_count=retry_count,
                 ),
                 name=f"hermes-{task_id}",
             )
@@ -245,6 +247,7 @@ class HermesRunner:
         cwd: str,
         task_type: str,
         add_dirs: list[str] | None = None,
+        retry_count: int = 0,
     ):
         """Background coroutine that runs CLI and writes results to relay.
 
@@ -329,7 +332,10 @@ class HermesRunner:
             if affected_files:
                 payload["affected_files"] = affected_files
 
-            await self._write_relay_event_strict("worker_event", payload)
+            await self._write_relay_event_strict(
+                "worker_event", payload,
+                idempotency_key=idem_key("hermes_complete", task_id, str(retry_count)),
+            )
 
             # Relay write succeeded — now safe to mark task completed in DB
             await self.db.execute_write(
@@ -359,7 +365,7 @@ class HermesRunner:
                 "status": "failed",
                 "error": error_msg,
                 "timeout": True,
-            })
+            }, idempotency_key=idem_key("hermes_failed", task_id, str(retry_count)))
 
         except asyncio.CancelledError:
             logger.info("Hermes: task %s cancelled", task_id[:8])
@@ -513,20 +519,34 @@ class HermesRunner:
     # Relay write — direct insert into god_relay_events
     # ------------------------------------------------------------------
 
-    async def _write_relay_event(self, event_type: str, payload: dict):
+    async def _write_relay_event(
+        self, event_type: str, payload: dict, *, idempotency_key: str | None = None,
+    ):
         """Write an event directly to the relay table (best-effort, swallows errors).
 
         Tracks consecutive failures and escalates to critical after threshold.
         """
         try:
-            await self.db.execute_write(
-                "INSERT INTO god_relay_events "
-                "(event_type, source, payload, severity, created_at) "
-                "VALUES ($1, $2, $3, $4, $5)",
-                (event_type, "hermes", json.dumps(payload), "info", time.time()),
-            )
+            if idempotency_key:
+                await self.db.execute_write(
+                    "INSERT INTO god_relay_events "
+                    "(event_type, source, payload, severity, idempotency_key, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    (event_type, "hermes", json.dumps(payload), "info",
+                     idempotency_key, time.time()),
+                )
+            else:
+                await self.db.execute_write(
+                    "INSERT INTO god_relay_events "
+                    "(event_type, source, payload, severity, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    (event_type, "hermes", json.dumps(payload), "info", time.time()),
+                )
             self._relay_failure_count = 0  # reset on success
         except Exception as e:
+            if idempotency_key and is_duplicate_key_error(e):
+                logger.debug("Hermes relay dedup: key %s already exists", idempotency_key[:16])
+                return
             self._relay_failure_count += 1
             logger.error("Failed to write relay event: %s", e)
             if self._relay_failure_count >= self._relay_failure_threshold:
@@ -537,18 +557,37 @@ class HermesRunner:
                     self._relay_failure_count,
                 )
 
-    async def _write_relay_event_strict(self, event_type: str, payload: dict):
+    async def _write_relay_event_strict(
+        self, event_type: str, payload: dict, *, idempotency_key: str | None = None,
+    ):
         """Write an event to the relay table — raises on failure.
 
         Used for completion events where the relay write MUST succeed before
         we update the task DB row, preventing split-brain.
         """
-        await self.db.execute_write(
-            "INSERT INTO god_relay_events "
-            "(event_type, source, payload, severity, created_at) "
-            "VALUES ($1, $2, $3, $4, $5)",
-            (event_type, "hermes", json.dumps(payload), "info", time.time()),
-        )
+        if idempotency_key:
+            try:
+                await self.db.execute_write(
+                    "INSERT INTO god_relay_events "
+                    "(event_type, source, payload, severity, idempotency_key, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    (event_type, "hermes", json.dumps(payload), "info",
+                     idempotency_key, time.time()),
+                )
+            except Exception as e:
+                if is_duplicate_key_error(e):
+                    # Dedup on replay — task DB update still runs after this,
+                    # which is correct: setting status=completed is idempotent.
+                    logger.info("Hermes relay dedup (strict): key %s already exists", idempotency_key[:16])
+                    return
+                raise
+        else:
+            await self.db.execute_write(
+                "INSERT INTO god_relay_events "
+                "(event_type, source, payload, severity, created_at) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                (event_type, "hermes", json.dumps(payload), "info", time.time()),
+            )
 
     # ------------------------------------------------------------------
     # Cancellation

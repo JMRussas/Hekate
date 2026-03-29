@@ -17,10 +17,10 @@ from typing import Any
 
 import httpx
 
-from gods.pipeline import Event, Emit
+from gods.pipeline import Event, Emit, idem_key
 from gods import safe_json
 from gods.task_definition import apply_defaults
-from gods.task_states import TaskState, TERMINAL_STATES, transition_task
+from gods.task_states import TaskState, TERMINAL_STATES
 
 logger = logging.getLogger("gods.handlers.odin")
 
@@ -282,7 +282,7 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
     # Find ready tasks: pending, in current wave, all deps completed
     # Note: real DB may not have 'complexity' column — use COALESCE
     ready_raw = await db.fetchall(
-        "SELECT t.id, t.task_type, t.priority, t.context_json "
+        "SELECT t.id, t.task_type, t.priority, t.context_json, t.retry_count "
         "FROM tasks t "
         "LEFT JOIN task_deps d ON d.task_id = t.id "
         "LEFT JOIN tasks dep ON dep.id = d.depends_on "
@@ -341,11 +341,14 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
             (provider, time.time(), tid),
         )
 
+        task_retries = task_row.get("retry_count", 0) or 0
         emits.append(Emit("dispatch_command", {
             "task_id": tid,
             "project_id": project_id,
             "provider": provider,
-        }, source="odin"))
+        }, source="odin",
+           idempotency_key=idem_key("dispatch", tid, str(task_retries)),
+        ))
 
     return emits or None
 
@@ -377,6 +380,13 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
         )
         failed_count = _val(failed, "cnt", 0)
 
+        # Version discriminator: total completed+failed count. If project resets
+        # and re-runs, this will differ, so the idempotency key won't collide.
+        total = await db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1", (project_id,),
+        )
+        task_count = str(_val(total, "cnt", 0))
+
         if failed_count > 0:
             await db.execute_write(
                 "UPDATE projects SET status = $1, completed_at = $2, updated_at = $3 WHERE id = $4",
@@ -385,7 +395,9 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
             emits.append(Emit("project_failed", {
                 "project_id": project_id,
                 "reason": f"{failed_count} task(s) failed",
-            }, source="odin"))
+            }, source="odin",
+               idempotency_key=idem_key("project_failed", project_id, task_count),
+            ))
         else:
             await db.execute_write(
                 "UPDATE projects SET status = $1, completed_at = $2, updated_at = $3 WHERE id = $4",
@@ -393,7 +405,9 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
             )
             emits.append(Emit("project_complete", {
                 "project_id": project_id,
-            }, source="odin"))
+            }, source="odin",
+               idempotency_key=idem_key("project_complete", project_id, task_count),
+            ))
 
         return emits
 
@@ -435,7 +449,9 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
             emits.append(Emit("project_failed", {
                 "project_id": project_id,
                 "reason": f"Deadlock: {blocked_count} task(s) blocked, no forward progress",
-            }, source="odin"))
+            }, source="odin",
+               idempotency_key=idem_key("project_failed", project_id, "deadlock", str(blocked_count)),
+            ))
             return emits
 
     # Check wave completion for the verified task's wave
@@ -478,48 +494,90 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
 # odin_handle_diagnosis — task_diagnosis → apply fix
 # ---------------------------------------------------------------------------
 
-async def odin_handle_diagnosis(event: Event, db) -> list[Emit] | None:
-    """Consume a task_diagnosis event and apply the recommended fix.
+def make_odin_handle_diagnosis(pipeline):
+    """Factory: create odin_handle_diagnosis bound to a pipeline for atomic transitions."""
 
-    Fix types:
-      - retry_as_is: reset task to pending, increment retry_count
-      - reassign_tier: change model_tier, reset to pending
-      - modify_prompt: store prompt guidance, reset to pending
-      - skip: mark task cancelled
-      - escalate: mark task needs_review, emit needs_human_review
-    """
-    task_id = event.payload.get("task_id")
-    project_id = event.payload.get("project_id")
-    fix_type = event.payload.get("fix_type")
+    async def odin_handle_diagnosis(event: Event, db) -> list[Emit] | None:
+        """Consume a task_diagnosis event and apply the recommended fix.
 
-    if not task_id or not fix_type:
-        return [Emit("odin_error", {"error": "Missing task_id or fix_type"}, source="odin")]
+        Uses pipeline.transition_and_emit() for atomic state change + event write.
 
-    # Get current task state
-    row = await db.fetchone(
-        "SELECT status, retry_count, max_retries FROM tasks WHERE id = $1",
-        (task_id,),
-    )
-    if not row:
-        return [Emit("odin_error", {"error": f"Task {task_id} not found"}, source="odin")]
+        Fix types:
+          - retry_as_is: reset task to pending, increment retry_count
+          - reassign_tier: change model_tier, reset to pending
+          - modify_prompt: store prompt guidance, reset to pending
+          - skip: mark task cancelled
+          - escalate: mark task needs_review, emit needs_human_review
+        """
+        task_id = event.payload.get("task_id")
+        project_id = event.payload.get("project_id")
+        fix_type = event.payload.get("fix_type")
 
-    retry_count = (row.get("retry_count") or 0)
-    max_retries = (row.get("max_retries") or 3)
+        if not task_id or not fix_type:
+            return [Emit("odin_error", {"error": "Missing task_id or fix_type"}, source="odin")]
 
-    emits: list[Emit] = []
+        # Get current task state
+        row = await db.fetchone(
+            "SELECT status, retry_count, max_retries FROM tasks WHERE id = $1",
+            (task_id,),
+        )
+        if not row:
+            return [Emit("odin_error", {"error": f"Task {task_id} not found"}, source="odin")]
 
-    if fix_type == "retry_as_is":
-        # Check max retries
-        if retry_count >= max_retries:
-            logger.info("Task %s exhausted retries (%d/%d), escalating",
-                        task_id[:8], retry_count, max_retries)
-            await transition_task(db, task_id, "needs_review", source="odin.diagnosis")
-            emits.append(Emit("needs_human_review", {
-                "task_id": task_id,
-                "project_id": project_id,
-                "reason": f"Max retries exhausted ({retry_count}/{max_retries})",
-            }, source="odin"))
-        else:
+        retry_count = (row.get("retry_count") or 0)
+        max_retries = (row.get("max_retries") or 3)
+
+        if fix_type == "retry_as_is":
+            # Check max retries
+            if retry_count >= max_retries:
+                logger.info("Task %s exhausted retries (%d/%d), escalating",
+                            task_id[:8], retry_count, max_retries)
+                emit = Emit("needs_human_review", {
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "reason": f"Max retries exhausted ({retry_count}/{max_retries})",
+                }, source="odin",
+                   idempotency_key=idem_key("escalate_exhausted", task_id),
+                )
+                await pipeline.transition_and_emit(
+                    task_id, "needs_review", [emit], source="odin.diagnosis",
+                )
+                return []  # emits already written atomically
+            else:
+                # Compute backoff delay via TaskDefinition
+                task_type, complexity = await _get_task_type_complexity(db, task_id)
+                td = apply_defaults(task_type, complexity)
+                delay = td.compute_retry_delay(retry_count)
+                retry_after = time.time() + delay
+
+                # Store retry_after in context_json
+                ctx = await _load_context_json(db, task_id)
+                ctx["retry_after"] = retry_after
+
+                emit = Emit("task_reset", {
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "retry_count": retry_count + 1,
+                    "retry_delay": delay,
+                }, source="odin",
+                   idempotency_key=idem_key("task_reset", task_id, str(retry_count + 1)),
+                )
+                await pipeline.transition_and_emit(
+                    task_id, "pending", [emit],
+                    extra_fields={
+                        "retry_count": retry_count + 1,
+                        "error": None,
+                        "context_json": json.dumps(ctx),
+                    },
+                    source="odin.retry",
+                )
+                logger.info("Odin: task %s retry in %ds (attempt %d, %s backoff)",
+                            task_id[:8], delay, retry_count + 1, td.retry_logic.value)
+                return []
+
+        elif fix_type == "reassign_tier":
+            new_tier = event.payload.get("new_tier", "claude_code")
+
             # Compute backoff delay via TaskDefinition
             task_type, complexity = await _get_task_type_complexity(db, task_id)
             td = apply_defaults(task_type, complexity)
@@ -530,105 +588,84 @@ async def odin_handle_diagnosis(event: Event, db) -> list[Emit] | None:
             ctx = await _load_context_json(db, task_id)
             ctx["retry_after"] = retry_after
 
-            await transition_task(
-                db, task_id, "pending",
+            emit = Emit("task_reset", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "new_tier": new_tier,
+                "retry_count": retry_count + 1,
+                "retry_delay": delay,
+            }, source="odin",
+               idempotency_key=idem_key("task_reset", task_id, str(retry_count + 1)),
+            )
+            await pipeline.transition_and_emit(
+                task_id, "pending", [emit],
+                extra_fields={
+                    "model_tier": new_tier,
+                    "retry_count": retry_count + 1,
+                    "error": None,
+                    "context_json": json.dumps(ctx),
+                },
+                source="odin.reassign",
+            )
+            logger.info("Odin: task %s retry in %ds (attempt %d, %s backoff)",
+                        task_id[:8], delay, retry_count + 1, td.retry_logic.value)
+            return []
+
+        elif fix_type == "modify_prompt":
+            guidance = event.payload.get("prompt_guidance", "")
+            ctx = await _load_context_json(db, task_id)
+            ctx["prompt_guidance"] = guidance
+
+            emit = Emit("task_reset", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "prompt_guidance": guidance,
+                "retry_count": retry_count + 1,
+            }, source="odin",
+               idempotency_key=idem_key("task_reset", task_id, str(retry_count + 1)),
+            )
+            await pipeline.transition_and_emit(
+                task_id, "pending", [emit],
                 extra_fields={
                     "retry_count": retry_count + 1,
                     "error": None,
                     "context_json": json.dumps(ctx),
                 },
-                source="odin.retry",
+                source="odin.modify_prompt",
             )
-            logger.info("Odin: task %s retry in %ds (attempt %d, %s backoff)",
-                        task_id[:8], delay, retry_count + 1, td.retry_logic.value)
-            emits.append(Emit("task_reset", {
+            return []
+
+        elif fix_type == "skip":
+            emit = Emit("task_skipped", {
                 "task_id": task_id,
                 "project_id": project_id,
-                "retry_count": retry_count + 1,
-                "retry_delay": delay,
-            }, source="odin"))
+                "reason": event.payload.get("root_cause", "skipped by diagnosis"),
+            }, source="odin",
+               idempotency_key=idem_key("task_skipped", task_id),
+            )
+            await pipeline.transition_and_emit(
+                task_id, "cancelled", [emit], source="odin.skip",
+            )
+            return []
 
-    elif fix_type == "reassign_tier":
-        new_tier = event.payload.get("new_tier", "claude_code")
+        elif fix_type == "escalate":
+            emit = Emit("needs_human_review", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "reason": event.payload.get("root_cause", "escalated by diagnosis"),
+            }, source="odin",
+               idempotency_key=idem_key("escalate", task_id),
+            )
+            await pipeline.transition_and_emit(
+                task_id, "needs_review", [emit], source="odin.escalate",
+            )
+            return []
 
-        # Compute backoff delay via TaskDefinition
-        task_type, complexity = await _get_task_type_complexity(db, task_id)
-        td = apply_defaults(task_type, complexity)
-        delay = td.compute_retry_delay(retry_count)
-        retry_after = time.time() + delay
+        else:
+            logger.warning("Unknown fix_type: %s for task %s", fix_type, task_id[:8])
+            return [Emit("odin_error", {
+                "error": f"Unknown fix_type: {fix_type}",
+                "task_id": task_id,
+            }, source="odin")]
 
-        # Store retry_after in context_json
-        ctx = await _load_context_json(db, task_id)
-        ctx["retry_after"] = retry_after
-
-        await transition_task(
-            db, task_id, "pending",
-            extra_fields={
-                "model_tier": new_tier,
-                "retry_count": retry_count + 1,
-                "error": None,
-                "context_json": json.dumps(ctx),
-            },
-            source="odin.reassign",
-        )
-        logger.info("Odin: task %s retry in %ds (attempt %d, %s backoff)",
-                    task_id[:8], delay, retry_count + 1, td.retry_logic.value)
-        emits.append(Emit("task_reset", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "new_tier": new_tier,
-            "retry_count": retry_count + 1,
-            "retry_delay": delay,
-        }, source="odin"))
-
-    elif fix_type == "modify_prompt":
-        guidance = event.payload.get("prompt_guidance", "")
-        # Read existing context_json, merge guidance into it
-        ctx_row = await db.fetchone(
-            "SELECT context_json FROM tasks WHERE id = $1", (task_id,))
-        try:
-            existing = _val(ctx_row, "context_json", "{}")
-            ctx = safe_json.loads_dict(existing) if isinstance(existing, str) else (existing or {})
-        except (json.JSONDecodeError, TypeError):
-            ctx = {}
-        ctx["prompt_guidance"] = guidance
-        await transition_task(
-            db, task_id, "pending",
-            extra_fields={
-                "retry_count": retry_count + 1,
-                "error": None,
-                "context_json": json.dumps(ctx),
-            },
-            source="odin.modify_prompt",
-        )
-        emits.append(Emit("task_reset", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "prompt_guidance": guidance,
-            "retry_count": retry_count + 1,
-        }, source="odin"))
-
-    elif fix_type == "skip":
-        await transition_task(db, task_id, "cancelled", source="odin.skip")
-        emits.append(Emit("task_skipped", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "reason": event.payload.get("root_cause", "skipped by diagnosis"),
-        }, source="odin"))
-
-    elif fix_type == "escalate":
-        await transition_task(db, task_id, "needs_review", source="odin.escalate")
-        emits.append(Emit("needs_human_review", {
-            "task_id": task_id,
-            "project_id": project_id,
-            "reason": event.payload.get("root_cause", "escalated by diagnosis"),
-        }, source="odin"))
-
-    else:
-        logger.warning("Unknown fix_type: %s for task %s", fix_type, task_id[:8])
-        return [Emit("odin_error", {
-            "error": f"Unknown fix_type: {fix_type}",
-            "task_id": task_id,
-        }, source="odin")]
-
-    return emits
+    return odin_handle_diagnosis
