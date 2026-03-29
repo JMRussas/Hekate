@@ -238,6 +238,7 @@ class ClaudeCodeProvider(CLIProvider):
     def parse_output(self, lines: list[str]) -> StandardResult:
         output_parts: list[str] = []
         narration: list[dict] = []
+        affected_files: set[str] = set()
         cost = 0.0
         prompt_tokens = 0
         completion_tokens = 0
@@ -280,11 +281,18 @@ class ClaudeCodeProvider(CLIProvider):
                 model = data.get("model", model)
 
             elif event_type == "tool_use":
+                tool_name = data.get("tool", "")
+                tool_input = data.get("input", {})
                 narration.append({
                     "type": "tool_call",
-                    "tool": data.get("tool", ""),
-                    "input": str(data.get("input", ""))[:200],
+                    "tool": tool_name,
+                    "input": str(tool_input)[:200],
                 })
+                # Extract affected files from Edit/Write tool calls
+                if tool_name in ("Edit", "Write") and isinstance(tool_input, dict):
+                    fp = tool_input.get("file_path", "")
+                    if fp:
+                        affected_files.add(fp)
 
             elif event_type == "tool_result":
                 narration.append({
@@ -299,6 +307,7 @@ class ClaudeCodeProvider(CLIProvider):
             completion_tokens=completion_tokens,
             model=model,
             narration=narration,
+            affected_files=sorted(affected_files),
         )
 
     def parse_error(self, exit_code: int, output: str) -> str:

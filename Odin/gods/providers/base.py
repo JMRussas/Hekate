@@ -27,6 +27,7 @@ class StandardResult:
     completion_tokens: int = 0
     model: str = ""
     narration: list[dict] = field(default_factory=list)
+    affected_files: list[str] = field(default_factory=list)
     exit_code: int = 0
 
     @property

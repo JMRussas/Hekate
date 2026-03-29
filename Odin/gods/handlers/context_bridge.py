@@ -90,7 +90,13 @@ async def _create_child_node(parent_id: str, node_type: str, name: str,
             resp = await client.post(f"{_CS_URL}/api/node/{parent_id}/children", json=body)
             if resp.status_code == 200:
                 data = resp.json()
-                return str(data.get("id") or data.get("record", {}).get("id", ""))
+                # Response may be {"id": ...}, {"node": {"id": ...}}, or {"record": {"id": ...}}
+                node_id = (
+                    data.get("id")
+                    or (data.get("node") or {}).get("id")
+                    or (data.get("record") or {}).get("id")
+                )
+                return str(node_id) if node_id else None
     except Exception as e:
         logger.debug("Context bridge: create_child_node error: %s", e)
     return None

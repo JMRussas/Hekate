@@ -293,6 +293,7 @@ class HermesRunner:
             # Write relay event FIRST — if this fails, leave task as "running"
             # so it gets detected as stuck and retried. This prevents split-brain
             # where DB says "completed" but Mimir never sees the relay event.
+            affected_files = result.get("affected_files", [])
             payload = {
                 "task_id": task_id,
                 "project_id": project_id,
@@ -304,6 +305,8 @@ class HermesRunner:
             }
             if tdd_warning:
                 payload["tdd_warning"] = tdd_warning
+            if affected_files:
+                payload["affected_files"] = affected_files
 
             await self._write_relay_event_strict("worker_event", payload)
 
@@ -472,6 +475,7 @@ class HermesRunner:
                 "completion_tokens": result.completion_tokens,
                 "model_used": result.model or provider,
                 "narration": result.narration,
+                "affected_files": result.affected_files,
             }
 
         # Fallback: unknown provider — raise so caller writes a failed event
