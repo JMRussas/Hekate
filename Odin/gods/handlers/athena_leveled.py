@@ -152,11 +152,9 @@ async def _generate_l1(
 
     plan_id = uuid.uuid4().hex[:12]
     await db.execute_write(
-        "INSERT OR REPLACE INTO plans (id, project_id, version, model_used, prompt_tokens, "
-        "completion_tokens, cost_usd, plan_json, status, created_at, node_mapping) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        (plan_id, project_id, 1, "claude", 0, 0, 0.0,
-         json.dumps(plan), "draft", time.time(), "{}"),
+        "INSERT OR REPLACE INTO plans (id, project_id, plan_json, level, created_at) "
+        "VALUES ($1, $2, $3, $4, $5)",
+        (plan_id, project_id, json.dumps(plan), "L1", time.time()),
     )
 
     return {"plan_id": plan_id, "plan": plan}
@@ -214,11 +212,9 @@ async def _deepen_plan(
 
     plan_id = current_plan.get("plan_id", uuid.uuid4().hex[:12])
     await db.execute_write(
-        "INSERT OR REPLACE INTO plans (id, project_id, version, model_used, prompt_tokens, "
-        "completion_tokens, cost_usd, plan_json, status, created_at, node_mapping) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        (plan_id, project_id, 1, "claude", 0, 0, 0.0,
-         json.dumps(plan), "draft", time.time(), "{}"),
+        "INSERT OR REPLACE INTO plans (id, project_id, plan_json, level, created_at) "
+        "VALUES ($1, $2, $3, $4, $5)",
+        (plan_id, project_id, json.dumps(plan), "L2", time.time()),
     )
 
     return {"plan_id": plan_id, "plan": plan, "conversation_id": conversation_id}

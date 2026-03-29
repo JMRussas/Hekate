@@ -388,7 +388,7 @@ def create_app(
     async def list_plans(project_id: str):
         e: HekateEngine = app.state.engine
         plans = await e.db.fetchall(
-            "SELECT id, project_id, version, model_used, cost_usd, plan_json, status, created_at "
+            "SELECT id, project_id, plan_json, level, created_at "
             "FROM plans WHERE project_id = $1 ORDER BY created_at DESC",
             (project_id,),
         )
