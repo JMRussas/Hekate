@@ -141,18 +141,29 @@ class HermesRunner:
                 "SELECT repo_path FROM projects WHERE id = $1", (project_id,))
             cwd = proj_row.get("repo_path", ".") if proj_row else "."
 
-            # Build prompt
-            prompt = f"# Task: {title}\n\n{description or ''}"
+            # Build prompt — give the model full context so it can reason about the task
+            prompt = f"# Task: {title}\n\n"
+            prompt += f"## Requirements\n{description or 'No description provided.'}\n\n"
+            prompt += f"## Instructions\n"
+            prompt += f"1. Read the relevant code before making changes\n"
+            prompt += f"2. Implement the requirements\n"
+            prompt += f"3. After implementing, review your own work:\n"
+            prompt += f"   - Any gaps? Anything the task asked for that you missed?\n"
+            prompt += f"   - Does your change fit the current codebase patterns?\n"
+            prompt += f"   - Did you handle edge cases?\n"
+            prompt += f"4. Fix any issues you find before finishing\n"
+
             if context_json and context_json != "{}":
                 try:
                     ctx = safe_json.loads_dict(context_json) if isinstance(context_json, str) else context_json
                     if isinstance(ctx, dict):
                         if ctx.get("verification_feedback"):
-                            prompt += f"\n\n# Previous feedback:\n{ctx['verification_feedback']}"
+                            prompt += f"\n## Previous Verification Feedback\n{ctx['verification_feedback']}\n"
+                            prompt += f"This task was previously attempted and the verifier found issues. Address them.\n"
                         if ctx.get("prompt_guidance"):
-                            prompt += f"\n\n# Guidance:\n{ctx['prompt_guidance']}"
+                            prompt += f"\n## Guidance\n{ctx['prompt_guidance']}\n"
                         if ctx.get("review_feedback"):
-                            prompt += f"\n\n# Review feedback:\n{ctx['review_feedback']}"
+                            prompt += f"\n## Review Feedback\n{ctx['review_feedback']}\n"
                 except (json.JSONDecodeError, TypeError):
                     pass
 

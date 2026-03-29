@@ -96,7 +96,23 @@ class ClaudeCodeProvider(CLIProvider):
 
     def __init__(self, config: ClaudeCodeConfig | None = None):
         self._config = config or ClaudeCodeConfig(
+            # Full tool access — the model should be able to read, write, search, and run commands
             allowed_tools=["Edit", "Write", "Read", "Glob", "Grep", "Bash(*)"],
+            # Multi-turn: let the model iterate up to 30 turns (read → plan → execute → self-review)
+            max_turns=30,
+            # Budget cap per task
+            max_budget_usd=2.0,
+            # Skip permission prompts — the pipeline is automated
+            dangerously_skip_permissions=True,
+            # Self-review prompt appended to every session
+            append_system_prompt=(
+                "After completing your work, review what you did:\n"
+                "1. Any gaps? Anything the task asked for that you missed?\n"
+                "2. Does your change fit the current architecture and patterns?\n"
+                "3. Did you handle edge cases?\n"
+                "4. If you wrote code, does it have the right imports and no syntax errors?\n"
+                "If you find issues, fix them before finishing. Don't just list problems — fix them."
+            ),
         )
         self._binary = shutil.which("claude") or "claude"
 
