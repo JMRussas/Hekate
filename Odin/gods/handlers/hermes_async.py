@@ -22,6 +22,7 @@ from typing import Any, TYPE_CHECKING
 from gods.pipeline import Event, Emit, idem_key, is_duplicate_key_error
 from gods import safe_json
 from gods.task_states import transition_task
+from gods.task_definition import load_task_definition
 
 if TYPE_CHECKING:
     from gods.providers.base import ProviderRegistry
@@ -127,6 +128,10 @@ class HermesRunner:
             context_json = row.get("context_json")
             retry_count = row.get("retry_count", 0) or 0
 
+            # Load TaskDefinition for per-task timeout
+            td = load_task_definition(context_json)
+            task_timeout = td.timeout_seconds or self.default_timeout
+
             # Guard: only execute pending/queued tasks
             if status not in ("pending", "queued"):
                 logger.debug("Hermes: task %s is %s, skipping (normal dedup)", task_id[:8], status)
@@ -198,6 +203,7 @@ class HermesRunner:
                     task_type=task_type,
                     add_dirs=add_dirs,
                     retry_count=retry_count,
+                    timeout=task_timeout,
                 ),
                 name=f"hermes-{task_id}",
             )
@@ -248,12 +254,15 @@ class HermesRunner:
         task_type: str,
         add_dirs: list[str] | None = None,
         retry_count: int = 0,
+        timeout: int | None = None,
     ):
         """Background coroutine that runs CLI and writes results to relay.
 
         This ALWAYS writes a worker_event to the relay, even on internal errors.
         Tasks must never get stuck in 'running'.
         """
+        effective_timeout = timeout or self.default_timeout
+
         # Start heartbeat
         hb_task = asyncio.create_task(
             self._heartbeat_loop(task_id, project_id, provider),
@@ -271,8 +280,9 @@ class HermesRunner:
                     task_id=task_id,
                     project_id=project_id,
                     add_dirs=add_dirs,
+                    timeout=effective_timeout,
                 ),
-                timeout=self.default_timeout * 1.2,
+                timeout=effective_timeout * 1.2,
             )
             elapsed = time.time() - t0
 
@@ -478,6 +488,7 @@ class HermesRunner:
         task_id: str = "",
         project_id: str = "",
         add_dirs: list[str] | None = None,
+        timeout: int | None = None,
     ) -> dict:
         """Execute a CLI provider via the provider registry.
 
@@ -499,7 +510,7 @@ class HermesRunner:
             result = await cli_provider.execute(
                 prompt=prompt,
                 cwd=cwd,
-                timeout=self.default_timeout,
+                timeout=timeout or self.default_timeout,
                 on_process=lambda proc: self._processes.__setitem__(task_id, proc),
             )
             return {

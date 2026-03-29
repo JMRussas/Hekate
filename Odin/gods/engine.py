@@ -729,7 +729,11 @@ class HekateEngine:
 
         Returns the number of tasks created.
         """
-        from gods.task_definition import TaskDefinition, apply_defaults, merge_with_plan_config
+        from gods.task_definition import (
+            TaskDefinition, apply_defaults, merge_with_plan_config, get_registry,
+        )
+
+        registry = get_registry()
 
         if not plan_id:
             plan_id = uuid.uuid4().hex[:12]
@@ -762,14 +766,20 @@ class HekateEngine:
 
                 status = "pending" if wave == 0 and not deps else "blocked"
 
-                # Build TaskDefinition: explicit override or type-based defaults
+                # Validate against registry
+                errors = registry.validate_task(task)
+                if errors:
+                    logger.warning("Task '%s' validation: %s",
+                                   task.get("title", "?"), "; ".join(errors))
+
+                # Build TaskDefinition: registry → explicit override → type-based defaults
+                task_type = task.get("task_type", "code")
                 if "task_definition" in task:
                     td = TaskDefinition.from_dict(task["task_definition"])
+                elif task_type in registry:
+                    td = registry.get_definition(task_type, task.get("complexity", "medium"))
                 else:
-                    td = apply_defaults(
-                        task.get("task_type", "code"),
-                        task.get("complexity", "medium"),
-                    )
+                    td = apply_defaults(task_type, task.get("complexity", "medium"))
 
                 # Merge with plan-level config if present
                 td = merge_with_plan_config(td, plan_config)

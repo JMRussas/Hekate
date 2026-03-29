@@ -19,7 +19,7 @@ import httpx
 
 from gods.pipeline import Event, Emit, idem_key
 from gods import safe_json
-from gods.task_definition import apply_defaults
+from gods.task_definition import apply_defaults, load_task_definition, get_registry
 from gods.task_states import TaskState, TERMINAL_STATES
 
 logger = logging.getLogger("gods.handlers.odin")
@@ -164,7 +164,19 @@ def _select_provider(
     complexity: str,
     available: dict[str, bool],
 ) -> str:
-    """Pick a provider for a task based on type + complexity + availability."""
+    """Pick a provider for a task based on registry preference + availability.
+
+    Checks the task type registry first for provider_preference.
+    Falls back to _TIER_MAP for unregistered types.
+    """
+    registry = get_registry()
+    spec = registry.get(task_type)
+    if spec and spec.provider_preference:
+        for prov in spec.provider_preference:
+            if available.get(prov, False):
+                return prov
+
+    # Fallback to static tier map
     preferred = _TIER_MAP.get((task_type, complexity), "claude_code")
     if available.get(preferred, False):
         return preferred
@@ -544,14 +556,11 @@ def make_odin_handle_diagnosis(pipeline):
                 )
                 return []  # emits already written atomically
             else:
-                # Compute backoff delay via TaskDefinition
-                task_type, complexity = await _get_task_type_complexity(db, task_id)
-                td = apply_defaults(task_type, complexity)
+                # Load stored TaskDefinition from context_json (set during decomposition)
+                ctx = await _load_context_json(db, task_id)
+                td = load_task_definition(ctx)
                 delay = td.compute_retry_delay(retry_count)
                 retry_after = time.time() + delay
-
-                # Store retry_after in context_json
-                ctx = await _load_context_json(db, task_id)
                 ctx["retry_after"] = retry_after
 
                 emit = Emit("task_reset", {
@@ -578,14 +587,11 @@ def make_odin_handle_diagnosis(pipeline):
         elif fix_type == "reassign_tier":
             new_tier = event.payload.get("new_tier", "claude_code")
 
-            # Compute backoff delay via TaskDefinition
-            task_type, complexity = await _get_task_type_complexity(db, task_id)
-            td = apply_defaults(task_type, complexity)
+            # Load stored TaskDefinition from context_json
+            ctx = await _load_context_json(db, task_id)
+            td = load_task_definition(ctx)
             delay = td.compute_retry_delay(retry_count)
             retry_after = time.time() + delay
-
-            # Store retry_after in context_json
-            ctx = await _load_context_json(db, task_id)
             ctx["retry_after"] = retry_after
 
             emit = Emit("task_reset", {
