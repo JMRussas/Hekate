@@ -110,35 +110,22 @@ class TestCallVerifier:
         assert "/api/tasks/task-abc-123/verify" in call_url
 
     @pytest.mark.asyncio
-    async def test_agent_timeout_falls_back_to_gateway(self):
-        """When _spawn_agent returns timeout sentinel, falls back to gateway verifier."""
-        from gods.handlers.mimir import _call_verifier
-
-        gateway_result = {"verdict": "passed", "confidence": 0.8, "feedback": "looks good"}
-
-        with patch("gods.handlers.mimir._spawn_agent", new=AsyncMock(return_value=(-1, b"", b"timeout"))), \
-             patch("gods.handlers.mimir.shutil.which", return_value="/usr/bin/claude"), \
-             patch("gods.handlers.mimir._call_verifier_gateway", new=AsyncMock(return_value=gateway_result)) as mock_gw:
-            result = await _call_verifier(
-                task_title="Feature X",
-                task_description="Add feature X",
-                output_text="Implementation complete.",
-                task_id="task-abc-123",
-            )
-
-        assert result["verdict"] == "passed"
-        assert mock_gw.called
-
-    @pytest.mark.asyncio
-    async def test_agent_nonzero_exit_falls_back_to_gateway(self):
-        """When agent exits non-zero (crash, auth fail), falls back to gateway."""
+    async def test_gaps_found_verdict_calls_verify_api(self):
+        """gaps_found verdict is passed through to /verify API."""
         from gods.handlers.mimir import _call_verifier
 
         gateway_result = {"verdict": "gaps_found", "confidence": 0.7, "feedback": "missing tests"}
 
-        with patch("gods.handlers.mimir._spawn_agent", new=AsyncMock(return_value=(1, b"", b"Error: auth failed"))), \
-             patch("gods.handlers.mimir.shutil.which", return_value="/usr/bin/claude"), \
-             patch("gods.handlers.mimir._call_verifier_gateway", new=AsyncMock(return_value=gateway_result)) as mock_gw:
+        with patch("gods.handlers.mimir._call_verifier_gateway", new=AsyncMock(return_value=gateway_result)), \
+             patch("httpx.AsyncClient") as mock_client_cls:
+            mock_resp = AsyncMock()
+            mock_resp.status_code = 200
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_resp)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
             result = await _call_verifier(
                 task_title="Feature X",
                 task_description="Add feature X",
@@ -147,18 +134,25 @@ class TestCallVerifier:
             )
 
         assert result["verdict"] == "gaps_found"
-        assert mock_gw.called
+        mock_client.post.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_no_claude_binary_falls_back_to_gateway(self):
-        """When claude is not on PATH, skips agent entirely and uses gateway."""
+    async def test_human_needed_verdict_calls_verify_api(self):
+        """human_needed verdict is passed through to /verify API."""
         from gods.handlers.mimir import _call_verifier
 
-        gateway_result = {"verdict": "passed", "confidence": 0.9, "feedback": ""}
+        gateway_result = {"verdict": "human_needed", "confidence": 0.3, "feedback": "ambiguous"}
 
-        with patch("gods.handlers.mimir.shutil.which", return_value=None), \
-             patch("gods.handlers.mimir._spawn_agent", new=AsyncMock()) as mock_spawn, \
-             patch("gods.handlers.mimir._call_verifier_gateway", new=AsyncMock(return_value=gateway_result)):
+        with patch("gods.handlers.mimir._call_verifier_gateway", new=AsyncMock(return_value=gateway_result)), \
+             patch("httpx.AsyncClient") as mock_client_cls:
+            mock_resp = AsyncMock()
+            mock_resp.status_code = 200
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_resp)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
             result = await _call_verifier(
                 task_title="Feature X",
                 task_description="Add feature X",
@@ -166,8 +160,8 @@ class TestCallVerifier:
                 task_id="task-abc-123",
             )
 
-        assert result["verdict"] == "passed"
-        mock_spawn.assert_not_called()
+        assert result["verdict"] == "human_needed"
+        mock_client.post.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -177,23 +171,21 @@ class TestCallVerifier:
 class TestVerifyTaskRelay:
 
     @pytest.mark.asyncio
-    async def test_agent_submitted_passed_emits_task_verified(self):
-        """When agent submits 'passed', relay gets task_verified."""
+    async def test_passed_verdict_emits_task_verified(self):
+        """When verifier returns 'passed', relay gets task_verified."""
         from gods.handlers.mimir import MimirRunner
 
         task_id = "task-111"
         db = FakeDB(rows={
             task_id: {
                 **_task_row(task_id),
-                "verification_status": "passed",
                 "status": "completed",
-                "verification_notes": "Looks good",
             }
         })
         runner = MimirRunner(db=db)
 
         with patch("gods.handlers.mimir._call_verifier", new=AsyncMock(
-            return_value={"verdict": "_agent_submitted", "confidence": 1.0, "feedback": ""}
+            return_value={"verdict": "passed", "confidence": 0.9, "feedback": "looks good"}
         )):
             await runner._verify_task(
                 task_id=task_id,
@@ -208,23 +200,22 @@ class TestVerifyTaskRelay:
         assert _relay_event_type(db) == "task_verified"
 
     @pytest.mark.asyncio
-    async def test_agent_submitted_gaps_found_emits_task_rejected(self):
-        """When agent submits 'gaps_found' and retries remain, relay gets task_rejected."""
+    async def test_gaps_found_with_retries_emits_task_rejected(self):
+        """When verifier returns 'gaps_found' and retries remain, relay gets task_rejected."""
         from gods.handlers.mimir import MimirRunner
 
         task_id = "task-222"
         db = FakeDB(rows={
             task_id: {
                 **_task_row(task_id),
-                "verification_status": "gaps_found",
-                "status": "pending",  # engine already reset to pending
+                "status": "completed",
                 "verification_notes": "Missing error handling",
             }
         })
         runner = MimirRunner(db=db)
 
         with patch("gods.handlers.mimir._call_verifier", new=AsyncMock(
-            return_value={"verdict": "_agent_submitted", "confidence": 1.0, "feedback": ""}
+            return_value={"verdict": "gaps_found", "confidence": 0.7, "feedback": "missing tests"}
         )):
             await runner._verify_task(
                 task_id=task_id,
@@ -239,23 +230,21 @@ class TestVerifyTaskRelay:
         assert _relay_event_type(db) == "task_rejected"
 
     @pytest.mark.asyncio
-    async def test_agent_submitted_human_needed_emits_needs_human_review(self):
-        """When agent submits 'human_needed', relay gets needs_human_review."""
+    async def test_human_needed_verdict_emits_needs_human_review(self):
+        """When verifier returns 'human_needed', relay gets needs_human_review."""
         from gods.handlers.mimir import MimirRunner
 
         task_id = "task-333"
         db = FakeDB(rows={
             task_id: {
                 **_task_row(task_id),
-                "verification_status": "human_needed",
-                "status": "needs_review",
-                "verification_notes": "Ambiguous output",
+                "status": "completed",
             }
         })
         runner = MimirRunner(db=db)
 
         with patch("gods.handlers.mimir._call_verifier", new=AsyncMock(
-            return_value={"verdict": "_agent_submitted", "confidence": 1.0, "feedback": ""}
+            return_value={"verdict": "human_needed", "confidence": 0.3, "feedback": "ambiguous"}
         )):
             await runner._verify_task(
                 task_id=task_id,

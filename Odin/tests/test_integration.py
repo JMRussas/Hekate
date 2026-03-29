@@ -218,15 +218,14 @@ class TestAPIContract:
 # ---------------------------------------------------------------------------
 
 class TestMimirEngineRoundTrip:
-    """Test that mimir's _agent_submitted flow reads back correct DB state."""
+    """Test mimir verification → relay event flow through the real engine DB."""
 
     @pytest.mark.asyncio
-    async def test_agent_verdict_passed_emits_task_verified(self, engine_app):
-        """When /verify sets verification_status=passed, mimir emits task_verified."""
+    async def test_passed_verdict_emits_task_verified(self, engine_app):
+        """When verifier returns passed, mimir emits task_verified relay event."""
         app, engine = engine_app
         db = engine.db
 
-        # Create project + task
         project_id = "proj_rt_001"
         task_id = "task_rt_001"
         now = time.time()
@@ -243,20 +242,12 @@ class TestMimirEngineRoundTrip:
              "completed", "claude_code", "{}", now, now, 0, 3),
         )
 
-        # Simulate what the verify endpoint does
-        await db.execute_write(
-            "UPDATE tasks SET verification_status = $1, verification_notes = $2, updated_at = $3 WHERE id = $4",
-            ("passed", "All good", time.time(), task_id),
-        )
-
-        # Create MimirRunner and test the _agent_submitted path
         mimir = MimirRunner(db=db)
 
-        # Mock _call_verifier to return _agent_submitted
         mock_verifier = AsyncMock(return_value={
-            "verdict": "_agent_submitted",
-            "confidence": 1.0,
-            "feedback": "",
+            "verdict": "passed",
+            "confidence": 0.9,
+            "feedback": "looks good",
         })
 
         with patch("gods.handlers.mimir._call_verifier", mock_verifier):
@@ -298,18 +289,11 @@ class TestMimirEngineRoundTrip:
              "completed", "claude_code", "{}", now, now, 0, 3),
         )
 
-        # Simulate gaps_found verdict: task reset to pending with retry
-        await db.execute_write(
-            "UPDATE tasks SET status = $1, verification_status = $2, "
-            "verification_notes = $3, retry_count = 1, updated_at = $4 WHERE id = $5",
-            ("pending", "gaps_found", "Missing tests", time.time(), task_id),
-        )
-
         mimir = MimirRunner(db=db)
         mock_verifier = AsyncMock(return_value={
-            "verdict": "_agent_submitted",
-            "confidence": 1.0,
-            "feedback": "",
+            "verdict": "gaps_found",
+            "confidence": 0.7,
+            "feedback": "Missing tests",
         })
 
         with patch("gods.handlers.mimir._call_verifier", mock_verifier):

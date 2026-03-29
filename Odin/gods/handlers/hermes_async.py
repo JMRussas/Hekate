@@ -21,6 +21,7 @@ from typing import Any, TYPE_CHECKING
 
 from gods.pipeline import Event, Emit
 from gods import safe_json
+from gods.task_states import transition_task
 
 if TYPE_CHECKING:
     from gods.providers.base import ProviderRegistry
@@ -131,15 +132,32 @@ class HermesRunner:
                 return None
 
             # Set task → running
-            await self.db.execute_write(
-                "UPDATE tasks SET status = $1, started_at = $2, updated_at = $3 WHERE id = $4",
-                ("running", time.time(), time.time(), task_id),
-            )
+            await transition_task(self.db, task_id, "running",
+                extra_fields={"started_at": time.time()},
+                source="hermes.dispatch")
 
-            # Resolve working directory
+            # Resolve working directory and additional repos
             proj_row = await self.db.fetchone(
-                "SELECT repo_path FROM projects WHERE id = $1", (project_id,))
+                "SELECT repo_path, additional_repos FROM projects WHERE id = $1", (project_id,))
             cwd = proj_row.get("repo_path", ".") if proj_row else "."
+
+            # Determine add_dirs: task-level repo_paths override project-level additional_repos
+            add_dirs = None
+            task_row_full = await self.db.fetchone(
+                "SELECT repo_paths FROM tasks WHERE id = $1", (task_id,))
+            task_repo_paths = task_row_full.get("repo_paths") if task_row_full else None
+            if task_repo_paths:
+                try:
+                    add_dirs = json.loads(task_repo_paths)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if not add_dirs and proj_row:
+                proj_additional = proj_row.get("additional_repos")
+                if proj_additional:
+                    try:
+                        add_dirs = json.loads(proj_additional)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
             # Build prompt — give the model full context so it can reason about the task
             prompt = f"# Task: {title}\n\n"
@@ -177,6 +195,7 @@ class HermesRunner:
                     prompt=prompt,
                     cwd=cwd,
                     task_type=task_type,
+                    add_dirs=add_dirs,
                 ),
                 name=f"hermes-{task_id}",
             )
@@ -225,6 +244,7 @@ class HermesRunner:
         prompt: str,
         cwd: str,
         task_type: str,
+        add_dirs: list[str] | None = None,
     ):
         """Background coroutine that runs CLI and writes results to relay.
 
@@ -247,6 +267,7 @@ class HermesRunner:
                     cwd=cwd,
                     task_id=task_id,
                     project_id=project_id,
+                    add_dirs=add_dirs,
                 ),
                 timeout=self.default_timeout * 1.2,
             )
@@ -450,6 +471,7 @@ class HermesRunner:
         cwd: str,
         task_id: str = "",
         project_id: str = "",
+        add_dirs: list[str] | None = None,
     ) -> dict:
         """Execute a CLI provider via the provider registry.
 
@@ -460,6 +482,12 @@ class HermesRunner:
         """
         # Try provider registry first
         cli_provider = self.registry.get(provider) if self.registry else None
+
+        # Apply per-task add_dirs if the provider supports with_config
+        if cli_provider is not None and add_dirs:
+            if hasattr(cli_provider, 'with_config'):
+                cli_provider = cli_provider.with_config(add_dirs=add_dirs)
+                logger.info("Hermes: task %s using add_dirs: %s", task_id[:8], add_dirs)
 
         if cli_provider is not None:
             result = await cli_provider.execute(

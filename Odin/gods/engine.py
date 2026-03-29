@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS projects (
     completed_at REAL,
     owner_id TEXT,
     repo_path TEXT,
+    additional_repos TEXT,
     git_base_branch TEXT,
     git_project_branch TEXT,
     git_worktree_path TEXT,
@@ -195,7 +196,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     rationale TEXT,
     complexity TEXT DEFAULT 'medium',
     implementation_notes TEXT,
-    test_strategy TEXT
+    test_strategy TEXT,
+    repo_paths TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_deps (
@@ -240,6 +242,7 @@ CREATE TABLE IF NOT EXISTS engine_projects (
     completed_at DOUBLE PRECISION,
     owner_id TEXT,
     repo_path TEXT,
+    additional_repos TEXT,
     git_base_branch TEXT,
     git_project_branch TEXT,
     git_worktree_path TEXT,
@@ -285,7 +288,8 @@ CREATE TABLE IF NOT EXISTS engine_tasks (
     rationale TEXT,
     complexity TEXT DEFAULT 'medium',
     implementation_notes TEXT,
-    test_strategy TEXT
+    test_strategy TEXT,
+    repo_paths TEXT
 );
 
 CREATE TABLE IF NOT EXISTS engine_task_deps (
@@ -484,17 +488,20 @@ class HekateEngine:
         requirements: str,
         config: dict | None = None,
         repo_path: str | None = None,
+        additional_repos: list[str] | None = None,
     ) -> str:
         """Create a project and emit project_created event."""
         project_id = uuid.uuid4().hex[:12]
         now = time.time()
         config_json = json.dumps(config or {})
+        additional_repos_json = json.dumps(additional_repos) if additional_repos else None
 
         await self.db.execute_write(
             "INSERT INTO projects (id, name, requirements, status, config_json, "
-            "repo_path, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "repo_path, additional_repos, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
             (project_id, name, requirements, "draft", config_json,
-             repo_path, now, now),
+             repo_path, additional_repos_json, now, now),
         )
 
         # Emit project_created event

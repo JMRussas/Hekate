@@ -120,6 +120,7 @@ async def _generate_l1(
     project_name: str,
     db,
     repo_path: str = ".",
+    additional_repos: list[str] | None = None,
     **kwargs,
 ) -> dict:
     """Generate L1 plan via Claude CLI with hekate code analysis tools.
@@ -174,6 +175,7 @@ async def _generate_l1(
         mcp_config=ClaudeCodeProvider._HEKATE_MCP_CONFIG,
         max_turns=20,
         dangerously_skip_permissions=True,
+        add_dirs=additional_repos or None,
         append_system_prompt=(
             "You are a planner, not an executor. Do NOT modify any files. "
             "Read and analyze the codebase, then output a JSON plan. "
@@ -526,7 +528,8 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
 
     # Load project
     row = await db.fetchone(
-        "SELECT name, requirements, status, config_json, repo_path FROM projects WHERE id = $1",
+        "SELECT name, requirements, status, config_json, repo_path, additional_repos "
+        "FROM projects WHERE id = $1",
         (project_id,),
     )
     if not row:
@@ -539,6 +542,15 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
     status = row.get("status", "draft")
     repo_path = row.get("repo_path", ".") or "."
     config = _load_config(row.get("config_json"))
+
+    # Parse additional repos (JSON array stored as TEXT)
+    additional_repos = None
+    raw_additional = row.get("additional_repos")
+    if raw_additional:
+        try:
+            additional_repos = json.loads(raw_additional)
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     # Guard: skip if already beyond draft
     if status not in ("draft",):
@@ -602,6 +614,7 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
             l1_result = await _generate_l1(
                 project_id, requirements, project_name, db,
                 repo_path=repo_path,
+                additional_repos=additional_repos,
             )
             current_plan = l1_result
             conversation_id = l1_result.get("conversation_id")

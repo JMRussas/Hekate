@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from gods.engine import HekateEngine, create_engine, _init_engine
 from gods import safe_json
+from gods.task_states import transition_task
 
 logger = logging.getLogger("gods.api")
 
@@ -34,6 +35,7 @@ class CreateProjectRequest(BaseModel):
     requirements: str
     planning_rigor: str = "L2"
     repo_path: str | None = None
+    additional_repos: list[str] | None = None
     config: dict = {}
 
 
@@ -142,6 +144,7 @@ def create_app(
             requirements=req.requirements,
             config=config,
             repo_path=repo_path,
+            additional_repos=req.additional_repos,
         )
         return await e.get_project_status(project_id)
 
