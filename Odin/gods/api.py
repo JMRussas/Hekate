@@ -280,17 +280,37 @@ def create_app(
     @app.post("/api/tasks/{task_id}/review")
     async def review_task(task_id: str, req: TaskActionRequest):
         e: HekateEngine = app.state.engine
+        # Get project_id for relay event
+        task_row = await e.db.fetchone("SELECT project_id FROM tasks WHERE id = $1", (task_id,))
+        project_id = task_row["project_id"] if task_row else None
+
         if req.action == "approve":
             await e.db.execute_write(
                 "UPDATE tasks SET status = $1, verification_status = $2, updated_at = $3 WHERE id = $4",
                 ("completed", "passed", time.time(), task_id),
             )
+            # Emit task_verified so odin_lifecycle unblocks dependents
+            if project_id:
+                await e.db.execute_write(
+                    "INSERT INTO god_relay_events (event_type, source, payload, severity, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    ("task_verified", "api", json.dumps({
+                        "task_id": task_id, "project_id": project_id, "confidence": 1.0,
+                    }), "info", time.time()),
+                )
         elif req.action == "reject":
             await e.db.execute_write(
                 "UPDATE tasks SET status = $1, retry_count = retry_count + 1, "
                 "error = $2, updated_at = $3 WHERE id = $4",
                 ("pending", req.feedback or "Rejected by reviewer", time.time(), task_id),
             )
+            # Emit project_tick so odin re-dispatches
+            if project_id:
+                await e.db.execute_write(
+                    "INSERT INTO god_relay_events (event_type, source, payload, severity, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    ("project_tick", "api", json.dumps({"project_id": project_id}), "info", time.time()),
+                )
         row = await e.db.fetchone("SELECT * FROM tasks WHERE id = $1", (task_id,))
         return row or {"id": task_id}
 

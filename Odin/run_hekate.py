@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 
@@ -34,13 +35,21 @@ def main():
     parser.add_argument("--frontend", type=str, help="Path to frontend dist/ directory")
     args = parser.parse_args()
 
-    # Logging
+    # Logging — console + rotating file (10 MB × 3 backups)
     level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
+
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline.log")
+    file_handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
+    file_handler.setFormatter(fmt)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(fmt)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
 
     if args.debug:
         logging.getLogger("gods").setLevel(logging.DEBUG)
