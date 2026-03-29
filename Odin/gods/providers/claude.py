@@ -94,11 +94,34 @@ class ClaudeCodeConfig:
 class ClaudeCodeProvider(CLIProvider):
     """Claude Code CLI provider with full flag support."""
 
+    # MCP config giving every CLI session access to the hekate code analysis tools
+    _HEKATE_MCP_CONFIG = json.dumps({
+        "mcpServers": {
+            "hekate": {
+                "type": "http",
+                "url": "http://localhost:5110/",
+            },
+        },
+    })
+
     def __init__(self, config: ClaudeCodeConfig | None = None):
         self._config = config or ClaudeCodeConfig(
-            # Full tool access — the model should be able to read, write, search, and run commands
-            allowed_tools=["Edit", "Write", "Read", "Glob", "Grep", "Bash(*)"],
-            # Multi-turn: let the model iterate up to 30 turns (read → plan → execute → self-review)
+            # Standard tools for file ops + hekate MCP for code analysis
+            allowed_tools=[
+                "Edit", "Write", "Read", "Glob", "Grep", "Bash(*)",
+                "mcp__hekate__analyze_file",
+                "mcp__hekate__find_usages",
+                "mcp__hekate__find_implementations",
+                "mcp__hekate__find_patterns",
+                "mcp__hekate__where",
+                "mcp__hekate__project_graph",
+                "mcp__hekate__review",
+                "mcp__hekate__verify",
+                "mcp__hekate__test_impact",
+            ],
+            # Hekate code analysis MCP — gives the model codebase awareness
+            mcp_config=ClaudeCodeProvider._HEKATE_MCP_CONFIG,
+            # Multi-turn: let the model iterate (read → plan → execute → self-review)
             max_turns=30,
             # No budget cap — CLI subscription, not API
             max_budget_usd=None,
@@ -106,6 +129,8 @@ class ClaudeCodeProvider(CLIProvider):
             dangerously_skip_permissions=True,
             # Self-review prompt appended to every session
             append_system_prompt=(
+                "You have access to hekate code analysis tools (mcp__hekate__*) for understanding "
+                "the codebase. Use them to read and analyze code before making changes.\n\n"
                 "After completing your work, review what you did:\n"
                 "1. Any gaps? Anything the task asked for that you missed?\n"
                 "2. Does your change fit the current architecture and patterns?\n"

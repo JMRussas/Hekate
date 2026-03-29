@@ -119,32 +119,77 @@ async def _generate_l1(
     requirements: str,
     project_name: str,
     db,
+    repo_path: str = ".",
     **kwargs,
 ) -> dict:
-    """Generate L1 plan via LLM gateway. No monolith imports.
+    """Generate L1 plan via Claude CLI with hekate code analysis tools.
+
+    The CLI session:
+    1. Uses hekate-mcp tools to analyze the codebase
+    2. Understands the existing architecture and patterns
+    3. Produces a plan that fits within the codebase
+    4. Returns structured JSON
 
     Returns: {"plan_id": str, "plan": dict}
     """
     import uuid
     from gods.providers.response_validator import extract_json
+    from gods.providers.claude import ClaudeCodeProvider, ClaudeCodeConfig
 
-    system_prompt = (
-        "You are a software project planner. Generate a structured plan as JSON.\n\n"
-        "Output format:\n"
-        '{"summary": "...", "phases": [{"name": "...", "tasks": ['
-        '{"title": "...", "description": "...", "task_type": "code|research|test", '
-        '"depends_on": []}]}]}\n\n'
-        "Rules:\n"
-        "- Break work into small, focused tasks (2-5 minutes each)\n"
-        "- Group related tasks into phases\n"
-        "- Set depends_on as array of task indices within the same phase\n"
-        "- task_type: 'code' for implementation, 'research' for analysis, 'test' for testing\n"
+    prompt = (
+        f"# Planning Task: {project_name}\n\n"
+        f"## Requirements\n{requirements}\n\n"
+        f"## Instructions\n"
+        f"1. Use the hekate code analysis tools (mcp__hekate__analyze_file, "
+        f"mcp__hekate__find_usages, mcp__hekate__where, mcp__hekate__project_graph) "
+        f"to understand the relevant parts of the codebase\n"
+        f"2. Understand the existing architecture and patterns before planning\n"
+        f"3. Create a plan that fits within the current codebase — don't invent new "
+        f"patterns unless the task explicitly asks to change the architecture\n"
+        f"4. Output your plan as a JSON block with this format:\n\n"
+        f'```json\n'
+        f'{{"summary": "...", "phases": [{{"name": "...", "tasks": ['
+        f'{{"title": "...", "description": "...", "task_type": "code|research|test", '
+        f'"depends_on": []}}]}}]}}\n'
+        f'```\n\n'
+        f"Rules:\n"
+        f"- Break work into small, focused tasks\n"
+        f"- Group related tasks into phases (phases execute as waves)\n"
+        f"- depends_on is an array of task indices within the same phase\n"
+        f"- task_type: 'code' for implementation, 'research' for analysis, 'test' for testing\n"
+        f"- Reference actual files you found in the codebase, not guessed paths\n"
     )
 
-    text = await _call_gateway(
-        system_prompt=system_prompt,
-        user_message=f"Project: {project_name}\n\nRequirements:\n{requirements}",
-    )
+    # Use CLI provider for planning — gives the model codebase access via hekate-mcp
+    planner = ClaudeCodeProvider(ClaudeCodeConfig(
+        allowed_tools=[
+            "Read", "Glob", "Grep",
+            "mcp__hekate__analyze_file",
+            "mcp__hekate__find_usages",
+            "mcp__hekate__find_implementations",
+            "mcp__hekate__find_patterns",
+            "mcp__hekate__where",
+            "mcp__hekate__project_graph",
+        ],
+        mcp_config=ClaudeCodeProvider._HEKATE_MCP_CONFIG,
+        max_turns=20,
+        dangerously_skip_permissions=True,
+        append_system_prompt=(
+            "You are a planner, not an executor. Do NOT modify any files. "
+            "Read and analyze the codebase, then output a JSON plan. "
+            "Your plan must reference real files and fit the existing architecture."
+        ),
+    ))
+
+    try:
+        result = await planner.execute(prompt=prompt, cwd=repo_path, timeout=300)
+        text = result.output
+    except Exception as e:
+        logger.warning("Athena: CLI planner failed (%s), falling back to gateway", e)
+        text = await _call_gateway(
+            system_prompt="You are a software project planner. Generate a structured plan as JSON.",
+            user_message=f"Project: {project_name}\n\nRequirements:\n{requirements}",
+        )
 
     plan = extract_json(text)
     if plan is None:
@@ -481,7 +526,7 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
 
     # Load project
     row = await db.fetchone(
-        "SELECT name, requirements, status, config_json FROM projects WHERE id = $1",
+        "SELECT name, requirements, status, config_json, repo_path FROM projects WHERE id = $1",
         (project_id,),
     )
     if not row:
@@ -492,6 +537,7 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
     project_name = row["name"]
     requirements = row.get("requirements", "") or ""
     status = row.get("status", "draft")
+    repo_path = row.get("repo_path", ".") or "."
     config = _load_config(row.get("config_json"))
 
     # Guard: skip if already beyond draft
@@ -555,6 +601,7 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
         for retry in range(MAX_RULE_RETRIES + 1):
             l1_result = await _generate_l1(
                 project_id, requirements, project_name, db,
+                repo_path=repo_path,
             )
             current_plan = l1_result
             conversation_id = l1_result.get("conversation_id")
