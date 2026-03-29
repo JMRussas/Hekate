@@ -402,10 +402,11 @@ def create_app(
         import asyncio
         import httpx
         services = []
+        from gods.config import GATEWAY_URL, CONTEXT_STORE_URL, MCP_URL
         checks = [
-            ("LLM Gateway", "http://localhost:5210/health"),
-            ("Context Store", "http://localhost:5102/health"),
-            ("Hekate MCP", "http://localhost:5110/health"),
+            ("LLM Gateway", f"{GATEWAY_URL}/health"),
+            ("Context Store", f"{CONTEXT_STORE_URL}/health"),
+            ("Hekate MCP", f"{MCP_URL}/health"),
         ]
         for name, url in checks:
             try:

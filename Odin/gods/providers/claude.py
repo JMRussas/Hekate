@@ -94,15 +94,18 @@ class ClaudeCodeConfig:
 class ClaudeCodeProvider(CLIProvider):
     """Claude Code CLI provider with full flag support."""
 
-    # MCP config giving every CLI session access to the hekate code analysis tools
-    _HEKATE_MCP_CONFIG = json.dumps({
-        "mcpServers": {
-            "hekate": {
-                "type": "http",
-                "url": "http://localhost:5110/",
+    @staticmethod
+    def _build_mcp_config() -> str:
+        """Build MCP config JSON from env vars. Each service URL is configurable."""
+        mcp_url = os.environ.get("HEKATE_MCP_URL", "http://localhost:5110/")
+        return json.dumps({
+            "mcpServers": {
+                "hekate": {
+                    "type": "http",
+                    "url": mcp_url,
+                },
             },
-        },
-    })
+        })
 
     def __init__(self, config: ClaudeCodeConfig | None = None):
         self._config = config or ClaudeCodeConfig(
@@ -120,7 +123,7 @@ class ClaudeCodeProvider(CLIProvider):
                 "mcp__hekate__test_impact",
             ],
             # Hekate code analysis MCP — gives the model codebase awareness
-            mcp_config=ClaudeCodeProvider._HEKATE_MCP_CONFIG,
+            mcp_config=ClaudeCodeProvider._build_mcp_config(),
             # Multi-turn: let the model iterate (read → plan → execute → self-review)
             max_turns=30,
             # No budget cap — CLI subscription, not API

@@ -58,7 +58,7 @@ async def _call_gateway(
     model: str | None = None,
     system_prompt: str,
     user_message: str,
-    gateway_url: str = "http://localhost:5210",
+    gateway_url: str | None = None,
     timeout: float = 300.0,
     history: list[dict] | None = None,
 ) -> str:
@@ -71,6 +71,9 @@ async def _call_gateway(
     by formatting the history inline.
     """
     import httpx
+    from gods.config import GATEWAY_URL
+    if not gateway_url:
+        gateway_url = GATEWAY_URL
 
     if history:
         # Format prior turns inline so the model has full context
@@ -172,7 +175,7 @@ async def _generate_l1(
             "mcp__hekate__where",
             "mcp__hekate__project_graph",
         ],
-        mcp_config=ClaudeCodeProvider._HEKATE_MCP_CONFIG,
+        mcp_config=ClaudeCodeProvider._build_mcp_config(),
         max_turns=20,
         dangerously_skip_permissions=True,
         add_dirs=additional_repos or None,

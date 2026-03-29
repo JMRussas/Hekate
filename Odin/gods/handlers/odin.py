@@ -70,9 +70,12 @@ _DEP_SATISFIED = ("completed",)
 # ---------------------------------------------------------------------------
 
 async def _get_provider_availability(
-    gateway_url: str = "http://localhost:5210",
+    gateway_url: str | None = None,
 ) -> dict[str, bool]:
     """Query LLM Gateway for provider status."""
+    from gods.config import GATEWAY_URL
+    if not gateway_url:
+        gateway_url = GATEWAY_URL
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{gateway_url}/providers")

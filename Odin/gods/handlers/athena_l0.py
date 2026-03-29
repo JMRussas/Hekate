@@ -27,7 +27,7 @@ from gods.providers.response_validator import extract_json  # noqa: E402
 
 logger = logging.getLogger("gods.handlers.athena_l0")
 
-GATEWAY_URL = "http://localhost:5210"
+from gods.config import GATEWAY_URL
 
 # ---------------------------------------------------------------------------
 # Prompts

@@ -90,7 +90,7 @@ async def _call_verifier(
     task_description: str,
     output_text: str,
     task_id: str,
-    gateway_url: str = "http://localhost:5210",
+    gateway_url: str | None = None,
 ) -> dict:
     """Verify task output via LLM gateway and submit verdict to engine API.
 
@@ -98,6 +98,9 @@ async def _call_verifier(
     Also calls /verify API to emit relay events for wave progression.
     """
     import httpx
+    from gods.config import GATEWAY_URL, ENGINE_URL
+    if not gateway_url:
+        gateway_url = GATEWAY_URL
     import os
 
     # Get verdict from LLM gateway
@@ -113,7 +116,7 @@ async def _call_verifier(
     confidence = result.get("confidence", 0.5)
 
     # Submit verdict to engine API — this emits relay events for wave progression
-    engine_url = os.environ.get("HEKATE_ENGINE_URL", "http://localhost:5200")
+    from gods.config import ENGINE_URL as engine_url
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(f"{engine_url}/api/tasks/{task_id}/verify", json={
@@ -136,10 +139,13 @@ async def _call_verifier_gateway(
     task_title: str,
     task_description: str,
     output_text: str,
-    gateway_url: str = "http://localhost:5210",
+    gateway_url: str | None = None,
 ) -> dict:
     """Call LLM gateway for verification judgment."""
     import httpx
+    from gods.config import GATEWAY_URL
+    if not gateway_url:
+        gateway_url = GATEWAY_URL
 
     prompt = (
         f"You are reviewing a task's output. Judge ONLY whether the output text "
@@ -179,13 +185,16 @@ async def _call_reviewer(
     *,
     task_title: str,
     output_text: str,
-    gateway_url: str = "http://localhost:5210",
+    gateway_url: str | None = None,
 ) -> dict:
     """Call LLM to review code quality.
 
     Returns {verdict: "approved"|"changes_requested", feedback: str}
     """
     import httpx
+    from gods.config import GATEWAY_URL
+    if not gateway_url:
+        gateway_url = GATEWAY_URL
 
     prompt = (
         f"Review the code quality of this task output.\n\n"
@@ -213,13 +222,16 @@ async def _call_reviewer(
 async def _call_knowledge_extractor(
     *,
     output_text: str,
-    gateway_url: str = "http://localhost:5210",
+    gateway_url: str | None = None,
 ) -> list[str]:
     """Extract reusable findings from task output.
 
     Returns list of finding strings.
     """
     import httpx
+    from gods.config import GATEWAY_URL
+    if not gateway_url:
+        gateway_url = GATEWAY_URL
 
     prompt = (
         f"Extract reusable knowledge findings from this task output. "
@@ -246,7 +258,7 @@ async def _extract_knowledge(
     project_id: str,
     output_text: str,
     db: Any,
-    gateway_url: str = "http://localhost:5210",
+    gateway_url: str | None = None,
 ) -> list[str]:
     """Extract and store knowledge from task output."""
     if not output_text or not output_text.strip():

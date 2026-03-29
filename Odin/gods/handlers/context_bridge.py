@@ -22,7 +22,7 @@ from gods.pipeline import Event, Emit
 
 logger = logging.getLogger("gods.handlers.context_bridge")
 
-_CS_URL = "http://localhost:5102"
+from gods.config import CONTEXT_STORE_URL as _CS_URL
 _TIMEOUT = 10.0
 
 _PIPELINE_PROJECT_NAME = "Hekate Pipeline"

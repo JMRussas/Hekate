@@ -332,11 +332,14 @@ async def _call_gateway(
     provider: str = "gemini",
     system_prompt: str,
     user_message: str,
-    gateway_url: str = "http://localhost:5210",
+    gateway_url: str | None = None,
     timeout: float = 120.0,
 ) -> dict:
     """Call the LLM Gateway."""
     import httpx
+    from gods.config import GATEWAY_URL
+    if not gateway_url:
+        gateway_url = GATEWAY_URL
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
