@@ -26,6 +26,11 @@ from gods.handlers.mimir import (
 )
 from gods.handlers.hephaestus import hephaestus_stage
 from gods.handlers.tyche import tyche_record_spend
+from gods.handlers.context_bridge import (
+    context_bridge_plan,
+    context_bridge_task_verified,
+    context_bridge_project_complete,
+)
 
 
 def register_all_handlers(
@@ -90,5 +95,10 @@ def register_all_handlers(
 
     # Tyche — budget
     pipeline.register("worker_event", tyche_record_spend)
+
+    # Context bridge — sync pipeline state to context store graph
+    pipeline.register("project_planned", context_bridge_plan)
+    pipeline.register("task_verified", context_bridge_task_verified)
+    pipeline.register("project_complete", context_bridge_project_complete)
 
     return hermes, mimir
