@@ -236,7 +236,13 @@ def create_app(
 
     @app.post("/api/tasks/{task_id}/verify")
     async def verify_task(task_id: str, req: Request):
-        """Submit verification verdict — called by Mimir agent via prometheus MCP."""
+        """Submit verification verdict — called by Mimir agent via prometheus MCP.
+
+        Emits relay events so odin_lifecycle can unblock dependents and
+        progress waves. This is the authoritative source of task_verified
+        events — mimir's _agent_submitted path relies on reading the DB
+        state set here.
+        """
         e: HekateEngine = app.state.engine
         body = await req.json()
         verdict = body.get("verdict", "human_needed")
@@ -247,6 +253,7 @@ def create_app(
         if not row:
             raise HTTPException(404, f"Task {task_id} not found")
 
+        project_id = row.get("project_id")
         max_retries = row.get("max_retries") or 3
 
         if verdict == "passed":
@@ -254,6 +261,15 @@ def create_app(
                 "UPDATE tasks SET verification_status = $1, verification_notes = $2, updated_at = $3 WHERE id = $4",
                 ("passed", feedback[:500] if feedback else None, time.time(), task_id),
             )
+            # Emit task_verified — drives wave progression via odin_lifecycle
+            if project_id:
+                await e.db.execute_write(
+                    "INSERT INTO god_relay_events (event_type, source, payload, severity, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    ("task_verified", "verify_api", json.dumps({
+                        "task_id": task_id, "project_id": project_id, "confidence": confidence,
+                    }), "info", time.time()),
+                )
             return {"accepted": True, "message": "Task verified as passed."}
         elif verdict == "gaps_found":
             retry_count = row.get("retry_count") or 0
@@ -263,6 +279,15 @@ def create_app(
                     "retry_count = retry_count + 1, updated_at = $4 WHERE id = $5",
                     ("pending", "gaps_found", feedback[:500], time.time(), task_id),
                 )
+                # Emit project_tick so odin re-dispatches the retried task
+                if project_id:
+                    await e.db.execute_write(
+                        "INSERT INTO god_relay_events (event_type, source, payload, severity, created_at) "
+                        "VALUES ($1, $2, $3, $4, $5)",
+                        ("project_tick", "verify_api", json.dumps({
+                            "project_id": project_id,
+                        }), "info", time.time()),
+                    )
                 return {"accepted": True, "message": "Task will be retried with feedback."}
             else:
                 await e.db.execute_write(
