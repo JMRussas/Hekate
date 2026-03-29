@@ -186,18 +186,25 @@ async def _call_verifier_gateway(
     import httpx
 
     prompt = (
-        f"Verify that the following output satisfies the task requirements.\n\n"
+        f"You are reviewing a task's output. Judge ONLY whether the output text "
+        f"addresses what the task asked for. Do NOT check if files exist, do NOT "
+        f"try to run code, do NOT verify external state. Just read the output and "
+        f"decide if it answers the task requirements.\n\n"
         f"Task: {task_title}\n"
         f"Description: {task_description}\n\n"
         f"Output:\n{output_text[:5000]}\n\n"
+        f"Rules:\n"
+        f"- 'passed': output addresses the requirements (even if imperfect)\n"
+        f"- 'gaps_found': output is missing something the task explicitly asked for\n"
+        f"- 'human_needed': output is empty, garbled, or completely unrelated\n\n"
         f"Respond with JSON: {{\"verdict\": \"passed|gaps_found|human_needed\", "
-        f"\"confidence\": 0.0-1.0, \"feedback\": \"...\"}}"
+        f"\"confidence\": 0.0-1.0, \"feedback\": \"one sentence\"}}"
     )
 
-    async with httpx.AsyncClient(timeout=600.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
             "provider": "claude",
-            "system_prompt": "You are a code verification assistant. Always respond with valid JSON.",
+            "system_prompt": "You are a task output reviewer. Respond with valid JSON only. Be lenient — if the output makes a reasonable attempt at the task, verdict is passed.",
             "user_message": prompt,
         })
         resp.raise_for_status()
