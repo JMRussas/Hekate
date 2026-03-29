@@ -100,8 +100,8 @@ class ClaudeCodeProvider(CLIProvider):
             allowed_tools=["Edit", "Write", "Read", "Glob", "Grep", "Bash(*)"],
             # Multi-turn: let the model iterate up to 30 turns (read → plan → execute → self-review)
             max_turns=30,
-            # Budget cap per task
-            max_budget_usd=2.0,
+            # No budget cap — CLI subscription, not API
+            max_budget_usd=None,
             # Skip permission prompts — the pipeline is automated
             dangerously_skip_permissions=True,
             # Self-review prompt appended to every session
