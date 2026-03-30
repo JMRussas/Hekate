@@ -164,12 +164,36 @@ def _select_provider(
     task_type: str,
     complexity: str,
     available: dict[str, bool],
+    snapshot: dict | None = None,
 ) -> str:
     """Pick a provider for a task based on registry preference + availability.
 
-    Checks the task type registry first for provider_preference.
-    Falls back to _TIER_MAP for unregistered types.
+    If a pipeline_snapshot is provided (from the project's config_json),
+    uses the snapshotted tier map and task type defs — immune to deploys.
+    Falls back to current globals for projects without a snapshot.
     """
+    if snapshot:
+        # Use snapshotted task type defs for provider preference
+        task_defs = snapshot.get("task_type_defs", {})
+        type_def = task_defs.get(task_type, {})
+        prefs = type_def.get("provider_preference", [])
+        for prov in prefs:
+            if available.get(prov, False):
+                return prov
+
+        # Use snapshotted tier map
+        tier_map = snapshot.get("tier_map", {})
+        preferred = tier_map.get(f"{task_type}:{complexity}", "claude_code")
+        if available.get(preferred, False):
+            return preferred
+
+        # Use snapshotted fallback
+        for fb in snapshot.get("fallback_providers", _FALLBACK):
+            if available.get(fb, False):
+                return fb
+        return "claude_code"
+
+    # No snapshot — use current globals (backward compat)
     registry = get_registry()
     spec = registry.get(task_type)
     if spec and spec.provider_preference:
@@ -177,7 +201,6 @@ def _select_provider(
             if available.get(prov, False):
                 return prov
 
-    # Fallback to static tier map
     preferred = _TIER_MAP.get((task_type, complexity), "claude_code")
     if available.get(preferred, False):
         return preferred
@@ -276,6 +299,18 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
     max_concurrent = event.payload.get("max_concurrent", 4)
     available = await _get_provider_availability()
 
+    # Load pipeline snapshot for Conductor-style workflow versioning
+    snapshot = None
+    try:
+        proj_row = await db.fetchone(
+            "SELECT config_json FROM projects WHERE id = $1", (project_id,),
+        )
+        if proj_row:
+            proj_config = safe_json.loads_dict(proj_row.get("config_json") or "{}")
+            snapshot = proj_config.get("pipeline_snapshot")
+    except Exception:
+        pass  # Fall back to globals
+
     emits: list[Emit] = []
 
     # Diagnose failed tasks
@@ -345,7 +380,7 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
 
         # Default complexity to medium — real DB may not have this column
         complexity = "medium"
-        provider = _select_provider(ttype, complexity, available)
+        provider = _select_provider(ttype, complexity, available, snapshot)
 
         # Record provider selection but keep status pending —
         # hermes sets to running when it actually starts the CLI.

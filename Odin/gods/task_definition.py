@@ -327,6 +327,17 @@ class TaskTypeRegistry:
 
         return errors
 
+    def to_snapshot(self) -> dict:
+        """Serialize registry state for workflow versioning.
+
+        Captured at project creation so in-flight projects use their
+        original task type definitions even after deploys.
+        """
+        return {
+            name: spec.to_dict()
+            for name, spec in self._types.items()
+        }
+
     @property
     def types(self) -> list[str]:
         return list(self._types.keys())

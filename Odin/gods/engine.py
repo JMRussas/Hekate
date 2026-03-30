@@ -640,6 +640,27 @@ class HekateEngine:
     # Project management
     # ------------------------------------------------------------------
 
+    def _snapshot_pipeline_config(self) -> dict:
+        """Capture current pipeline operational config.
+
+        Conductor-style: snapshot at project creation so in-flight
+        projects are immune to config changes from deploys.
+        """
+        from gods.task_definition import get_registry
+        from gods.handlers.odin import _TIER_MAP, _FALLBACK
+
+        registry = get_registry()
+        snapshot = {
+            "schema_version": 1,
+            "tier_map": {f"{k[0]}:{k[1]}": v for k, v in _TIER_MAP.items()},
+            "fallback_providers": list(_FALLBACK),
+            "task_type_defs": registry.to_snapshot(),
+        }
+        if self.hermes_runner:
+            snapshot["max_concurrent"] = self.hermes_runner.max_concurrent
+            snapshot["default_timeout"] = self.hermes_runner.default_timeout
+        return snapshot
+
     async def create_project(
         self,
         name: str,
@@ -651,7 +672,11 @@ class HekateEngine:
         """Create a project and emit project_created event."""
         project_id = uuid.uuid4().hex[:12]
         now = time.time()
-        config_json = json.dumps(config or {})
+
+        # Embed pipeline config snapshot (Conductor-style workflow versioning)
+        config = config or {}
+        config["pipeline_snapshot"] = self._snapshot_pipeline_config()
+        config_json = json.dumps(config)
         additional_repos_json = json.dumps(additional_repos) if additional_repos else None
 
         await self.db.execute_write(
