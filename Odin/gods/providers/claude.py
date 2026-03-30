@@ -86,7 +86,7 @@ class ClaudeCodeConfig:
     # Misc
     add_dirs: list[str] | None = None        # --add-dir (additional working directories)
     effort: str | None = None                # --effort (low, medium, high, max)
-    include_partial_messages: bool = False    # --include-partial-messages
+    include_partial_messages: bool = True     # --include-partial-messages (peer programming: stream tokens live)
     no_chrome: bool = True                   # --no-chrome (disable browser)
     debug: str | None = None                 # --debug (category filtering)
 

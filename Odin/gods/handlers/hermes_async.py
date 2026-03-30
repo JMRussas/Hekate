@@ -507,8 +507,8 @@ class HermesRunner:
                 logger.info("Hermes: task %s using add_dirs: %s", task_id[:8], add_dirs)
 
         if cli_provider is not None:
-            # Stream narration in real-time: parse each stream-json line and
-            # write tool_use / assistant events to the relay as they arrive.
+            # Peer programming mode: stream every meaningful event to the relay
+            # in real-time so the user can watch what Claude is doing.
             async def _on_line(line: str):
                 try:
                     data = json.loads(line)
@@ -521,7 +521,15 @@ class HermesRunner:
                         "project_id": project_id,
                         "type": "tool_call",
                         "tool": data.get("tool", ""),
-                        "input": str(data.get("input", ""))[:200],
+                        "input": str(data.get("input", ""))[:500],
+                    })
+                elif event_type == "tool_result":
+                    await self._write_relay_event("narration", {
+                        "task_id": task_id,
+                        "project_id": project_id,
+                        "type": "tool_result",
+                        "tool": data.get("tool", ""),
+                        "output": str(data.get("output", ""))[:500],
                     })
                 elif event_type == "assistant":
                     msg = data.get("message", {})
@@ -531,8 +539,18 @@ class HermesRunner:
                                 "task_id": task_id,
                                 "project_id": project_id,
                                 "type": "assistant",
-                                "text": content["text"][:300],
+                                "text": content["text"][:500],
                             })
+                elif event_type == "stream_event":
+                    # Partial token streaming — live text deltas
+                    delta = data.get("event", {}).get("delta", {})
+                    if delta.get("type") == "text_delta" and delta.get("text"):
+                        await self._write_relay_event("narration", {
+                            "task_id": task_id,
+                            "project_id": project_id,
+                            "type": "text_delta",
+                            "text": delta["text"],
+                        })
 
             result = await cli_provider.execute(
                 prompt=prompt,
