@@ -516,6 +516,10 @@ class HekateEngine:
             "ALTER TABLE tasks ADD COLUMN fork_group_id TEXT",
             "ALTER TABLE tasks ADD COLUMN branch_id TEXT",
             "ALTER TABLE projects ADD COLUMN additional_repos TEXT",
+            "ALTER TABLE tasks ADD COLUMN repo_paths TEXT",
+            "ALTER TABLE tasks ADD COLUMN complexity TEXT DEFAULT 'medium'",
+            "ALTER TABLE tasks ADD COLUMN implementation_notes TEXT",
+            "ALTER TABLE tasks ADD COLUMN test_strategy TEXT",
         ]:
             try:
                 await self.db.execute_write(migration, ())
@@ -1004,6 +1008,10 @@ async def _setup_db_with_init(self):
         "ALTER TABLE god_relay_events ADD COLUMN idempotency_key TEXT",
         "ALTER TABLE tasks ADD COLUMN fork_group_id TEXT",
         "ALTER TABLE tasks ADD COLUMN branch_id TEXT",
+        "ALTER TABLE tasks ADD COLUMN repo_paths TEXT",
+        "ALTER TABLE tasks ADD COLUMN complexity TEXT DEFAULT 'medium'",
+        "ALTER TABLE tasks ADD COLUMN implementation_notes TEXT",
+        "ALTER TABLE tasks ADD COLUMN test_strategy TEXT",
         "ALTER TABLE projects ADD COLUMN additional_repos TEXT",
     ]
     for migration in migrations:
