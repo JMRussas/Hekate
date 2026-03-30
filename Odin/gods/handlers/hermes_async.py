@@ -507,11 +507,39 @@ class HermesRunner:
                 logger.info("Hermes: task %s using add_dirs: %s", task_id[:8], add_dirs)
 
         if cli_provider is not None:
+            # Stream narration in real-time: parse each stream-json line and
+            # write tool_use / assistant events to the relay as they arrive.
+            async def _on_line(line: str):
+                try:
+                    data = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    return
+                event_type = data.get("type")
+                if event_type == "tool_use":
+                    await self._write_relay_event("narration", {
+                        "task_id": task_id,
+                        "project_id": project_id,
+                        "type": "tool_call",
+                        "tool": data.get("tool", ""),
+                        "input": str(data.get("input", ""))[:200],
+                    })
+                elif event_type == "assistant":
+                    msg = data.get("message", {})
+                    for content in msg.get("content", []):
+                        if content.get("type") == "text" and content.get("text"):
+                            await self._write_relay_event("narration", {
+                                "task_id": task_id,
+                                "project_id": project_id,
+                                "type": "assistant",
+                                "text": content["text"][:300],
+                            })
+
             result = await cli_provider.execute(
                 prompt=prompt,
                 cwd=cwd,
                 timeout=timeout or self.default_timeout,
                 on_process=lambda proc: self._processes.__setitem__(task_id, proc),
+                on_line=_on_line,
             )
             return {
                 "output": result.output,

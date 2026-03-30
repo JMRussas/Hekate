@@ -77,12 +77,15 @@ class CLIProvider(ABC):
         cwd: str,
         timeout: float = 600,
         on_process: Any = None,
+        on_line: Any = None,
     ) -> StandardResult:
         """Full execution: build cmd → launch subprocess → capture → parse.
 
         Args:
             on_process: Optional callback(proc) invoked after subprocess creation,
                         allowing callers to track the process handle for cleanup.
+            on_line: Optional async callback(line_str) invoked for each stdout line
+                     as it arrives. Used for real-time narration streaming.
 
         Override _run_subprocess in tests.
         """
@@ -119,6 +122,11 @@ class CLIProvider(ABC):
                     decoded = line.decode("utf-8", errors="replace").strip()
                     if decoded:
                         output_lines.append(decoded)
+                        if on_line is not None:
+                            try:
+                                await on_line(decoded)
+                            except Exception:
+                                pass  # Never block on narration failure
         except asyncio.TimeoutError:
             proc.kill()
             logger.error("%s: timed out after %.0fs", self.name, timeout)
