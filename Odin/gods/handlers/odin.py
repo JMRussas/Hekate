@@ -50,16 +50,6 @@ def _val(row, key, default=None):
     except (IndexError, KeyError):
         return default
 
-async def _get_task_type_complexity(db, task_id: str) -> tuple[str, str]:
-    """Load task_type and complexity from DB, defaulting to code/medium."""
-    row = await db.fetchone(
-        "SELECT task_type, complexity FROM tasks WHERE id = $1", (task_id,)
-    )
-    if row:
-        return (row.get("task_type") or "code"), (row.get("complexity") or "medium")
-    return "code", "medium"
-
-
 async def _load_context_json(db, task_id: str) -> dict:
     """Load and parse context_json from a task, returning a dict."""
     ctx_row = await db.fetchone(

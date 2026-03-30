@@ -71,6 +71,7 @@ class Event:
     source: str
     timestamp: float = field(default_factory=time.time)
     severity: str = "info"
+    id: int = 0  # relay table row ID — used for cursor advancement
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +144,9 @@ class Pipeline:
         self.tick_interval = tick_interval
         self.source_name = source_name
         self._handlers: list[Registration] = []
-        self._cursor: float = time.time()
         self._last_seen_id: int = 0  # track last processed row ID for dedup
         self._running = False
+        self._scheduler_running = False
         self._tick_count = 0
         # Narration callback: (source, event_type, message) → None
         # Called by handlers to stream real-time narration (peer coding)
@@ -361,27 +362,57 @@ class Pipeline:
         # - tick/project_tick: keep latest per (type, project_id)
         # - dispatch_command: keep latest per task_id
         # - worker_event with status=skipped: keep latest per task_id
+        # Preserves original insertion order — deduped events stay at their
+        # last occurrence position, non-deduped events keep their position.
         dedup_by_project = {"tick", "project_tick"}
         dedup_by_task = {"dispatch_command"}
-        seen: dict[tuple, Event] = {}
-        unique_events: list[Event] = []
+        seen: dict[tuple, int] = {}  # key → last index
+        keyed: dict[tuple, Event] = {}
 
-        for event in events:
+        for i, event in enumerate(events):
             if event.event_type in dedup_by_project:
                 key = (event.event_type, event.payload.get("project_id", ""))
-                seen[key] = event
+                seen[key] = i
+                keyed[key] = event
             elif event.event_type in dedup_by_task:
                 key = (event.event_type, event.payload.get("task_id", ""))
-                seen[key] = event
+                seen[key] = i
+                keyed[key] = event
             elif (event.event_type == "worker_event"
                   and event.payload.get("status") == "skipped"):
                 key = ("worker_skipped", event.payload.get("task_id", ""))
-                seen[key] = event
-            else:
-                unique_events.append(event)
+                seen[key] = i
+                keyed[key] = event
 
-        # Add deduplicated ticks back
-        unique_events.extend(seen.values())
+        # Build ordered list: non-deduped at their original position,
+        # deduped at their last occurrence position
+        dedup_positions = set(seen.values())
+        unique_events: list[Event] = []
+        for i, event in enumerate(events):
+            if i in dedup_positions:
+                # This is the last occurrence of a deduped key — include it
+                for key, idx in seen.items():
+                    if idx == i:
+                        unique_events.append(keyed[key])
+                        break
+            else:
+                # Check if this event was deduped (earlier occurrence) — skip it
+                skip = False
+                if event.event_type in dedup_by_project:
+                    key = (event.event_type, event.payload.get("project_id", ""))
+                    if key in seen and seen[key] != i:
+                        skip = True
+                elif event.event_type in dedup_by_task:
+                    key = (event.event_type, event.payload.get("task_id", ""))
+                    if key in seen and seen[key] != i:
+                        skip = True
+                elif (event.event_type == "worker_event"
+                      and event.payload.get("status") == "skipped"):
+                    key = ("worker_skipped", event.payload.get("task_id", ""))
+                    if key in seen and seen[key] != i:
+                        skip = True
+                if not skip:
+                    unique_events.append(event)
 
         for event in unique_events:
             try:
@@ -389,8 +420,8 @@ class Pipeline:
             except Exception as e:
                 logger.error("Pipeline: dispatch failed for %s: %s: %s",
                              event.event_type, type(e).__name__, e)
-            # Advance cursor after EACH event — never replay a processed event
-            if hasattr(event, 'id') and event.id and event.id > self._last_seen_id:
+            # Advance cursor after EACH event — only advance past successfully dispatched events
+            if event.id > self._last_seen_id:
                 self._last_seen_id = event.id
 
         await self._persist_cursor()
@@ -584,8 +615,9 @@ class Pipeline:
             events.append(Event(
                 event_type=et, payload=payload, source=src,
                 timestamp=float(ts), severity=sev or "info",
+                id=int(row_id),
             ))
-            self._last_seen_id = max(self._last_seen_id, int(row_id))
+            # Don't advance cursor here — tick() advances after successful dispatch
 
         return events
 
@@ -656,8 +688,6 @@ class Pipeline:
         emits: list[Emit],
         *,
         extra_fields: dict[str, Any] | None = None,
-        extra_sql: str = "",
-        extra_params: tuple = (),
         source: str = "",
     ):
         """Atomically transition a task's state AND write relay events.
@@ -676,10 +706,6 @@ class Pipeline:
                 idx = len(params) + 1
                 set_parts.append(f"{col} = ${idx}")
                 params.append(val)
-
-        if extra_sql:
-            set_parts.append(extra_sql)
-            params.extend(extra_params)
 
         task_id_idx = len(params) + 1
         params.append(task_id)
@@ -747,7 +773,7 @@ class Pipeline:
         return {
             "running": self._running,
             "tick_count": self._tick_count,
-            "cursor": self._cursor,
+            "last_seen_id": self._last_seen_id,
             "handler_count": len(self._handlers),
             "subscribed_events": list({r.event_type for r in self._handlers}),
         }
