@@ -163,7 +163,7 @@ async def _call_verifier_gateway(
         f"\"confidence\": 0.0-1.0, \"feedback\": \"one sentence\"}}"
     )
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
             "provider": "claude",
             "system_prompt": "You are a task output reviewer. Respond with valid JSON only. Be lenient — if the output makes a reasonable attempt at the task, verdict is passed.",

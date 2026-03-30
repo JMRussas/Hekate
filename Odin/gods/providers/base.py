@@ -113,10 +113,20 @@ class CLIProvider(ABC):
         proc.stdin.close()
 
         output_lines: list[str] = []
+        # Per-line inactivity timeout: if no output for 5 min, CLI is stuck.
+        # Overall timeout is a safety cap, not expected to fire.
+        line_timeout = min(300.0, timeout)
         try:
             async with asyncio.timeout(timeout):
                 while True:
-                    line = await proc.stdout.readline()
+                    try:
+                        line = await asyncio.wait_for(
+                            proc.stdout.readline(), timeout=line_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error("%s: no output for %.0fs, killing", self.name, line_timeout)
+                        proc.kill()
+                        break
                     if not line:
                         break
                     decoded = line.decode("utf-8", errors="replace").strip()
@@ -129,7 +139,7 @@ class CLIProvider(ABC):
                                 pass  # Never block on narration failure
         except asyncio.TimeoutError:
             proc.kill()
-            logger.error("%s: timed out after %.0fs", self.name, timeout)
+            logger.error("%s: overall timeout after %.0fs", self.name, timeout)
 
         await proc.wait()
         logger.debug("%s: exited code=%d lines=%d",

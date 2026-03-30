@@ -59,7 +59,7 @@ async def _call_gateway(
     system_prompt: str,
     user_message: str,
     gateway_url: str | None = None,
-    timeout: float = 300.0,
+    timeout: float = 1800.0,  # 30 min — CLI sessions can run long, don't kill them
     history: list[dict] | None = None,
 ) -> str:
     """Call LLM Gateway, return text response.
@@ -187,7 +187,7 @@ async def _generate_l1(
     ))
 
     try:
-        result = await planner.execute(prompt=prompt, cwd=repo_path, timeout=300)
+        result = await planner.execute(prompt=prompt, cwd=repo_path, timeout=1800)
         text = result.output
     except Exception as e:
         logger.warning("Athena: CLI planner failed (%s), falling back to gateway", e)
