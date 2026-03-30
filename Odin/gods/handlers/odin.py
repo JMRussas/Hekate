@@ -29,6 +29,16 @@ logger = logging.getLogger("gods.handlers.odin")
 _TERMINAL = tuple(s.value for s in TERMINAL_STATES)
 
 
+def _not_in_terminal(start_idx: int) -> tuple[str, tuple]:
+    """Build a NOT IN clause for terminal states with dynamic placeholders.
+
+    Returns (sql_fragment, params) starting at $start_idx.
+    Usage: sql, params = _not_in_terminal(2)  → "NOT IN ($2, $3, $4)", ("completed", "failed", "cancelled")
+    """
+    placeholders = ", ".join(f"${start_idx + i}" for i in range(len(_TERMINAL)))
+    return f"NOT IN ({placeholders})", _TERMINAL
+
+
 def _val(row, key, default=None):
     """Extract a value from a row (dict or tuple). Handles aggregates."""
     if row is None:
@@ -283,10 +293,11 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
     emits.extend(diag_emits)
 
     # Find current wave (lowest wave with non-terminal, non-needs_review tasks)
+    not_in, t_params = _not_in_terminal(2)
     wave_row = await db.fetchone(
-        "SELECT MIN(wave) AS min_wave FROM tasks "
-        "WHERE project_id = $1 AND status NOT IN ($2, $3, $4)",
-        (project_id, *_TERMINAL),
+        f"SELECT MIN(wave) AS min_wave FROM tasks "
+        f"WHERE project_id = $1 AND status {not_in}",
+        (project_id, *t_params),
     )
     current_wave = _val(wave_row, "min_wave")
     if current_wave is None:
@@ -379,9 +390,10 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
     emits: list[Emit] = []
 
     # Count remaining non-terminal tasks (needs_review counts as non-terminal)
+    not_in, t_params = _not_in_terminal(2)
     remaining = await db.fetchone(
-        "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND status NOT IN ($2, $3, $4)",
-        (project_id, *_TERMINAL),
+        f"SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND status {not_in}",
+        (project_id, *t_params),
     )
     remaining_count = _val(remaining, "cnt", 0)
 
@@ -560,10 +572,11 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
             verified_wave = _val(task_row, "wave")
 
             # Count non-terminal tasks remaining in this wave
+            not_in_w, t_params_w = _not_in_terminal(3)
             wave_remaining = await db.fetchone(
-                "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND wave = $2 "
-                "AND status NOT IN ($3, $4, $5)",
-                (project_id, verified_wave, *_TERMINAL),
+                f"SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = $1 AND wave = $2 "
+                f"AND status {not_in_w}",
+                (project_id, verified_wave, *t_params_w),
             )
             if _val(wave_remaining, "cnt", 1) == 0:
                 emits.append(Emit("wave_complete", {
@@ -653,7 +666,7 @@ def make_odin_handle_diagnosis(pipeline):
                     "retry_count": retry_count + 1,
                     "retry_delay": delay,
                 }, source="odin",
-                   idempotency_key=idem_key("task_reset", task_id, str(retry_count + 1)),
+                   idempotency_key=idem_key("task_reset_retry", task_id, str(retry_count + 1)),
                 )
                 await pipeline.transition_and_emit(
                     task_id, "pending", [emit],
@@ -685,7 +698,7 @@ def make_odin_handle_diagnosis(pipeline):
                 "retry_count": retry_count + 1,
                 "retry_delay": delay,
             }, source="odin",
-               idempotency_key=idem_key("task_reset", task_id, str(retry_count + 1)),
+               idempotency_key=idem_key("task_reset_reassign", task_id, str(retry_count + 1)),
             )
             await pipeline.transition_and_emit(
                 task_id, "pending", [emit],
@@ -712,7 +725,7 @@ def make_odin_handle_diagnosis(pipeline):
                 "prompt_guidance": guidance,
                 "retry_count": retry_count + 1,
             }, source="odin",
-               idempotency_key=idem_key("task_reset", task_id, str(retry_count + 1)),
+               idempotency_key=idem_key("task_reset_prompt", task_id, str(retry_count + 1)),
             )
             await pipeline.transition_and_emit(
                 task_id, "pending", [emit],

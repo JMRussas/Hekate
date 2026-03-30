@@ -299,6 +299,20 @@ CREATE TABLE IF NOT EXISTS workflow_edges (
     evaluated_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS odin_decisions (
+    decision_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    task_id TEXT,
+    decision_type TEXT NOT NULL,
+    params_json TEXT DEFAULT '{}',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    reasoning TEXT,
+    action_taken TEXT,
+    outcome TEXT,
+    details_json TEXT DEFAULT '{}',
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS god_relay_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_type TEXT NOT NULL,
@@ -407,6 +421,20 @@ CREATE TABLE IF NOT EXISTS workflow_edges (
     status TEXT NOT NULL DEFAULT 'pending',
     created_at DOUBLE PRECISION NOT NULL,
     evaluated_at DOUBLE PRECISION
+);
+
+CREATE TABLE IF NOT EXISTS odin_decisions (
+    decision_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    task_id TEXT,
+    decision_type TEXT NOT NULL,
+    params_json TEXT DEFAULT '{}',
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    reasoning TEXT,
+    action_taken TEXT,
+    outcome TEXT,
+    details_json TEXT DEFAULT '{}',
+    created_at DOUBLE PRECISION NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS god_relay_events (

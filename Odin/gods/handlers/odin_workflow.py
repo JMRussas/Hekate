@@ -34,20 +34,22 @@ def _evaluate_rules(
 
     Returns (chosen_branch, reason).
     """
+    terminal = {"completed", "failed", "cancelled"}
     completed = [t for t in task_outcomes if t.get("status") == "completed"]
     failed = [t for t in task_outcomes if t.get("status") == "failed"]
+    all_terminal = all(t.get("status") in terminal for t in task_outcomes) if task_outcomes else False
 
     for rule in rules:
         condition = rule.get("condition", "")
         branch = rule.get("branch", fallback_branch)
 
-        if condition == "all_passed" and len(failed) == 0 and len(completed) > 0:
+        if condition == "all_passed" and all_terminal and len(failed) == 0 and len(completed) > 0:
             return branch, f"All {len(completed)} tasks passed"
 
         if condition == "any_failed" and len(failed) > 0:
             return branch, f"{len(failed)} task(s) failed"
 
-        if condition == "all_failed" and len(completed) == 0 and len(failed) > 0:
+        if condition == "all_failed" and all_terminal and len(completed) == 0 and len(failed) > 0:
             return branch, f"All {len(failed)} tasks failed"
 
         if condition.startswith("output_contains:"):
@@ -132,19 +134,21 @@ Choose one branch. Respond with JSON: {{"branch": "<name>", "reason": "<one sent
 
 async def _cancel_branch_tasks(db, project_id: str, branch_id: str) -> int:
     """Cancel all tasks in a branch. Returns count of cancelled tasks."""
-    now = time.time()
-    result = await db.execute_write(
-        "UPDATE tasks SET status = $1, updated_at = $2 "
-        "WHERE project_id = $3 AND branch_id = $4 AND status NOT IN ($5, $6, $7)",
-        ("cancelled", now, project_id, branch_id, "completed", "failed", "cancelled"),
+    # Count first since execute_write doesn't reliably return rowcount
+    count_row = await db.fetchone(
+        "SELECT COUNT(*) AS cnt FROM tasks "
+        "WHERE project_id = $1 AND branch_id = $2 AND status NOT IN ($3, $4, $5)",
+        (project_id, branch_id, "completed", "failed", "cancelled"),
     )
-    # Extract count from result if available
-    count = 0
-    if result and isinstance(result, str):
-        try:
-            count = int(result.strip().split()[-1])
-        except (ValueError, IndexError):
-            pass
+    count = count_row.get("cnt", 0) if count_row else 0
+
+    if count > 0:
+        now = time.time()
+        await db.execute_write(
+            "UPDATE tasks SET status = $1, updated_at = $2 "
+            "WHERE project_id = $3 AND branch_id = $4 AND status NOT IN ($5, $6, $7)",
+            ("cancelled", now, project_id, branch_id, "completed", "failed", "cancelled"),
+        )
     return count
 
 
@@ -165,11 +169,14 @@ async def odin_decide(event: Event, db) -> list[Emit] | None:
         return None
 
     # Check for a decision edge on this wave
-    edge = await db.fetchone(
-        "SELECT id, spec_json, status FROM workflow_edges "
-        "WHERE project_id = $1 AND source_wave = $2 AND edge_type = $3 AND status = $4",
-        (project_id, wave, "decision", "pending"),
-    )
+    try:
+        edge = await db.fetchone(
+            "SELECT id, spec_json, status FROM workflow_edges "
+            "WHERE project_id = $1 AND source_wave = $2 AND edge_type = $3 AND status = $4",
+            (project_id, wave, "decision", "pending"),
+        )
+    except Exception:
+        edge = None  # Table may not exist yet — backward compat
 
     if not edge:
         # No decision — just emit project_tick (backward compat)

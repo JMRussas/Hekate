@@ -51,11 +51,13 @@ def is_duplicate_key_error(e: Exception) -> bool:
     """Check if an exception is a unique/duplicate key constraint violation.
 
     Works for both asyncpg (UniqueViolationError) and SQLite (UNIQUE constraint failed).
+    Intentionally narrow — does NOT match foreign key or check constraint violations.
     """
-    if type(e).__name__ == "UniqueViolationError":
+    name = type(e).__name__
+    if name == "UniqueViolationError":
         return True
     err = str(e).lower()
-    return "unique" in err or "duplicate" in err or "constraint" in err
+    return "unique" in err or "duplicate key" in err
 
 
 # ---------------------------------------------------------------------------
@@ -616,19 +618,29 @@ class Pipeline:
             )
 
     async def _emit_on_conn(self, tx, emit: Emit):
-        """Emit an event within an existing transaction."""
+        """Emit an event within an existing transaction.
+
+        For keyed emits, catches duplicate key errors and skips silently —
+        same dedup semantics as _emit() so replay is safe within transactions.
+        """
         source = emit.source or self.source_name
         payload_str = json.dumps(emit.payload, default=str)
         ts = time.time()
         key = emit.idempotency_key
 
         if key:
-            await tx.execute_write(
-                "INSERT INTO god_relay_events "
-                "(event_type, source, payload, severity, idempotency_key, created_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6)",
-                (emit.event_type, source, payload_str, emit.severity, key, ts),
-            )
+            try:
+                await tx.execute_write(
+                    "INSERT INTO god_relay_events "
+                    "(event_type, source, payload, severity, idempotency_key, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    (emit.event_type, source, payload_str, emit.severity, key, ts),
+                )
+            except Exception as e:
+                if is_duplicate_key_error(e):
+                    logger.debug("Emit dedup (tx): key %s already exists, skipping", key[:16])
+                    return
+                raise
         else:
             await tx.execute_write(
                 "INSERT INTO god_relay_events "

@@ -392,7 +392,7 @@ class HermesRunner:
                     "project_id": project_id,
                     "status": "failed",
                     "error": "Task cancelled",
-                }))
+                }, idempotency_key=idem_key("hermes_cancelled", task_id, str(retry_count))))
             except (asyncio.CancelledError, Exception):
                 pass
             return  # Don't re-raise — we handled it
