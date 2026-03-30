@@ -620,7 +620,7 @@ class HekateEngine:
                                 "INSERT INTO god_relay_events "
                                 "(event_type, source, payload, severity, created_at) "
                                 "VALUES ($1, $2, $3, $4, $5)",
-                                ("heartbeat_tick", "heartbeat",
+                                ("project_tick", "heartbeat",
                                  json.dumps({"project_id": pid}),
                                  "info", time.time()),
                             )

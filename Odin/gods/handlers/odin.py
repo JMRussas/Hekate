@@ -390,14 +390,11 @@ async def odin_dispatch(event: Event, db) -> list[Emit] | None:
             (provider, time.time(), tid),
         )
 
-        task_retries = task_row.get("retry_count", 0) or 0
         emits.append(Emit("dispatch_command", {
             "task_id": tid,
             "project_id": project_id,
             "provider": provider,
-        }, source="odin",
-           idempotency_key=idem_key("dispatch", tid, str(task_retries)),
-        ))
+        }, source="odin"))
 
     return emits or None
 
