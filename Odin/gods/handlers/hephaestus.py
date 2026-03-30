@@ -109,3 +109,185 @@ async def hephaestus_stage(event: Event, db) -> list[Emit] | None:
         "project_id": project_id,
         "files": affected_files,
     }, source="hephaestus")]
+
+
+# ---------------------------------------------------------------------------
+# Git helpers for project completion
+# ---------------------------------------------------------------------------
+
+async def _git_run(args: list[str], cwd: str, timeout: float = 30.0) -> tuple[int, str, str]:
+    """Run a git command. Returns (returncode, stdout, stderr)."""
+    import asyncio
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        return -1, "", "timeout"
+    return (
+        proc.returncode or 0,
+        (stdout or b"").decode(errors="replace").strip(),
+        (stderr or b"").decode(errors="replace").strip(),
+    )
+
+
+async def _has_staged_changes(cwd: str) -> bool:
+    """Check if there are staged changes to commit."""
+    rc, out, _ = await _git_run(["diff", "--cached", "--quiet"], cwd)
+    return rc != 0  # exit 1 = there are differences
+
+
+async def _get_current_branch(cwd: str) -> str:
+    """Get the current git branch name."""
+    rc, out, _ = await _git_run(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    return out if rc == 0 else "main"
+
+
+# ---------------------------------------------------------------------------
+# hephaestus_complete — project_complete → commit + push + PR
+# ---------------------------------------------------------------------------
+
+async def hephaestus_complete(event: Event, db) -> list[Emit] | None:
+    """On project completion: commit staged changes, push branch, create PR.
+
+    Steps:
+      1. Check for staged changes — skip if nothing to commit
+      2. Create a project branch if on main
+      3. Commit with descriptive message
+      4. Push to origin
+      5. Create PR via gh cli
+      6. Emit pr_created or commit_complete
+    """
+    project_id = event.payload.get("project_id")
+    if not project_id:
+        return None
+
+    proj_row = await db.fetchone(
+        "SELECT name, repo_path FROM projects WHERE id = $1", (project_id,),
+    )
+    if not proj_row:
+        return None
+
+    project_name = proj_row.get("name", "unknown")
+    cwd = proj_row.get("repo_path", ".")
+    if not cwd or cwd == ".":
+        logger.warning("Hephaestus: no repo_path for project %s, skipping commit", project_id[:8])
+        return None
+
+    # Stage any remaining unstaged tracked changes (safety net)
+    await _git_run(["add", "-u"], cwd)
+
+    # Check if there's anything to commit
+    if not await _has_staged_changes(cwd):
+        logger.info("Hephaestus: no staged changes for project %s, skipping commit", project_id[:8])
+        return [Emit("project_committed", {
+            "project_id": project_id,
+            "skipped": True,
+            "reason": "no changes",
+        }, source="hephaestus")]
+
+    # Get task summary for commit message
+    tasks = await db.fetchall(
+        "SELECT title, status FROM tasks WHERE project_id = $1 ORDER BY wave, id",
+        (project_id,),
+    )
+    task_lines = []
+    for t in tasks:
+        title = t.get("title", "?")
+        status = t.get("status", "?")
+        task_lines.append(f"- [{status}] {title}")
+    task_summary = "\n".join(task_lines) if task_lines else "No tasks"
+
+    # Create branch if on main
+    current_branch = await _get_current_branch(cwd)
+    branch_name = current_branch
+    if current_branch in ("main", "master"):
+        # Slugify project name for branch
+        import re
+        slug = re.sub(r'[^a-z0-9]+', '-', project_name.lower()).strip('-')[:50]
+        branch_name = f"hekate/{slug}"
+        rc, _, err = await _git_run(["checkout", "-b", branch_name], cwd)
+        if rc != 0:
+            # Branch might already exist
+            rc2, _, _ = await _git_run(["checkout", branch_name], cwd)
+            if rc2 != 0:
+                logger.error("Hephaestus: failed to create branch %s: %s", branch_name, err)
+                branch_name = current_branch  # Fall back to current branch
+
+    # Commit
+    commit_msg = f"{project_name}\n\nAutonomous execution by Hekate gods pipeline.\n\n{task_summary}"
+    rc, out, err = await _git_run(["commit", "-m", commit_msg], cwd)
+    if rc != 0:
+        logger.error("Hephaestus: git commit failed: %s", err)
+        # Switch back to original branch if we created one
+        if branch_name != current_branch:
+            await _git_run(["checkout", current_branch], cwd)
+        return [Emit("commit_failed", {
+            "project_id": project_id,
+            "error": err[:200],
+        }, source="hephaestus")]
+
+    # Extract commit SHA
+    rc, sha, _ = await _git_run(["rev-parse", "HEAD"], cwd)
+    commit_sha = sha[:12] if rc == 0 else "unknown"
+    logger.info("Hephaestus: committed %s on branch %s for project %s",
+                commit_sha, branch_name, project_id[:8])
+
+    # Push
+    rc, _, err = await _git_run(["push", "-u", "origin", branch_name], cwd, timeout=60.0)
+    if rc != 0:
+        logger.error("Hephaestus: git push failed: %s", err)
+        return [Emit("project_committed", {
+            "project_id": project_id,
+            "commit_sha": commit_sha,
+            "branch": branch_name,
+            "pushed": False,
+            "error": err[:200],
+        }, source="hephaestus")]
+
+    # Create PR if we're on a feature branch
+    pr_url = None
+    if branch_name != current_branch and branch_name.startswith("hekate/"):
+        import asyncio as _aio
+        pr_proc = await _aio.create_subprocess_exec(
+            "gh", "pr", "create",
+            "--title", project_name,
+            "--body", f"Autonomous execution by Hekate gods pipeline.\n\n{task_summary}",
+            "--base", current_branch,
+            "--head", branch_name,
+            cwd=cwd,
+            stdout=_aio.subprocess.PIPE,
+            stderr=_aio.subprocess.PIPE,
+        )
+        try:
+            pr_out, pr_err = await _aio.wait_for(pr_proc.communicate(), timeout=30.0)
+            if pr_proc.returncode == 0:
+                pr_url = (pr_out or b"").decode(errors="replace").strip()
+                logger.info("Hephaestus: created PR %s for project %s", pr_url, project_id[:8])
+            else:
+                logger.warning("Hephaestus: gh pr create failed: %s",
+                              (pr_err or b"").decode(errors="replace")[:200])
+        except _aio.TimeoutError:
+            logger.warning("Hephaestus: gh pr create timed out")
+
+    emits = [Emit("project_committed", {
+        "project_id": project_id,
+        "commit_sha": commit_sha,
+        "branch": branch_name,
+        "pushed": True,
+        "pr_url": pr_url,
+    }, source="hephaestus")]
+
+    # Switch back to original branch
+    if branch_name != current_branch:
+        await _git_run(["checkout", current_branch], cwd)
+
+    return emits

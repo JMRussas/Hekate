@@ -25,7 +25,7 @@ from gods.handlers.mimir import (
     mimir_review,
     mimir_handle_review_rejection, mimir_handle_task_rejection,
 )
-from gods.handlers.hephaestus import hephaestus_stage
+from gods.handlers.hephaestus import hephaestus_stage, hephaestus_complete
 from gods.handlers.tyche import tyche_record_spend
 from gods.handlers.context_bridge import (
     context_bridge_plan,
@@ -97,6 +97,7 @@ def register_all_handlers(
 
     # Hephaestus — git
     pipeline.register("task_verified", hephaestus_stage)
+    pipeline.register("project_complete", hephaestus_complete)
 
     # Tyche — budget
     pipeline.register("worker_event", tyche_record_spend)
