@@ -121,11 +121,11 @@ class TaskDefinition:
         if "response_timeout_seconds" in data:
             kwargs["response_timeout_seconds"] = int(data["response_timeout_seconds"])
 
-        if "rate_limit_per_frequency" in data:
+        if "rate_limit_per_frequency" in data and data["rate_limit_per_frequency"] is not None:
             kwargs["rate_limit_per_frequency"] = int(data["rate_limit_per_frequency"])
-        if "rate_limit_frequency_seconds" in data:
+        if "rate_limit_frequency_seconds" in data and data["rate_limit_frequency_seconds"] is not None:
             kwargs["rate_limit_frequency_seconds"] = int(data["rate_limit_frequency_seconds"])
-        if "concurrent_exec_limit" in data:
+        if "concurrent_exec_limit" in data and data["concurrent_exec_limit"] is not None:
             kwargs["concurrent_exec_limit"] = int(data["concurrent_exec_limit"])
 
         if "is_human" in data:
