@@ -142,10 +142,21 @@ class HermesRunner:
                 extra_fields={"started_at": time.time()},
                 source="hermes.dispatch")
 
-            # Resolve working directory and additional repos
+            # Resolve working directory, worktree, and additional repos
             proj_row = await self.db.fetchone(
-                "SELECT repo_path, additional_repos FROM projects WHERE id = $1", (project_id,))
+                "SELECT repo_path, additional_repos, git_worktree_path, name FROM projects WHERE id = $1",
+                (project_id,),
+            )
             cwd = proj_row.get("repo_path", ".") if proj_row else "."
+
+            # Use Claude CLI's --worktree for isolation if repo_path is set.
+            # Creates <repo>/.claude/worktrees/<slug>/ automatically.
+            worktree_name = None
+            if cwd and cwd != ".":
+                import re
+                proj_name = proj_row.get("name", "") if proj_row else ""
+                slug = re.sub(r'[^a-z0-9]+', '-', proj_name.lower()).strip('-')[:40]
+                worktree_name = f"{slug}-{project_id[:8]}" if slug else project_id[:12]
 
             # Determine add_dirs: task-level repo_paths override project-level additional_repos
             add_dirs = None
@@ -204,6 +215,7 @@ class HermesRunner:
                     add_dirs=add_dirs,
                     retry_count=retry_count,
                     timeout=task_timeout,
+                    worktree=worktree_name,
                 ),
                 name=f"hermes-{task_id}",
             )
@@ -255,6 +267,7 @@ class HermesRunner:
         add_dirs: list[str] | None = None,
         retry_count: int = 0,
         timeout: int | None = None,
+        worktree: str | None = None,
     ):
         """Background coroutine that runs CLI and writes results to relay.
 
@@ -281,6 +294,7 @@ class HermesRunner:
                     project_id=project_id,
                     add_dirs=add_dirs,
                     timeout=effective_timeout,
+                    worktree=worktree,
                 ),
                 timeout=effective_timeout * 1.2,
             )
@@ -489,6 +503,7 @@ class HermesRunner:
         project_id: str = "",
         add_dirs: list[str] | None = None,
         timeout: int | None = None,
+        worktree: str | None = None,
     ) -> dict:
         """Execute a CLI provider via the provider registry.
 
@@ -500,11 +515,17 @@ class HermesRunner:
         # Try provider registry first
         cli_provider = self.registry.get(provider) if self.registry else None
 
-        # Apply per-task add_dirs if the provider supports with_config
-        if cli_provider is not None and add_dirs:
-            if hasattr(cli_provider, 'with_config'):
-                cli_provider = cli_provider.with_config(add_dirs=add_dirs)
-                logger.info("Hermes: task %s using add_dirs: %s", task_id[:8], add_dirs)
+        # Apply per-task config overrides (worktree, add_dirs)
+        if cli_provider is not None and hasattr(cli_provider, 'with_config'):
+            overrides = {}
+            if add_dirs:
+                overrides["add_dirs"] = add_dirs
+            if worktree:
+                overrides["worktree"] = worktree
+            if overrides:
+                cli_provider = cli_provider.with_config(**overrides)
+                logger.info("Hermes: task %s config: %s", task_id[:8],
+                            ", ".join(f"{k}={v}" for k, v in overrides.items() if k != "add_dirs"))
 
         if cli_provider is not None:
             # Peer programming mode: stream every meaningful event to the relay
@@ -701,12 +722,28 @@ class HermesRunner:
     # ------------------------------------------------------------------
 
     async def shutdown(self, timeout: float = 30.0):
-        """Gracefully shut down — wait for in-flight tasks."""
+        """Gracefully shut down — kill child processes, wait for in-flight tasks."""
+        # Kill all tracked child processes first to prevent orphans
+        for task_id, proc in list(self._processes.items()):
+            try:
+                proc.terminate()
+                logger.info("Hermes: terminated process for task %s", task_id[:8])
+            except (ProcessLookupError, OSError):
+                pass
+        self._processes.clear()
+
+        # Cancel heartbeat tasks
+        for task_id, hb in list(self._heartbeats.items()):
+            if not hb.done():
+                hb.cancel()
+        self._heartbeats.clear()
+
         if not self._tasks:
             return
 
         tasks = list(self._tasks.values())
-        logger.info("Hermes: shutting down, waiting for %d in-flight tasks", len(tasks))
+        logger.info("Hermes: shutting down, waiting for %d in-flight tasks (%.0fs timeout)",
+                     len(tasks), timeout)
 
         try:
             done, pending = await asyncio.wait(tasks, timeout=timeout)
@@ -718,3 +755,4 @@ class HermesRunner:
             logger.warning("Hermes: shutdown error: %s", e)
 
         self._tasks.clear()
+        logger.info("Hermes: shutdown complete")

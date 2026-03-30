@@ -661,13 +661,22 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
 
             narrate(f"Deepening plan to {next_level.name}...")
 
+            # Preserve the last good plan before attempting to deepen.
+            # If deepening fails, we revert to this instead of using the
+            # corrupted deeper plan (which may have 0 tasks).
+            last_good_plan = current_plan
+
             level_reached = False
             for retry in range(MAX_RULE_RETRIES + 1):
-                deepened = await _deepen_plan(
-                    project_id, current_plan, next_level,
-                    conversation_id, requirements, db,
-                )
-                current_plan = deepened
+                try:
+                    deepened = await _deepen_plan(
+                        project_id, current_plan, next_level,
+                        conversation_id, requirements, db,
+                    )
+                except Exception as e:
+                    narrate(f"{next_level.name} deepening failed: {e}")
+                    break
+
                 conversation_id = deepened.get("conversation_id", conversation_id)
 
                 # Rule check at new level
@@ -676,6 +685,7 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
 
                 if rule_result.passed:
                     narrate(f"{next_level.name} plan passed rule check")
+                    current_plan = deepened
                     current_level = next_level
                     level_reached = True
                     break
@@ -686,7 +696,8 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
                         break
 
             if not level_reached:
-                # Can't go deeper — stop the while loop
+                # Revert to last good plan — don't use the corrupted deeper plan
+                current_plan = last_good_plan
                 break
 
         # ---------------------------------------------------------------
@@ -743,6 +754,7 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
         # Step 6: Decompose plan into task rows (once, after all planning)
         # ---------------------------------------------------------------
         plan_id = current_plan.get("plan_id")
+        task_count = 0
         if plan_id:
             narrate("Decomposing final plan into executable tasks...")
             try:
@@ -751,8 +763,23 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
                 )
                 narrate(f"Created {task_count} tasks from plan")
             except Exception as e:
-                logger.warning("Decomposition failed: %s", e)
+                logger.error("Decomposition failed: %s", e)
                 narrate(f"Decomposition failed: {e}")
+
+        # If decomposition produced 0 tasks, fail the project — don't continue
+        # to executing with nothing to execute.
+        if task_count == 0:
+            error_msg = "Plan decomposition produced 0 tasks"
+            logger.error("Athena: %s for project %s", error_msg, project_id[:8])
+            narrate(error_msg)
+            await db.execute_write(
+                "UPDATE projects SET status = $1, updated_at = $2 WHERE id = $3",
+                ("failed", time.time(), project_id),
+            )
+            return emits + [Emit("planning_failed", {
+                "project_id": project_id,
+                "error": error_msg,
+            }, source="athena")]
 
         # ---------------------------------------------------------------
         # Done — emit project_planned
