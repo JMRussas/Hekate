@@ -267,7 +267,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     complexity TEXT DEFAULT 'medium',
     implementation_notes TEXT,
     test_strategy TEXT,
-    repo_paths TEXT
+    repo_paths TEXT,
+    fork_group_id TEXT,
+    branch_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_deps (
@@ -282,6 +284,19 @@ CREATE TABLE IF NOT EXISTS plans (
     plan_json TEXT,
     level TEXT DEFAULT 'L1',
     created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_edges (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    edge_type TEXT NOT NULL,
+    source_task_id TEXT,
+    source_wave INTEGER,
+    spec_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    evaluated_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS god_relay_events (
@@ -362,7 +377,9 @@ CREATE TABLE IF NOT EXISTS engine_tasks (
     complexity TEXT DEFAULT 'medium',
     implementation_notes TEXT,
     test_strategy TEXT,
-    repo_paths TEXT
+    repo_paths TEXT,
+    fork_group_id TEXT,
+    branch_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS engine_task_deps (
@@ -377,6 +394,19 @@ CREATE TABLE IF NOT EXISTS engine_plans (
     plan_json TEXT,
     level TEXT DEFAULT 'L1',
     created_at DOUBLE PRECISION
+);
+
+CREATE TABLE IF NOT EXISTS workflow_edges (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    edge_type TEXT NOT NULL,
+    source_task_id TEXT,
+    source_wave INTEGER,
+    spec_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DOUBLE PRECISION NOT NULL,
+    evaluated_at DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS god_relay_events (
@@ -455,6 +485,8 @@ class HekateEngine:
         # Idempotent migrations — add columns to existing tables
         for migration in [
             "ALTER TABLE god_relay_events ADD COLUMN idempotency_key TEXT",
+            "ALTER TABLE tasks ADD COLUMN fork_group_id TEXT",
+            "ALTER TABLE tasks ADD COLUMN branch_id TEXT",
         ]:
             try:
                 await self.db.execute_write(migration, ())

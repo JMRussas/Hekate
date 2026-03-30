@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -439,6 +440,89 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
     unblocked_count = getattr(unblock_result, "rowcount", 0) if unblock_result else 0
     if unblocked_count:
         logger.info("Odin: unblocked %d task(s) for project %s", unblocked_count, project_id[:8])
+
+    # JOIN threshold unblock — for tasks with join_threshold in context_json.
+    # These are blocked tasks waiting for M-of-N deps (ANY or THRESHOLD mode).
+    # The ALL-mode unblock above already handles the standard case.
+    join_candidates = await db.fetchall(
+        "SELECT id, context_json FROM tasks "
+        "WHERE project_id = $1 AND status = $2 AND fork_group_id IS NOT NULL",
+        (project_id, "blocked"),
+    )
+    for jc in join_candidates:
+        jc_id = jc["id"]
+        ctx_str = jc.get("context_json") or "{}"
+        ctx = safe_json.loads_dict(ctx_str) if isinstance(ctx_str, str) else (ctx_str or {})
+        join_threshold = ctx.get("join_threshold")
+        join_mode = ctx.get("join_mode", "all")
+
+        if join_mode == "all" or not join_threshold:
+            continue  # handled by the standard unblock above
+
+        # Count completed deps
+        completed_deps = await db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM task_deps d "
+            "JOIN tasks dep ON dep.id = d.depends_on "
+            "WHERE d.task_id = $1 AND dep.status = $2",
+            (jc_id, "completed"),
+        )
+        completed_count = _val(completed_deps, "cnt", 0)
+
+        threshold = int(join_threshold)
+        if join_mode == "any":
+            threshold = 1
+
+        if completed_count >= threshold:
+            await db.execute_write(
+                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+                ("pending", now, jc_id),
+            )
+            logger.info("Odin: join-unblocked %s (%d/%d deps, mode=%s)",
+                        jc_id[:8], completed_count, threshold, join_mode)
+
+    # Fork detection — if the verified task has a fork edge, emit task_fork_requested
+    task_id = event.payload.get("task_id")
+    if task_id:
+        fork_edge = await db.fetchone(
+            "SELECT id, spec_json FROM workflow_edges "
+            "WHERE source_task_id = $1 AND edge_type = $2 AND status = $3",
+            (task_id, "fork", "pending"),
+        )
+        if fork_edge:
+            fork_spec = safe_json.loads_dict(fork_edge.get("spec_json", "{}"))
+            # Extract items from the completed task's output
+            task_output = await db.fetchone(
+                "SELECT output_text, context_json FROM tasks WHERE id = $1", (task_id,),
+            )
+            items = []
+            output_key = fork_spec.get("source_output_key")
+            if task_output and output_key:
+                # Try context_json first, then parse output_text
+                ctx_str = task_output.get("context_json") or "{}"
+                ctx = safe_json.loads_dict(ctx_str) if isinstance(ctx_str, str) else (ctx_str or {})
+                items = ctx.get(output_key, [])
+                if not items:
+                    output_str = task_output.get("output_text") or ""
+                    try:
+                        parsed = safe_json.loads(output_str, {})
+                        if isinstance(parsed, dict):
+                            items = parsed.get(output_key, [])
+                        elif isinstance(parsed, list):
+                            items = parsed
+                    except Exception:
+                        pass
+
+            if items:
+                emits.append(Emit("task_fork_requested", {
+                    "source_task_id": task_id,
+                    "project_id": project_id,
+                    "items": items,
+                    "fork_group_id": fork_spec.get("fork_group_id", uuid.uuid4().hex[:12]),
+                    "template": fork_spec.get("template_task", {}),
+                    "join_task_id": fork_spec.get("join_task_id"),
+                }, source="odin",
+                   idempotency_key=idem_key("fork_request", task_id),
+                ))
 
     # Check for deadlock: no pending/running/queued, but some blocked or needs_review
     active = await db.fetchone(

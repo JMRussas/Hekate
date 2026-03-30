@@ -20,6 +20,7 @@ from gods.handlers.odin import (
     odin_start, odin_tick, odin_dispatch,
     odin_lifecycle, make_odin_handle_diagnosis,
 )
+from gods.handlers.odin_workflow import odin_decide, make_odin_fork_handler
 from gods.handlers.mimir import (
     mimir_review,
     mimir_handle_review_rejection, mimir_handle_task_rejection,
@@ -80,6 +81,10 @@ def register_all_handlers(
     pipeline.register("tick", odin_tick)
     pipeline.register("task_verified", odin_lifecycle)
     pipeline.register("task_diagnosis", make_odin_handle_diagnosis(pipeline))
+
+    # Workflow primitives — DECISION, FORK
+    pipeline.register("wave_assessed", odin_decide)
+    pipeline.register("task_fork_requested", make_odin_fork_handler(pipeline))
 
     # Hermes — async execution (non-blocking)
     pipeline.register("dispatch_command", hermes.handle_dispatch)

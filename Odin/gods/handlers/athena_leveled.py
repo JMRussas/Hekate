@@ -810,6 +810,18 @@ async def athena_reassess_standalone(event: Event, db) -> list[Emit] | None:
 
         task_outcomes = json.dumps([dict(t) for t in tasks], indent=2) if tasks else "[]"
 
+        # Check for a decision edge on this wave (include context for odin_decide)
+        has_decision = False
+        try:
+            edge = await db.fetchone(
+                "SELECT id FROM workflow_edges "
+                "WHERE project_id = $1 AND source_wave = $2 AND edge_type = $3 AND status = $4",
+                (project_id, wave, "decision", "pending"),
+            )
+            has_decision = edge is not None
+        except Exception:
+            pass  # Table may not exist yet
+
         text = await _call_gateway(
             system_prompt=(
                 "You are evaluating a completed wave of tasks. Decide next steps.\n\n"
@@ -829,6 +841,7 @@ async def athena_reassess_standalone(event: Event, db) -> list[Emit] | None:
             "wave": wave,
             "outcome": result.get("outcome", "continue"),
             "rationale": result.get("rationale", ""),
+            "has_decision_edge": has_decision,
         }, source="athena")]
 
     except Exception as e:

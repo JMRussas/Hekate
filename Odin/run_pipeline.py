@@ -152,11 +152,30 @@ async def ensure_tables(db: SqliteDB):
             config_json TEXT DEFAULT '{}'
         )
     """)
-    # Idempotent migration — add column to existing table
-    try:
-        await db.execute_write("ALTER TABLE god_relay_events ADD COLUMN idempotency_key TEXT")
-    except Exception:
-        pass  # Column already exists
+    await db.execute_write("""
+        CREATE TABLE IF NOT EXISTS workflow_edges (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            edge_type TEXT NOT NULL,
+            source_task_id TEXT,
+            source_wave INTEGER,
+            spec_json TEXT NOT NULL DEFAULT '{}',
+            result_json TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at REAL NOT NULL,
+            evaluated_at REAL
+        )
+    """)
+    # Idempotent migrations — add columns to existing tables
+    for migration in [
+        "ALTER TABLE god_relay_events ADD COLUMN idempotency_key TEXT",
+        "ALTER TABLE tasks ADD COLUMN fork_group_id TEXT",
+        "ALTER TABLE tasks ADD COLUMN branch_id TEXT",
+    ]:
+        try:
+            await db.execute_write(migration)
+        except Exception:
+            pass  # Column already exists
     logger.info("Relay tables ready")
 
 
