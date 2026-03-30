@@ -436,20 +436,35 @@ class HermesRunner:
     # ------------------------------------------------------------------
 
     async def _kill_process(self, task_id: str):
-        """Terminate and kill the subprocess for a task, if tracked."""
+        """Terminate the subprocess and its entire process tree.
+
+        On Windows, proc.terminate() only kills the parent — child processes
+        (Claude's node workers) become orphans. Use taskkill /T to kill the tree.
+        """
         proc = self._processes.get(task_id)
         if proc is None:
             return
+        pid = proc.pid
         try:
-            proc.terminate()
-            # Give it 2s to exit gracefully, then force-kill
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-            logger.info("Hermes: killed subprocess for task %s (pid=%s)", task_id[:8], proc.pid)
-        except (ProcessLookupError, OSError) as e:
+            # Try tree kill on Windows first (kills parent + all children)
+            import sys
+            if sys.platform == "win32" and pid:
+                kill_proc = await asyncio.create_subprocess_exec(
+                    "taskkill", "/F", "/T", "/PID", str(pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(kill_proc.wait(), timeout=5.0)
+                logger.info("Hermes: tree-killed process %d for task %s", pid, task_id[:8])
+            else:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                logger.info("Hermes: killed process %d for task %s", pid or 0, task_id[:8])
+        except (ProcessLookupError, OSError, asyncio.TimeoutError) as e:
             logger.debug("Hermes: process already gone for task %s: %s", task_id[:8], e)
 
     # ------------------------------------------------------------------
@@ -528,15 +543,32 @@ class HermesRunner:
                             ", ".join(f"{k}={v}" for k, v in overrides.items() if k != "add_dirs"))
 
         if cli_provider is not None:
-            # Peer programming mode: stream every meaningful event to the relay
-            # in real-time so the user can watch what Claude is doing.
+            # Peer programming mode: stream meaningful events to the relay
+            # in real-time. Text deltas are batched to avoid flooding the DB.
+            _delta_buffer: list[str] = []
+            _last_delta_flush = time.time()
+            DELTA_FLUSH_INTERVAL = 2.0  # flush text deltas every 2s
+
+            async def _flush_deltas():
+                if _delta_buffer:
+                    text = "".join(_delta_buffer)
+                    _delta_buffer.clear()
+                    await self._write_relay_event("narration", {
+                        "task_id": task_id,
+                        "project_id": project_id,
+                        "type": "text_delta",
+                        "text": text[:1000],
+                    })
+
             async def _on_line(line: str):
+                nonlocal _last_delta_flush
                 try:
                     data = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     return
                 event_type = data.get("type")
                 if event_type == "tool_use":
+                    await _flush_deltas()  # Flush pending text before tool call
                     await self._write_relay_event("narration", {
                         "task_id": task_id,
                         "project_id": project_id,
@@ -553,6 +585,7 @@ class HermesRunner:
                         "output": str(data.get("output", ""))[:500],
                     })
                 elif event_type == "assistant":
+                    await _flush_deltas()  # Flush pending text before complete message
                     msg = data.get("message", {})
                     for content in msg.get("content", []):
                         if content.get("type") == "text" and content.get("text"):
@@ -563,15 +596,14 @@ class HermesRunner:
                                 "text": content["text"][:500],
                             })
                 elif event_type == "stream_event":
-                    # Partial token streaming — live text deltas
+                    # Batch text deltas — flush every 2s instead of per-token
                     delta = data.get("event", {}).get("delta", {})
                     if delta.get("type") == "text_delta" and delta.get("text"):
-                        await self._write_relay_event("narration", {
-                            "task_id": task_id,
-                            "project_id": project_id,
-                            "type": "text_delta",
-                            "text": delta["text"],
-                        })
+                        _delta_buffer.append(delta["text"])
+                        now = time.time()
+                        if now - _last_delta_flush >= DELTA_FLUSH_INTERVAL:
+                            _last_delta_flush = now
+                            await _flush_deltas()
 
             result = await cli_provider.execute(
                 prompt=prompt,
@@ -674,15 +706,15 @@ class HermesRunner:
     async def cancel(self, task_id: str):
         """Cancel a running task.
 
-        Kills the subprocess (if tracked), cancels the asyncio.Task,
-        then writes failed status directly from cancel() (not the handler).
+        Kills the subprocess, cancels the asyncio.Task, and waits for
+        the CancelledError handler in _monitor_task to write failed status.
+        No duplicate DB/relay writes — the handler does it via asyncio.shield.
         """
         # Kill subprocess first
         proc = self._processes.pop(task_id, None)
         if proc is not None:
             try:
                 proc.terminate()
-                # Wait briefly for graceful exit
                 await asyncio.sleep(0.5)
                 if proc.returncode is None:
                     proc.kill()
@@ -692,7 +724,8 @@ class HermesRunner:
         # Stop heartbeat
         self._stop_heartbeat(task_id)
 
-        # Cancel asyncio.Task
+        # Cancel asyncio.Task — the CancelledError handler in _monitor_task
+        # writes "failed" status to DB+relay via asyncio.shield
         task = self._tasks.get(task_id)
         if task and not task.done():
             task.cancel()
@@ -701,20 +734,6 @@ class HermesRunner:
             except (asyncio.CancelledError, Exception):
                 pass
 
-        # Write cleanup from cancel() itself — this is not cancelled
-        try:
-            await self.db.execute_write(
-                "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
-                ("failed", "Task cancelled", time.time(), task_id),
-            )
-            await self._write_relay_event("worker_event", {
-                "task_id": task_id,
-                "status": "failed",
-                "error": "Task cancelled",
-            })
-        except Exception as e:
-            logger.warning("Hermes: cancel cleanup failed for %s: %s", task_id[:8], e)
-
         self._tasks.pop(task_id, None)
 
     # ------------------------------------------------------------------
@@ -722,37 +741,60 @@ class HermesRunner:
     # ------------------------------------------------------------------
 
     async def shutdown(self, timeout: float = 30.0):
-        """Gracefully shut down — kill child processes, wait for in-flight tasks."""
-        # Kill all tracked child processes first to prevent orphans
-        for task_id, proc in list(self._processes.items()):
-            try:
-                proc.terminate()
-                logger.info("Hermes: terminated process for task %s", task_id[:8])
-            except (ProcessLookupError, OSError):
-                pass
-        self._processes.clear()
+        """Gracefully shut down — cancel tasks, let handlers clean up, then kill stragglers.
 
-        # Cancel heartbeat tasks
+        Order matters:
+          1. Cancel asyncio monitor tasks → triggers CancelledError handlers
+             which write "failed" status to DB+relay
+          2. Wait for CancelledError handlers to finish
+          3. Kill any remaining child processes (stragglers)
+          4. Clean up heartbeats
+        """
+        # Cancel heartbeat tasks first (non-critical)
         for task_id, hb in list(self._heartbeats.items()):
             if not hb.done():
                 hb.cancel()
         self._heartbeats.clear()
 
         if not self._tasks:
+            # Still kill any orphaned processes
+            self._kill_all_processes()
             return
 
+        # Step 1: Cancel all monitor tasks — triggers CancelledError handlers
         tasks = list(self._tasks.values())
-        logger.info("Hermes: shutting down, waiting for %d in-flight tasks (%.0fs timeout)",
-                     len(tasks), timeout)
+        logger.info("Hermes: shutting down, cancelling %d in-flight tasks", len(tasks))
+        for t in tasks:
+            t.cancel()
 
+        # Step 2: Wait for CancelledError handlers to write status
         try:
-            done, pending = await asyncio.wait(tasks, timeout=timeout)
-            for t in pending:
-                t.cancel()
-            if pending:
-                await asyncio.wait(pending, timeout=2.0)
+            await asyncio.wait(tasks, timeout=timeout)
         except Exception as e:
-            logger.warning("Hermes: shutdown error: %s", e)
+            logger.warning("Hermes: shutdown wait error: %s", e)
 
         self._tasks.clear()
+
+        # Step 3: Kill any remaining child processes (stragglers)
+        self._kill_all_processes()
+
         logger.info("Hermes: shutdown complete")
+
+    def _kill_all_processes(self):
+        """Terminate all tracked child processes (tree kill on Windows)."""
+        import sys, subprocess
+        for task_id, proc in list(self._processes.items()):
+            pid = proc.pid
+            try:
+                if sys.platform == "win32" and pid:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        capture_output=True, timeout=5,
+                    )
+                else:
+                    proc.terminate()
+                logger.info("Hermes: terminated process tree for task %s (pid=%s)",
+                            task_id[:8], pid)
+            except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
+                pass
+        self._processes.clear()

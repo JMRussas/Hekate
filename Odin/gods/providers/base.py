@@ -113,30 +113,35 @@ class CLIProvider(ABC):
         proc.stdin.close()
 
         output_lines: list[str] = []
-        # Per-line inactivity timeout: if no output for 5 min, CLI is stuck.
-        # Overall timeout is a safety cap, not expected to fire.
-        line_timeout = min(300.0, timeout)
+        # Per-line inactivity timeout: if no output for N seconds, CLI is stuck.
+        # First line gets a longer grace period for cold start (CLI init, MCP connect).
+        # Subsequent lines use a shorter timeout since the session is active.
+        first_line_timeout = min(600.0, timeout)   # 10 min for cold start
+        active_line_timeout = min(300.0, timeout)   # 5 min between active lines
+        got_first_line = False
         try:
             async with asyncio.timeout(timeout):
                 while True:
+                    current_timeout = active_line_timeout if got_first_line else first_line_timeout
                     try:
                         line = await asyncio.wait_for(
-                            proc.stdout.readline(), timeout=line_timeout,
+                            proc.stdout.readline(), timeout=current_timeout,
                         )
                     except asyncio.TimeoutError:
-                        logger.error("%s: no output for %.0fs, killing", self.name, line_timeout)
+                        label = "active" if got_first_line else "cold start"
+                        logger.error("%s: no output for %.0fs (%s), killing",
+                                     self.name, current_timeout, label)
                         proc.kill()
                         break
                     if not line:
                         break
+                    got_first_line = True
                     decoded = line.decode("utf-8", errors="replace").strip()
                     if decoded:
                         output_lines.append(decoded)
                         if on_line is not None:
-                            try:
-                                await on_line(decoded)
-                            except Exception:
-                                pass  # Never block on narration failure
+                            # Fire-and-forget: don't block readline on relay writes
+                            asyncio.ensure_future(on_line(decoded))
         except asyncio.TimeoutError:
             proc.kill()
             logger.error("%s: overall timeout after %.0fs", self.name, timeout)

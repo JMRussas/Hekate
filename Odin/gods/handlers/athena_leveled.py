@@ -264,7 +264,7 @@ async def _deepen_plan(
     await db.execute_write(
         "INSERT OR REPLACE INTO plans (id, project_id, plan_json, level, created_at) "
         "VALUES ($1, $2, $3, $4, $5)",
-        (plan_id, project_id, json.dumps(plan), "L2", time.time()),
+        (plan_id, project_id, json.dumps(plan), target_level.name, time.time()),
     )
 
     return {"plan_id": plan_id, "plan": plan, "conversation_id": conversation_id}
@@ -675,7 +675,9 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
                     )
                 except Exception as e:
                     narrate(f"{next_level.name} deepening failed: {e}")
-                    break
+                    if retry >= MAX_RULE_RETRIES:
+                        break  # Exhausted retries — fall back to last good plan
+                    continue  # Retry on transient failures (gateway timeout, etc.)
 
                 conversation_id = deepened.get("conversation_id", conversation_id)
 

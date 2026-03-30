@@ -8,6 +8,7 @@ Receives task_verified events and:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -182,8 +183,27 @@ async def hephaestus_complete(event: Event, db) -> list[Emit] | None:
         logger.warning("Hephaestus: no repo_path for project %s, skipping commit", project_id[:8])
         return None
 
-    # Stage any remaining unstaged tracked changes (safety net)
-    await _git_run(["add", "-u"], cwd)
+    # Gather all affected files from completed tasks (not git add -u which
+    # would stage unrelated changes from other projects or local edits)
+    task_files = await db.fetchall(
+        "SELECT output_text, context_json FROM tasks "
+        "WHERE project_id = $1 AND status = $2",
+        (project_id, "completed"),
+    )
+    all_affected: set[str] = set()
+    for tf in task_files:
+        # Extract affected_files from context_json if available
+        ctx_str = tf.get("context_json") or "{}"
+        try:
+            ctx = json.loads(ctx_str) if isinstance(ctx_str, str) else (ctx_str or {})
+            for f in ctx.get("affected_files", []):
+                if f:
+                    all_affected.add(f)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    if all_affected:
+        await _git_add(sorted(all_affected), cwd=cwd)
 
     # Check if there's anything to commit
     if not await _has_staged_changes(cwd):
