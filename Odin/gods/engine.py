@@ -515,6 +515,7 @@ class HekateEngine:
             "ALTER TABLE god_relay_events ADD COLUMN idempotency_key TEXT",
             "ALTER TABLE tasks ADD COLUMN fork_group_id TEXT",
             "ALTER TABLE tasks ADD COLUMN branch_id TEXT",
+            "ALTER TABLE projects ADD COLUMN additional_repos TEXT",
         ]:
             try:
                 await self.db.execute_write(migration, ())
@@ -996,6 +997,34 @@ async def _setup_db_with_init(self):
             )
             if not row:
                 logger.warning("Schema validation: expected table '%s' is missing", table_name)
+
+    # Idempotent migrations — add columns to existing tables
+    # These handle tables created before the column was added to the schema.
+    migrations = [
+        "ALTER TABLE god_relay_events ADD COLUMN idempotency_key TEXT",
+        "ALTER TABLE tasks ADD COLUMN fork_group_id TEXT",
+        "ALTER TABLE tasks ADD COLUMN branch_id TEXT",
+        "ALTER TABLE projects ADD COLUMN additional_repos TEXT",
+    ]
+    for migration in migrations:
+        # On Postgres, table names need rewriting (tasks → engine_tasks, etc.)
+        sql = migration
+        if getattr(self, '_backend', 'sqlite') == 'postgres':
+            sql = _pg_rewrite(sql)
+        try:
+            await self.db.execute_write(sql, ())
+        except Exception:
+            pass  # Column already exists
+
+    # Ensure unique index on idempotency_key
+    try:
+        idx_sql = (
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_idempotency "
+            "ON god_relay_events (idempotency_key) WHERE idempotency_key IS NOT NULL"
+        )
+        await self.db.execute_write(idx_sql, ())
+    except Exception:
+        pass
 
     logger.info("Schema setup complete (backend=%s)", getattr(self, '_backend', 'sqlite'))
 
