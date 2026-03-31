@@ -191,8 +191,15 @@ async def context_bridge_plan(event: Event, db) -> list[Emit] | None:
 # ---------------------------------------------------------------------------
 
 async def context_bridge_task_verified(event: Event, db) -> list[Emit] | None:
-    """Update the task node in context store with output after verification."""
+    """Update task node with output and sync knowledge findings to context store.
+
+    After verification, this handler:
+    1. Finds the task node in the context store and updates it with output
+    2. Reads knowledge findings from project_knowledge table
+    3. Creates finding nodes as children of the task node (auto-embedded by context store)
+    """
     task_id = event.payload.get("task_id")
+    project_id = event.payload.get("project_id")
     if not task_id:
         return None
 
@@ -208,35 +215,61 @@ async def context_bridge_task_verified(event: Event, db) -> list[Emit] | None:
     if not task or not task.get("output_text"):
         return None
 
-    # Search context store for the task node by querying nodes
+    # Find the task node in context store
+    task_node_id = None
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            # Get plan nodes for the project
             resp = await client.get(f"{_CS_URL}/api/plans")
             if resp.status_code != 200:
                 return None
 
             for plan in resp.json():
-                # Get plan tree and find our task
                 tree_resp = await client.get(f"{_CS_URL}/api/plan/{plan['id']}")
                 if tree_resp.status_code != 200:
                     continue
                 tree = tree_resp.json()
-                # Search children for matching engine_task_id
                 for child in tree.get("children", []):
                     attrs = child.get("attributes", {})
                     if attrs.get("engine_task_id") == task_id:
-                        node_id = str(child["id"])
-                        await _update_node(node_id, value=task["output_text"])
-                        await _update_attrs(node_id, {
+                        task_node_id = str(child["id"])
+                        await _update_node(task_node_id, value=task["output_text"])
+                        await _update_attrs(task_node_id, {
                             "status": "completed",
                             "verification_status": task.get("verification_status", ""),
                             "cost_usd": str(task.get("cost_usd", 0)),
                         })
-                        logger.info("Context bridge: updated task node %s with output", node_id[:8])
-                        return None
+                        logger.info("Context bridge: updated task node %s with output", task_node_id[:8])
+                        break
+                if task_node_id:
+                    break
     except Exception as e:
         logger.debug("Context bridge: task_verified error: %s", e)
+
+    # Sync knowledge findings from project_knowledge → context store nodes
+    if task_node_id and project_id:
+        try:
+            findings = await db.fetchall(
+                "SELECT id, content FROM project_knowledge "
+                "WHERE task_id = $1 AND project_id = $2",
+                (task_id, project_id),
+            )
+            for finding in findings:
+                content = finding.get("content", "")
+                if content:
+                    await _create_child_node(
+                        task_node_id, "finding", content[:200],
+                        value=content,
+                        attributes={
+                            "source": "mimir_extraction",
+                            "engine_task_id": task_id,
+                            "engine_project_id": project_id,
+                        },
+                    )
+            if findings:
+                logger.info("Context bridge: synced %d findings for task %s",
+                            len(findings), task_id[:8])
+        except Exception as e:
+            logger.debug("Context bridge: knowledge sync error: %s", e)
 
     return None
 

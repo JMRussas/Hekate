@@ -98,11 +98,16 @@ class ClaudeCodeProvider(CLIProvider):
     def _build_mcp_config() -> str:
         """Build MCP config JSON from env vars. Each service URL is configurable."""
         mcp_url = os.environ.get("HEKATE_MCP_URL", "http://localhost:5110/")
+        context_mcp_url = os.environ.get("HEKATE_AGENT_CONTEXT_MCP_URL", "http://localhost:5213/")
         return json.dumps({
             "mcpServers": {
                 "hekate": {
                     "type": "http",
                     "url": mcp_url,
+                },
+                "agent-context": {
+                    "type": "sse",
+                    "url": context_mcp_url,
                 },
             },
         })
@@ -112,6 +117,7 @@ class ClaudeCodeProvider(CLIProvider):
             # Standard tools for file ops + hekate MCP for code analysis
             allowed_tools=[
                 "Edit", "Write", "Read", "Glob", "Grep", "Bash(*)",
+                # Hekate code analysis
                 "mcp__hekate__analyze_file",
                 "mcp__hekate__find_usages",
                 "mcp__hekate__find_implementations",
@@ -121,6 +127,11 @@ class ClaudeCodeProvider(CLIProvider):
                 "mcp__hekate__review",
                 "mcp__hekate__verify",
                 "mcp__hekate__test_impact",
+                # Agent context — knowledge graph (findings, decisions, patterns)
+                "mcp__agent-context__semantic_search",
+                "mcp__agent-context__query_nodes",
+                "mcp__agent-context__store_node",
+                "mcp__agent-context__get_node",
             ],
             # Hekate code analysis MCP — gives the model codebase awareness
             mcp_config=ClaudeCodeProvider._build_mcp_config(),
@@ -132,14 +143,21 @@ class ClaudeCodeProvider(CLIProvider):
             dangerously_skip_permissions=True,
             # Self-review prompt appended to every session
             append_system_prompt=(
-                "You have access to hekate code analysis tools (mcp__hekate__*) for understanding "
-                "the codebase. Use them to read and analyze code before making changes.\n\n"
-                "After completing your work, review what you did:\n"
-                "1. Any gaps? Anything the task asked for that you missed?\n"
-                "2. Does your change fit the current architecture and patterns?\n"
-                "3. Did you handle edge cases?\n"
-                "4. If you wrote code, does it have the right imports and no syntax errors?\n"
-                "If you find issues, fix them before finishing. Don't just list problems — fix them."
+                "You have access to two MCP tool sets:\n\n"
+                "1. **hekate** (mcp__hekate__*): Code analysis — analyze files, find usages, "
+                "find implementations, detect patterns. Use these to understand the codebase "
+                "before making changes.\n\n"
+                "2. **agent-context** (mcp__agent-context__*): Knowledge graph — search past "
+                "findings, decisions, and patterns from previous tasks. Use semantic_search "
+                "to find relevant context before starting work. Use store_node to save "
+                "important discoveries or decisions for future tasks.\n\n"
+                "Workflow:\n"
+                "1. Search the knowledge graph for relevant context (semantic_search)\n"
+                "2. Read and analyze code (hekate tools)\n"
+                "3. Implement the changes\n"
+                "4. Self-review: gaps? architecture fit? edge cases? syntax?\n"
+                "5. Store any important findings or decisions (store_node)\n"
+                "6. Fix any issues before finishing."
             ),
         )
         self._binary = shutil.which("claude") or "claude"
