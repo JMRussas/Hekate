@@ -4,6 +4,7 @@
 // No auth, no admin, no analytics, no RAG.
 
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import CanvasRoute from './canvas/CanvasRoute'
 import ErrorBoundary from './components/ErrorBoundary'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
@@ -20,6 +21,7 @@ export default function App() {
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/project/:id" element={<ProjectDetail />} />
+            <Route path="/project/:id/canvas" element={<CanvasRoute />} />
             <Route path="/project/:id/task/:taskId" element={<TaskDetail />} />
             <Route path="/services" element={<Services />} />
           </Route>
