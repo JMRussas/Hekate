@@ -1,0 +1,90 @@
+[
+  {
+    "name": "image",
+    "file": "default",
+    "type": "image",
+    "checkpoint": "GameIconInstitute_v4_XL.safetensors",
+    "defaultNegative": "watermark, text, signature, blurry, low quality, ugly, deformed",
+    "defaultSize": 1024,
+    "defaultSteps": 20,
+    "nodeMap": {},
+    "exposedParams": [
+      { "label": "CFG Scale",  "node": "3", "field": "cfg",          "type": "slider", "default": 7.0, "min": 1.0, "max": 20.0, "step": 0.5 },
+      { "label": "Sampler",    "node": "3", "field": "sampler_name", "type": "select", "default": "euler_ancestral",
+        "options": ["euler", "euler_ancestral", "heun", "dpm_2", "dpm_2_ancestral", "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_2m", "dpmpp_2m_sde", "ddim", "uni_pc"] },
+      { "label": "Scheduler",  "node": "3", "field": "scheduler",    "type": "select", "default": "normal",
+        "options": ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform"] }
+    ]
+  },
+  {
+    "name": "tileset",
+    "file": "sdxl_tile",
+    "type": "image",
+    "checkpoint": "dreamshaperXL_alpha2Xl10.safetensors",
+    "promptPrefix": "seamlessly tileable texture, game tile, top-down view, consistent flat ambient lighting, uniform value range, ",
+    "defaultNegative": "seams, visible borders, edge artifacts, vignette, gradient, watermark, text, signature, perspective distortion, 3d render, photograph",
+    "defaultSize": 1024,
+    "defaultSteps": 20,
+    "nodeMap": {},
+    "sourceImageNode": "9",
+    "sourceImageField": "image",
+    "exposedParams": [
+      { "label": "CFG Scale",  "node": "6", "field": "cfg",          "type": "slider", "default": 7.0, "min": 1.0, "max": 20.0, "step": 0.5 },
+      { "label": "Denoise",    "node": "6", "field": "denoise",      "type": "slider", "default": 0.75, "min": 0.1, "max": 1.0, "step": 0.05 },
+      { "label": "Sampler",    "node": "6", "field": "sampler_name", "type": "select", "default": "dpmpp_2m",
+        "options": ["euler", "euler_ancestral", "heun", "dpm_2", "dpmpp_2m", "dpmpp_2m_sde", "ddim", "uni_pc"] },
+      { "label": "Scheduler",  "node": "6", "field": "scheduler",    "type": "select", "default": "karras",
+        "options": ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform"] }
+    ]
+  },
+  {
+    "name": "wan_i2v",
+    "file": "wan_i2v",
+    "type": "video",
+    "defaultNegative": "static, still, frozen, blurry, worst quality, low quality, watermark, text, deformed",
+    "defaultSize": 512,
+    "defaultSteps": 20,
+    "nodeMap": {
+      "prompt":   { "node": "6",  "field": "text" },
+      "negative": { "node": "7",  "field": "text" },
+      "seed":     { "node": "3",  "field": "seed" },
+      "steps":    { "node": "3",  "field": "steps" },
+      "width":    { "node": "50", "field": "width" },
+      "height":   { "node": "50", "field": "height" }
+    },
+    "sourceImageNode": "52",
+    "sourceImageField": "image",
+    "exposedParams": [
+      { "label": "CFG Scale",   "node": "3",  "field": "cfg",        "type": "slider", "default": 6.0, "min": 1.0, "max": 15.0, "step": 0.5 },
+      { "label": "Sampler",     "node": "3",  "field": "sampler_name","type": "select", "default": "uni_pc",
+        "options": ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "uni_pc"] },
+      { "label": "Frames",      "node": "50", "field": "length",     "type": "slider", "default": 49, "min": 17, "max": 97, "step": 8 },
+      { "label": "Frame Rate",  "node": "60", "field": "frame_rate", "type": "slider", "default": 16, "min": 8,  "max": 30, "step": 1 }
+    ]
+  },
+  {
+    "name": "animatediff_img2vid",
+    "file": "animatediff_img2vid",
+    "type": "video",
+    "defaultNegative": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, jpeg artifacts, signature, watermark, blurry, deformed, ugly, morphing face, changing identity, glitch",
+    "defaultSize": 768,
+    "defaultSteps": 20,
+    "nodeMap": {
+      "prompt":   { "node": "20", "field": "text" },
+      "negative": { "node": "21", "field": "text" },
+      "seed":     { "node": "30", "field": "seed" },
+      "steps":    { "node": "30", "field": "steps" },
+      "width":    { "node": "11", "field": "width" },
+      "height":   { "node": "11", "field": "height" }
+    },
+    "sourceImageNode": "10",
+    "sourceImageField": "image",
+    "exposedParams": [
+      { "label": "CFG Scale",    "node": "30", "field": "cfg",          "type": "slider", "default": 7.0, "min": 1.0, "max": 20.0, "step": 0.5 },
+      { "label": "Denoise",      "node": "30", "field": "denoise",      "type": "slider", "default": 0.4, "min": 0.0, "max": 1.0,  "step": 0.05 },
+      { "label": "Motion Scale", "node": "3",  "field": "motion_scale", "type": "slider", "default": 1.1, "min": 0.5, "max": 2.0,  "step": 0.1 },
+      { "label": "Frames",       "node": "13", "field": "amount",       "type": "slider", "default": 16,  "min": 8,   "max": 48,   "step": 4 },
+      { "label": "Frame Rate",   "node": "50", "field": "frame_rate",   "type": "slider", "default": 8,   "min": 4,   "max": 24,   "step": 1 }
+    ]
+  }
+]

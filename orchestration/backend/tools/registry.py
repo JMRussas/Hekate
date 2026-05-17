@@ -65,7 +65,19 @@ class ToolRegistry:
 
         def _generate_image():
             from backend.tools.comfyui import GenerateImageTool
-            return GenerateImageTool(http_client=self._http_client)
+            return GenerateImageTool()
+
+        def _batch_generate_image():
+            from backend.tools.comfyui import BatchGenerateImageTool
+            return BatchGenerateImageTool()
+
+        def _remove_background():
+            from backend.tools.comfyui import RemoveBackgroundTool
+            return RemoveBackgroundTool()
+
+        def _list_image_models():
+            from backend.tools.comfyui import ListModelsTool
+            return ListModelsTool()
 
         def _read_file():
             from backend.tools.file import ReadFileTool
@@ -98,6 +110,9 @@ class ToolRegistry:
             ("LookupTypeTool", _lookup_type),
             ("LocalLLMTool", _local_llm),
             ("GenerateImageTool", _generate_image),
+            ("BatchGenerateImageTool", _batch_generate_image),
+            ("RemoveBackgroundTool", _remove_background),
+            ("ListModelsTool", _list_image_models),
             ("ReadFileTool", _read_file),
             ("WriteFileTool", _write_file),
             ("DotNetReflectionTool", _dotnet_reflection),

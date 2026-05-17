@@ -1,0 +1,111 @@
+{
+  "name": "flux_txt2img",
+  "description": "Flux2 text-to-image using UNETLoader + CLIPLoader + VAELoader, CFGGuider + Flux2Scheduler + SamplerCustomAdvanced",
+  "arch": "flux",
+  "inputs": {
+    "checkpoint": { "type": "string" },
+    "clip_file": { "type": "string" },
+    "vae_file": { "type": "string" },
+    "prompt": { "type": "string" },
+    "seed": { "type": "int" },
+    "width": { "type": "int", "default": 1024 },
+    "height": { "type": "int", "default": 1024 },
+    "cfg": { "type": "float", "default": 5.0 },
+    "steps": { "type": "int", "default": 5 },
+    "sampler": { "type": "string", "default": "euler" }
+  },
+  "outputs": {
+    "image": { "node": "vae_decode", "index": 0 }
+  },
+  "nodes": {
+    "unet_loader": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "{{checkpoint}}",
+        "weight_dtype": "default"
+      }
+    },
+    "clip_loader": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "{{clip_file}}",
+        "type": "flux2",
+        "device": "default"
+      }
+    },
+    "vae_loader": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "{{vae_file}}"
+      }
+    },
+    "pos_prompt": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": ["clip_loader", 0],
+        "text": "{{prompt}}"
+      }
+    },
+    "neg_prompt": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": ["clip_loader", 0],
+        "text": ""
+      }
+    },
+    "latent": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": "{{width}}",
+        "height": "{{height}}",
+        "batch_size": 1
+      }
+    },
+    "guider": {
+      "class_type": "CFGGuider",
+      "inputs": {
+        "model": ["unet_loader", 0],
+        "positive": ["pos_prompt", 0],
+        "negative": ["neg_prompt", 0],
+        "cfg": "{{cfg}}"
+      }
+    },
+    "scheduler": {
+      "class_type": "Flux2Scheduler",
+      "inputs": {
+        "steps": "{{steps}}",
+        "width": "{{width}}",
+        "height": "{{height}}"
+      }
+    },
+    "noise": {
+      "class_type": "RandomNoise",
+      "inputs": {
+        "noise_seed": "{{seed}}"
+      }
+    },
+    "sampler_select": {
+      "class_type": "KSamplerSelect",
+      "inputs": {
+        "sampler_name": "{{sampler}}"
+      }
+    },
+    "sampler": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": ["noise", 0],
+        "guider": ["guider", 0],
+        "sampler": ["sampler_select", 0],
+        "sigmas": ["scheduler", 0],
+        "latent_image": ["latent", 0]
+      }
+    },
+    "vae_decode": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": ["sampler", 0],
+        "vae": ["vae_loader", 0]
+      }
+    }
+  }
+}

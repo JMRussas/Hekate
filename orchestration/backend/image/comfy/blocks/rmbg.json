@@ -1,0 +1,29 @@
+{
+  "name": "rmbg",
+  "description": "Remove background using BiRefNet (universal, works on any model output)",
+  "arch": null,
+  "inputs": {
+    "image": { "type": "image" },
+    "mask_blur": { "type": "int", "default": 0 },
+    "mask_offset": { "type": "int", "default": -1 },
+    "background": { "type": "string", "default": "Alpha" },
+    "refine_foreground": { "type": "boolean", "default": false }
+  },
+  "outputs": {
+    "image": { "node": "rmbg", "index": 0 }
+  },
+  "nodes": {
+    "rmbg": {
+      "class_type": "BiRefNetRMBG",
+      "inputs": {
+        "image": "{{image}}",
+        "model": "BiRefNet-general",
+        "mask_blur": "{{mask_blur}}",
+        "mask_offset": "{{mask_offset}}",
+        "invert_output": false,
+        "refine_foreground": "{{refine_foreground}}",
+        "background": "{{background}}"
+      }
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "animagine-xl-3.1.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "ADE_LoadAnimateDiffModel",
+    "inputs": {
+      "model_name": "hsxl_temporal_layers.safetensors"
+    }
+  },
+  "3": {
+    "class_type": "ADE_ApplyAnimateDiffModelSimple",
+    "inputs": {
+      "motion_model": ["2", 0],
+      "motion_scale": 1.1
+    }
+  },
+  "4": {
+    "class_type": "ADE_UseEvolvedSampling",
+    "inputs": {
+      "model": ["1", 0],
+      "m_models": ["3", 0],
+      "context_options": ["5", 0],
+      "beta_schedule": "autoselect"
+    }
+  },
+  "5": {
+    "class_type": "ADE_StandardUniformContextOptions",
+    "inputs": {
+      "context_length": 16,
+      "context_stride": 1,
+      "context_overlap": 4,
+      "fuse_method": "pyramid",
+      "use_on_equal_length": false,
+      "start_percent": 0.0,
+      "guarantee_steps": 1
+    }
+  },
+  "10": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "pats_tailgate_queen_seed2022293579.png"
+    }
+  },
+  "11": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": ["10", 0],
+      "upscale_method": "lanczos",
+      "width": 768,
+      "height": 1024,
+      "crop": "center"
+    }
+  },
+  "12": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": ["11", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "13": {
+    "class_type": "RepeatLatentBatch",
+    "inputs": {
+      "samples": ["12", 0],
+      "amount": 16
+    }
+  },
+  "20": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["1", 1],
+      "text": "masterpiece, best quality, 1girl, golden blonde shoulder-length hair with bangs, warm brown eyes, clear-framed glasses, round cheerful face, big smile, navy blue hoodie with red accents, red scarf, holding tray of snacks, cute white fluffy dog with red bandana, gentle swaying motion, subtle breathing animation, hair blowing slightly, dog wagging tail, cheerful expression, game day atmosphere"
+    }
+  },
+  "21": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["1", 1],
+      "text": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, deformed, ugly, morphing face, changing identity, glitch"
+    }
+  },
+  "30": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["4", 0],
+      "positive": ["20", 0],
+      "negative": ["21", 0],
+      "latent_image": ["13", 0],
+      "seed": 42,
+      "steps": 20,
+      "cfg": 7.0,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 0.40
+    }
+  },
+  "40": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["30", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "50": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": ["40", 0],
+      "frame_rate": 8,
+      "loop_count": 0,
+      "filename_prefix": "karen_animated",
+      "format": "video/h264-mp4",
+      "pingpong": true,
+      "save_output": true
+    }
+  }
+}

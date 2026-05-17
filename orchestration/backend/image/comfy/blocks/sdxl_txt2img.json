@@ -1,0 +1,68 @@
+{
+  "name": "sdxl_txt2img",
+  "description": "SDXL text-to-image generation using CheckpointLoaderSimple + KSampler",
+  "arch": "sdxl",
+  "inputs": {
+    "checkpoint": { "type": "string" },
+    "prompt": { "type": "string" },
+    "negative_prompt": { "type": "string", "default": "" },
+    "seed": { "type": "int" },
+    "width": { "type": "int", "default": 1024 },
+    "height": { "type": "int", "default": 1024 }
+  },
+  "outputs": {
+    "image": { "node": "vae_decode", "index": 0 }
+  },
+  "nodes": {
+    "loader": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "{{checkpoint}}"
+      }
+    },
+    "pos_prompt": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": ["loader", 1],
+        "text": "{{prompt}}"
+      }
+    },
+    "neg_prompt": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": ["loader", 1],
+        "text": "{{negative_prompt}}"
+      }
+    },
+    "latent": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": "{{width}}",
+        "height": "{{height}}",
+        "batch_size": 1
+      }
+    },
+    "sampler": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["loader", 0],
+        "positive": ["pos_prompt", 0],
+        "negative": ["neg_prompt", 0],
+        "latent_image": ["latent", 0],
+        "seed": "{{seed}}",
+        "steps": 8,
+        "cfg": 1.25,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "denoise": 1.0
+      }
+    },
+    "vae_decode": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": ["sampler", 0],
+        "vae": ["loader", 2]
+      }
+    }
+  }
+}

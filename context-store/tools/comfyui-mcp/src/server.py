@@ -2,23 +2,28 @@
 #  ComfyUI MCP Server — FastAPI edition
 #
 #  FastAPI application wrapping the ComfyUI REST API for image generation,
-#  workflow management, and queue monitoring. Also exposes tools via MCP.
+#  workflow management, queue monitoring, and video generation. Also exposes
+#  tools via MCP.
 #
 #  Endpoints: GET /health, GET /workflows, GET /queue
-#  MCP Tools: generate_image, get_result, list_workflows, queue_status
+#  MCP Tools: generate_image, generate_video, upload_image, download_image,
+#             get_result, list_workflows, queue_status
 #
 #  Depends on: fastapi, uvicorn, mcp, httpx
 #  Used by:    Claude Code (registered via .mcp.json)
 
 import asyncio
+import base64
+import copy
 import json
 import logging
+import mimetypes
 import os
 import random
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 import uvicorn
@@ -55,6 +60,98 @@ mcp = FastMCP(
     "comfyui",
     instructions="ComfyUI image generation and workflow management",
 )
+
+
+# --- Video workflow registry ---
+#
+# Each video workflow uses node_id+field injection (more precise than
+# class_type scanning) so we can target specific knobs in known graph layouts.
+
+VIDEO_WORKFLOWS: dict[str, dict] = {
+    "wan_i2v": {
+        "file": "wan_i2v.json",
+        "description": "Wan2.1 Image-to-Video — high-quality character idle animation (14B model)",
+        "timeout": 600,
+        "params": {
+            "prompt":          {"node": "6",  "field": "text",            "required": True},
+            "negative":        {"node": "7",  "field": "text",            "default": "static, still, frozen, blurry, worst quality, low quality, watermark, text, deformed"},
+            "seed":            {"node": "3",  "field": "seed",            "type": "int",   "default": -1},
+            "steps":           {"node": "3",  "field": "steps",           "type": "int",   "default": 20},
+            "cfg":             {"node": "3",  "field": "cfg",             "type": "float", "default": 6.0},
+            "width":           {"node": "50", "field": "width",           "type": "int",   "default": 512},
+            "height":          {"node": "50", "field": "height",          "type": "int",   "default": 768},
+            "length":          {"node": "50", "field": "length",          "type": "int",   "default": 49},
+            "frame_rate":      {"node": "60", "field": "frame_rate",      "type": "int",   "default": 16},
+            "pingpong":        {"node": "60", "field": "pingpong",        "type": "bool",  "default": True},
+            "filename_prefix": {"node": "60", "field": "filename_prefix", "default": "wan_i2v"},
+        },
+        "source_image_slot": {"node": "52", "field": "image"},
+    },
+    "animatediff_img2vid": {
+        "file": "animatediff_img2vid.json",
+        "description": "AnimateDiff idle animation loop from character image",
+        "timeout": 300,
+        "params": {
+            "prompt":          {"node": "20", "field": "text",            "required": True},
+            "negative":        {"node": "21", "field": "text",            "default": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, jpeg artifacts, signature, watermark, blurry, deformed, ugly"},
+            "seed":            {"node": "30", "field": "seed",            "type": "int",   "default": -1},
+            "steps":           {"node": "30", "field": "steps",           "type": "int",   "default": 20},
+            "cfg":             {"node": "30", "field": "cfg",             "type": "float", "default": 7.0},
+            "denoise":         {"node": "30", "field": "denoise",         "type": "float", "default": 0.40},
+            "motion_scale":    {"node": "3",  "field": "motion_scale",    "type": "float", "default": 1.1},
+            "width":           {"node": "11", "field": "width",           "type": "int",   "default": 768},
+            "height":          {"node": "11", "field": "height",          "type": "int",   "default": 1024},
+            "frame_rate":      {"node": "50", "field": "frame_rate",      "type": "int",   "default": 8},
+            "pingpong":        {"node": "50", "field": "pingpong",        "type": "bool",  "default": True},
+            "filename_prefix": {"node": "50", "field": "filename_prefix", "default": "animated"},
+        },
+        "source_image_slot": {"node": "10", "field": "image"},
+    },
+}
+
+
+# --- Helpers ---
+
+
+async def validate_workflow_models(workflow: dict) -> list[str]:
+    """Check that loader nodes in the workflow have their model files present on ComfyUI.
+    Returns a list of error strings (empty = all clear)."""
+    loaders = {
+        "CheckpointLoaderSimple": "ckpt_name",
+        "UNETLoader": "unet_name",
+        "CLIPLoader": "clip_name",
+        "VAELoader": "vae_name",
+        "CLIPVisionLoader": "clip_name",
+    }
+    errors = []
+    cache: dict[str, list] = {}
+    async with httpx.AsyncClient(timeout=10) as client:
+        for node_id, node in workflow.items():
+            cls = node.get("class_type", "")
+            if cls not in loaders:
+                continue
+            field = loaders[cls]
+            model_name = node.get("inputs", {}).get(field)
+            if not model_name:
+                continue
+            if cls not in cache:
+                try:
+                    resp = await client.get(f"{COMFYUI_URL}/object_info/{cls}")
+                    info = resp.json()
+                    required = info.get(cls, {}).get("input", {}).get("required", {})
+                    for _, v in required.items():
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], list):
+                            cache[cls] = v[0]
+                            break
+                    else:
+                        cache[cls] = []
+                except (httpx.HTTPError, ValueError, KeyError) as exc:
+                    log.debug("object_info fetch failed for %s: %s", cls, exc)
+                    cache[cls] = []
+            available = cache.get(cls, [])
+            if available and model_name not in available:
+                errors.append(f"Node {node_id} ({cls}): '{model_name}' not found")
+    return errors
 
 
 # --- FastAPI routes ---
@@ -247,6 +344,211 @@ async def get_result(
             result["timeout"] = True
             return result
         await asyncio.sleep(interval)
+
+
+@mcp.tool()
+async def upload_image(
+    base64_data: str,
+    filename: str = "upload.png",
+) -> dict:
+    """Upload a base64-encoded image to ComfyUI's input directory.
+
+    Use the returned filename in generate_video as source_image_filename.
+    Accepts raw base64 or a data URI (data:image/png;base64,...).
+
+    Args:
+        base64_data: Base64-encoded image bytes, with or without data URI prefix.
+        filename: Filename to store under in ComfyUI's input folder.
+    """
+    if "," in base64_data:
+        base64_data = base64_data.split(",", 1)[1]
+
+    try:
+        image_bytes = base64.b64decode(base64_data)
+    except ValueError as e:
+        return {"error": f"Failed to decode base64: {e}"}
+
+    content_type = mimetypes.guess_type(filename)[0] or "image/png"
+    boundary = "----ComfyUIUpload"
+
+    body = b""
+    body += f"--{boundary}\r\n".encode()
+    body += f'Content-Disposition: form-data; name="image"; filename="{filename}"\r\n'.encode()
+    body += f"Content-Type: {content_type}\r\n\r\n".encode()
+    body += image_bytes
+    body += b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="overwrite"\r\n\r\n'
+    body += b"true\r\n"
+    body += f"--{boundary}--\r\n".encode()
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{COMFYUI_URL}/upload/image",
+                content=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return {
+            "name": data.get("name", filename),
+            "subfolder": data.get("subfolder", ""),
+            "type": data.get("type", "input"),
+        }
+    except httpx.HTTPError as e:
+        return {"error": f"Upload failed: {e}"}
+
+
+@mcp.tool()
+async def generate_video(
+    prompt: str,
+    workflow_name: str = "wan_i2v",
+    source_image_filename: str = "",
+    width: int = 512,
+    height: int = 768,
+    seed: int = -1,
+    steps: int = 20,
+) -> dict:
+    """Generate a video using a ComfyUI video workflow.
+
+    For image-to-video workflows (wan_i2v, animatediff_img2vid), first call
+    upload_image to get a source_image_filename, then pass it here.
+
+    Validates model availability before queueing to fail fast with a clear error.
+    Returns a prompt_id for tracking with get_result (use poll=True, timeout=600).
+
+    Args:
+        prompt: Text prompt describing the motion/animation.
+        workflow_name: "wan_i2v" or "animatediff_img2vid".
+        source_image_filename: ComfyUI input filename from upload_image (required for i2v).
+        width: Frame width in pixels.
+        height: Frame height in pixels.
+        seed: Random seed (-1 for random).
+        steps: Diffusion steps.
+    """
+    wf_def = VIDEO_WORKFLOWS.get(workflow_name)
+    if not wf_def:
+        available = ", ".join(VIDEO_WORKFLOWS.keys())
+        return {"error": f"Unknown video workflow '{workflow_name}'. Available: {available}"}
+
+    if wf_def.get("source_image_slot") and not source_image_filename:
+        return {
+            "error": f"Workflow '{workflow_name}' is image-to-video and requires source_image_filename. "
+                     "Call upload_image first, then pass the returned name here.",
+        }
+
+    workflow_path = Path(WORKFLOWS_DIR) / wf_def["file"]
+    if not workflow_path.exists():
+        return {"error": f"Workflow file not found: {workflow_path}"}
+
+    try:
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return {"error": f"Failed to load workflow: {e}"}
+
+    workflow = copy.deepcopy(workflow)
+
+    if seed < 0:
+        seed = random.randint(0, 2**32 - 1)
+
+    param_overrides = {
+        "prompt": prompt,
+        "seed": seed,
+        "steps": steps,
+        "width": width,
+        "height": height,
+    }
+    for param_name, param_def in wf_def["params"].items():
+        value = param_overrides.get(param_name, param_def.get("default"))
+        if value is None:
+            if param_def.get("required"):
+                return {"error": f"Required param '{param_name}' not provided"}
+            continue
+        node_id = param_def["node"]
+        field = param_def["field"]
+        if node_id in workflow:
+            workflow[node_id]["inputs"][field] = value
+
+    if source_image_filename:
+        slot = wf_def.get("source_image_slot")
+        if slot:
+            node_id, field = slot["node"], slot["field"]
+            if node_id in workflow:
+                workflow[node_id]["inputs"][field] = source_image_filename
+
+    model_errors = await validate_workflow_models(workflow)
+    if model_errors:
+        return {
+            "error": "Missing models on ComfyUI server",
+            "missing_models": model_errors,
+            "hint": "Ensure required model files are installed in ComfyUI before generating.",
+        }
+
+    client_id = uuid.uuid4().hex
+    payload = {"prompt": workflow, "client_id": client_id}
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{COMFYUI_URL}/prompt", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        prompt_id = data.get("prompt_id", "")
+        if "error" in data:
+            return {"error": data["error"], "node_errors": data.get("node_errors", {})}
+        if not prompt_id:
+            return {"error": "ComfyUI returned no prompt_id", "response": data}
+        return {
+            "prompt_id": prompt_id,
+            "client_id": client_id,
+            "seed": seed,
+            "width": width,
+            "height": height,
+            "workflow": workflow_name,
+            "status": "queued",
+            "estimated_timeout": wf_def["timeout"],
+        }
+    except httpx.HTTPError as e:
+        return {"error": f"Failed to submit video prompt: {e}"}
+
+
+@mcp.tool()
+async def download_image(
+    filename: str,
+    subfolder: str = "",
+    image_type: str = "output",
+) -> dict:
+    """Download a generated image (or video frame) from ComfyUI and return it as base64.
+
+    Use the filename returned by get_result to fetch the actual bytes.
+    Returns a base64-encoded payload and an HTML img tag for embedding.
+
+    Args:
+        filename: Filename from get_result (e.g. 'tile_00001.png').
+        subfolder: Subfolder within ComfyUI output (usually empty).
+        image_type: ComfyUI image type — 'output', 'temp', or 'input'.
+    """
+    params = urlencode({"filename": filename, "subfolder": subfolder, "type": image_type})
+    url = f"{COMFYUI_URL}/view?{params}"
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data_b64 = base64.b64encode(resp.content).decode("utf-8")
+            content_type = resp.headers.get("content-type", "image/png")
+
+        return {
+            "filename": filename,
+            "url": url,
+            "content_type": content_type,
+            "size_bytes": len(resp.content),
+            "base64": data_b64,
+            "html": f'<img src="data:{content_type};base64,{data_b64}" style="max-width:100%;image-rendering:pixelated" />',
+        }
+    except httpx.HTTPError as e:
+        return {"error": f"Failed to download image: {e}", "url": url}
 
 
 async def _fetch_result(prompt_id: str) -> dict:
