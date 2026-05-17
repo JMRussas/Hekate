@@ -122,8 +122,10 @@ public class CSharpGenerator
             case "class":
             {
                 var access = node.Attr("access", "public");
+                var isPartialType = node.Attr("is_partial", "") == "true";
                 var keyword = node.Record.NodeType;
-                sb.AppendLine($"{Indent(indent)}{access} {keyword} {node.Record.Name}");
+                var partialKw = isPartialType ? "partial " : "";
+                sb.AppendLine($"{Indent(indent)}{access} {partialKw}{keyword} {node.Record.Name}");
                 sb.AppendLine($"{Indent(indent)}{{");
                 foreach (var child in node.Children)
                     EmitNode(child, sb, indent + 1);
@@ -173,24 +175,35 @@ public class CSharpGenerator
             {
                 var access = node.Attr("access", "public");
                 var modifier = node.Attr("modifier", "");
+                var isPartial = node.Attr("is_partial", "") == "true";
                 var returnType = node.Attr("return_type", "void");
                 var parameters = node.Children.Where(c => c.Record.NodeType == "parameter").ToList();
                 var paramStr = FormatParameters(parameters);
 
                 // Build the declaration line
                 var parts = new List<string> { access };
+                if (isPartial) parts.Add("partial");
                 if (!string.IsNullOrEmpty(modifier))
                     parts.Add(modifier);
                 parts.Add(returnType);
                 parts.Add($"{node.Record.Name}({paramStr})");
 
                 sb.AppendLine();
-                sb.AppendLine($"{Indent(indent)}{string.Join(" ", parts)}");
-
-                // Emit the block
                 var block = node.Children.FirstOrDefault(c => c.Record.NodeType == "block");
                 if (block != null)
+                {
+                    sb.AppendLine($"{Indent(indent)}{string.Join(" ", parts)}");
                     EmitNode(block, sb, indent);
+                }
+                else if (isPartial)
+                {
+                    // Declaration-only partial method — no body, terminated with semicolon
+                    sb.AppendLine($"{Indent(indent)}{string.Join(" ", parts)};");
+                }
+                else
+                {
+                    sb.AppendLine($"{Indent(indent)}{string.Join(" ", parts)}");
+                }
                 break;
             }
 

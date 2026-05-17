@@ -47,7 +47,8 @@ public static class Schema
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 project_id UUID NOT NULL REFERENCES projects(id),
                 file_path TEXT NOT NULL,
-                root_node_id UUID
+                root_node_id UUID,
+                UNIQUE(project_id, file_path)
             );
 
             CREATE TABLE IF NOT EXISTS nodes (

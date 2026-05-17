@@ -189,6 +189,8 @@ public class CSharpDecomposer
 
         if (modifiers.Contains("static"))
             attrs["is_static"] = "true";
+        if (modifiers.Contains("partial"))
+            attrs["is_partial"] = "true";
 
         var baseTypes = typeDecl.BaseList?.Types.Select(t => t.ToString()).ToList();
         if (baseTypes is { Count: > 0 })
@@ -238,6 +240,8 @@ public class CSharpDecomposer
 
         if (modifiers.Contains("static"))
             attrs["is_static"] = "true";
+        if (modifiers.Contains("partial"))
+            attrs["is_partial"] = "true";
 
         await _repo.InsertNode(methodId, projectId, fileId, "method",
             m.Identifier.Text, null, parentId, siblingOrder, "decomposer", attrs);
