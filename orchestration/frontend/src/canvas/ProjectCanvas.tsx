@@ -21,7 +21,8 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import { CanvasNode } from './CanvasNode'
-import type { SSEEvent } from '../types'
+import { TaskPanel } from './TaskPanel'
+import type { SSEEvent, Task } from '../types'
 import { Graph } from './graph'
 import { PlanSource, type PlanSourceDeps } from './planSource'
 import { graphToFlow, type FlowNodeData } from './flowMapping'
@@ -57,6 +58,7 @@ export function ProjectCanvas({ projectId, deps, subscribeEvents }: ProjectCanva
   const graphRef = useRef<Graph>(new Graph())
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' })
   const [version, setVersion] = useState(0)
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
 
   // Initial load.
   useEffect(() => {
@@ -104,15 +106,23 @@ export function ProjectCanvas({ projectId, deps, subscribeEvents }: ProjectCanva
     return <div role="alert">Error: {phase.message}</div>
   }
 
+  const selectedTask = selectedTaskId
+    ? (graphRef.current.nodes.get(selectedTaskId)?.config?.task as Task | undefined)
+    : undefined
+
   return (
     <ReactFlowProvider>
-      <div style={{ width: '100%', height: '100%' }}>
+      <div style={{ position: 'relative', width: '100%', height: '100%' }}>
         <ReactFlow
           nodes={flow.nodes}
           edges={flow.edges}
           nodeTypes={NODE_TYPES}
+          onNodeClick={(_event, node) => setSelectedTaskId(node.id)}
           fitView
         />
+        {selectedTask ? (
+          <TaskPanel task={selectedTask} onClose={() => setSelectedTaskId(null)} />
+        ) : null}
       </div>
     </ReactFlowProvider>
   )

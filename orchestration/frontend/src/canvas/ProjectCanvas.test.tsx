@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 
 import { ProjectCanvas, type SubscribeEvents } from './ProjectCanvas'
@@ -146,5 +146,42 @@ describe('ProjectCanvas', () => {
       })
     })
     expect(card()).toHaveAttribute('data-status', 'done')
+  })
+
+  it('clicking a node opens the TaskPanel with that task', async () => {
+    const deps: PlanSourceDeps = {
+      listTasks: async () => [
+        makeTask({ id: 't1', title: 'first', description: 'do the first thing' }),
+        makeTask({ id: 't2', title: 'second', description: 'do the second thing' }),
+      ],
+    }
+    render(<ProjectCanvas projectId="p1" deps={deps} />)
+    await waitFor(() => expect(screen.getByText('first')).toBeInTheDocument())
+    expect(screen.queryByTestId('task-panel')).not.toBeInTheDocument()
+
+    // fireEvent.click rather than userEvent.click to skip the mousedown/up
+    // sequence — React Flow attaches d3-drag handlers to mousedown that fire
+    // async and try to read `document` after jsdom has torn down, polluting
+    // the test run with "unhandled errors" even though the assertions pass.
+    fireEvent.click(screen.getByText('first'))
+
+    const panel = await screen.findByTestId('task-panel')
+    expect(panel).toBeInTheDocument()
+    expect(panel).toHaveTextContent('first')
+    expect(panel).toHaveTextContent('do the first thing')
+  })
+
+  it('clicking close on the TaskPanel hides it', async () => {
+    const deps: PlanSourceDeps = {
+      listTasks: async () => [makeTask({ id: 't1', title: 'first' })],
+    }
+    render(<ProjectCanvas projectId="p1" deps={deps} />)
+    await waitFor(() => expect(screen.getByText('first')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('first'))
+    await screen.findByTestId('task-panel')
+
+    fireEvent.click(screen.getByRole('button', { name: /close/i }))
+    expect(screen.queryByTestId('task-panel')).not.toBeInTheDocument()
   })
 })

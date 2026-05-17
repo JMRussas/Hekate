@@ -45,10 +45,14 @@ export class PlanSource {
       graph.addNode({
         id: t.id,
         kind: 'task',
+        // Stash the full Task so the detail panel can read it without a
+        // second API call. The renderer only reads `intent` / `status` etc.;
+        // `task` is opaque payload for downstream consumers.
         config: {
           task_type: t.task_type,
           tier: t.model_tier,
           wave: t.wave,
+          task: t,
         },
         intent: t.title,
         status: STATUS_MAP[t.status],
