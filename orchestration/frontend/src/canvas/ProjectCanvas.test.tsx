@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 
-import { ProjectCanvas } from './ProjectCanvas'
+import { ProjectCanvas, type SubscribeEvents } from './ProjectCanvas'
 import type { PlanSourceDeps } from './planSource'
-import type { Task } from '../types'
+import type { SSEEvent, Task } from '../types'
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -76,5 +76,75 @@ describe('ProjectCanvas', () => {
     await waitFor(() =>
       expect(screen.getByText(/network down/i)).toBeInTheDocument(),
     )
+  })
+
+  it('renders each task node with its initial status visible', async () => {
+    const deps: PlanSourceDeps = {
+      listTasks: async () => [
+        makeTask({ id: 't1', title: 'one', status: 'completed' }),
+        makeTask({ id: 't2', title: 'two', status: 'running' }),
+        makeTask({ id: 't3', title: 'three', status: 'pending' }),
+      ],
+    }
+    render(<ProjectCanvas projectId="p1" deps={deps} />)
+    await waitFor(() => expect(screen.getByText('one')).toBeInTheDocument())
+
+    const t1 = screen.getByText('one').closest('[data-testid="canvas-node"]')!
+    const t2 = screen.getByText('two').closest('[data-testid="canvas-node"]')!
+    const t3 = screen.getByText('three').closest('[data-testid="canvas-node"]')!
+
+    expect(t1).toHaveAttribute('data-status', 'done')
+    expect(t2).toHaveAttribute('data-status', 'running')
+    expect(t3).toHaveAttribute('data-status', 'planned')
+  })
+
+  it('applies SSE events to live-update node status', async () => {
+    let emit: ((e: SSEEvent) => void) | null = null
+    const subscribeEvents: SubscribeEvents = (_projectId, onEvent) => {
+      emit = onEvent
+      return () => {
+        emit = null
+      }
+    }
+
+    const deps: PlanSourceDeps = {
+      listTasks: async () => [makeTask({ id: 't1', title: 'live task', status: 'pending' })],
+    }
+
+    render(
+      <ProjectCanvas
+        projectId="p1"
+        deps={deps}
+        subscribeEvents={subscribeEvents}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByText('live task')).toBeInTheDocument())
+    const card = () =>
+      screen.getByText('live task').closest('[data-testid="canvas-node"]')!
+    expect(card()).toHaveAttribute('data-status', 'planned')
+
+    act(() => {
+      emit?.({
+        type: 'task_start',
+        message: '',
+        project_id: 'p1',
+        task_id: 't1',
+        timestamp: 0,
+      })
+    })
+    expect(card()).toHaveAttribute('data-status', 'running')
+
+    act(() => {
+      emit?.({
+        type: 'task_complete',
+        message: '',
+        project_id: 'p1',
+        task_id: 't1',
+        timestamp: 0,
+        output: 'all done',
+      })
+    })
+    expect(card()).toHaveAttribute('data-status', 'done')
   })
 })

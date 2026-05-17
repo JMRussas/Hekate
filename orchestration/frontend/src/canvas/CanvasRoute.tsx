@@ -8,6 +8,7 @@
 import { useParams } from 'react-router-dom'
 import { listTasks } from '../api/projects'
 import { ProjectCanvas } from './ProjectCanvas'
+import { subscribeEvents } from './subscribeEvents'
 
 export default function CanvasRoute() {
   const { id } = useParams<{ id: string }>()
@@ -20,6 +21,7 @@ export default function CanvasRoute() {
       deps={{
         listTasks: (projectId) => listTasks(projectId, { exclude_output: true }),
       }}
+      subscribeEvents={subscribeEvents}
     />
   )
 }
