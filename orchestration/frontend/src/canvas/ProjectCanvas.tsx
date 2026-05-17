@@ -20,6 +20,7 @@ import '@xyflow/react/dist/style.css'
 import { Graph } from './graph'
 import { PlanSource, type PlanSourceDeps } from './planSource'
 import { graphToFlow, type FlowNodeData } from './flowMapping'
+import { applyLayout } from './layout'
 
 export interface ProjectCanvasProps {
   projectId: string
@@ -44,7 +45,8 @@ export function ProjectCanvas({ projectId, deps }: ProjectCanvasProps) {
       .then(() => {
         if (cancelled) return
         const { nodes, edges } = graphToFlow(graph)
-        setPhase({ kind: 'loaded', nodes, edges })
+        const positioned = applyLayout(nodes, edges)
+        setPhase({ kind: 'loaded', nodes: positioned, edges })
       })
       .catch((err: unknown) => {
         if (cancelled) return
