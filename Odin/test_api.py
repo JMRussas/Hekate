@@ -120,6 +120,54 @@ class TestTasks:
         assert isinstance(resp.json(), list)
 
     @pytest.mark.asyncio
+    async def test_list_tasks_returns_depends_on_and_tools(self, client):
+        """list_tasks should include depends_on (from task_deps join) +
+        parsed tools (from tools_json) so the canvas/UI can render the
+        DAG without an N+1 per-task fetch."""
+        create = await client.post("/api/projects", json={
+            "name": "DepTest", "requirements": "X",
+        })
+        pid = create.json()["id"]
+
+        # Decompose a plan where task[1] depends on task[0].
+        # depends_on in the plan is a list of indices into the SAME task
+        # list (decomposer resolves to task IDs and writes task_deps).
+        await client.post(f"/api/projects/{pid}/decompose", json={
+            "phases": [{"name": "Core", "tasks": [
+                {"title": "First",  "task_type": "code", "depends_on": []},
+                {"title": "Second", "task_type": "code", "depends_on": [0]},
+            ]}],
+        })
+
+        resp = await client.get(f"/api/tasks/project/{pid}")
+        assert resp.status_code == 200
+        tasks = resp.json()
+        assert len(tasks) == 2
+
+        by_title = {t["title"]: t for t in tasks}
+        first = by_title["First"]
+        second = by_title["Second"]
+
+        # Both surface depends_on as a list (empty for roots).
+        assert first.get("depends_on") == []
+        assert second.get("depends_on") == [first["id"]]
+
+        # Both surface tools as a list (empty when tools_json is null).
+        assert first.get("tools") == []
+        assert second.get("tools") == []
+
+        # Other newly-included fields are present (may be None/0/empty,
+        # but the keys exist so the frontend doesn't have to defensively
+        # ?? everything).
+        for t in tasks:
+            assert "phase" in t
+            assert "priority" in t
+            assert "output_text" in t
+            assert "error" in t
+            assert "started_at" in t
+            assert "completed_at" in t
+
+    @pytest.mark.asyncio
     async def test_get_task_detail(self, client):
         # Create project and decompose a plan to get tasks
         create = await client.post("/api/projects", json={

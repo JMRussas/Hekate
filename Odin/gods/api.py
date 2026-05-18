@@ -199,10 +199,19 @@ def create_app(
 
     @app.get("/api/tasks/project/{project_id}")
     async def list_tasks(project_id: str, status: str | None = None, wave: int | None = None):
+        """List tasks for a project.
+
+        Includes the per-task dependency list (joined from `task_deps`) so
+        downstream consumers can render the wave DAG without an N+1 fetch.
+        Also surfaces phase, priority, parsed tools, output_text, error,
+        started_at, and completed_at — fields the TS Task type already
+        expects but the previous slim SELECT omitted.
+        """
         e: HekateEngine = app.state.engine
         sql = (
             "SELECT id, title, description, task_type, status, wave, model_tier, "
-            "retry_count, verification_status, cost_usd, created_at, updated_at "
+            "retry_count, verification_status, cost_usd, created_at, updated_at, "
+            "phase, priority, tools_json, output_text, error, started_at, completed_at "
             "FROM tasks WHERE project_id = $1"
         )
         params: list = [project_id]
@@ -214,7 +223,36 @@ def create_app(
             params.append(wave)
         sql += " ORDER BY wave, priority"
 
-        return await e.db.fetchall(sql, tuple(params))
+        rows = await e.db.fetchall(sql, tuple(params))
+        if not rows:
+            return rows
+
+        # Fetch dependencies for these tasks in a single follow-up query.
+        # Two queries instead of a JOIN+GROUP keeps the SQL cross-backend
+        # compatible (PG asyncpg in prod, sqlite in tests; neither has a
+        # cleanly portable array_agg).
+        task_ids = [r["id"] for r in rows]
+        dep_placeholders = ",".join(f"${i + 1}" for i in range(len(task_ids)))
+        dep_sql = (
+            f"SELECT task_id, depends_on FROM task_deps "
+            f"WHERE task_id IN ({dep_placeholders})"
+        )
+        dep_rows = await e.db.fetchall(dep_sql, tuple(task_ids))
+        deps_by_task: dict[str, list[str]] = {}
+        for d in dep_rows:
+            deps_by_task.setdefault(d["task_id"], []).append(d["depends_on"])
+
+        # Parse tools_json once + attach depends_on. The frontend wants
+        # `tools: string[]`, not the raw stored JSON string.
+        for r in rows:
+            r["depends_on"] = deps_by_task.get(r["id"], [])
+            tools_raw = r.pop("tools_json", None)
+            try:
+                r["tools"] = json.loads(tools_raw) if tools_raw else []
+            except (ValueError, TypeError):
+                r["tools"] = []
+
+        return rows
 
     @app.get("/api/tasks/{task_id}")
     async def get_task(task_id: str):
