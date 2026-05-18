@@ -73,7 +73,7 @@ export function TaskPanel({ task, onClose }: TaskPanelProps) {
         </section>
       ) : null}
 
-      {task.tools.length > 0 ? (
+      {task.tools && task.tools.length > 0 ? (
         <section style={{ marginBottom: 12 }}>
           <h3 style={{ fontSize: 11, textTransform: 'uppercase', opacity: 0.6, margin: '0 0 6px' }}>
             Tools

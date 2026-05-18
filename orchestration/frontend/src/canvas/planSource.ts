@@ -64,9 +64,13 @@ export class PlanSource {
       })
     }
 
-    // Second pass: flow edges from depends_on.
+    // Second pass: flow edges from depends_on. The real API omits the
+    // depends_on field entirely on the bulk task list endpoint (despite
+    // the TS type claiming it's a string[]) — guard against undefined/null
+    // so we don't crash on real data.
     for (const t of tasks) {
-      for (const dep of t.depends_on) {
+      const deps = t.depends_on ?? []
+      for (const dep of deps) {
         graph.connect(String(dep), t.id)
       }
     }

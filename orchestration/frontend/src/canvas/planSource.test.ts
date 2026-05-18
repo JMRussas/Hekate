@@ -82,6 +82,23 @@ describe('PlanSource', () => {
     expect(g.nodes.get('h')?.status).toBe('done')
   })
 
+  it('handles tasks whose depends_on field is missing (real API quirk)', async () => {
+    // The real /api/tasks endpoint omits depends_on entirely from task rows;
+    // the TS Task type lies. Code must not crash on that.
+    const src = new PlanSource('p', {
+      listTasks: async () =>
+        [
+          makeTask({ id: 'a' }),
+          { ...makeTask({ id: 'b' }), depends_on: undefined as unknown as string[] },
+          { ...makeTask({ id: 'c' }), depends_on: null as unknown as string[] },
+        ],
+    })
+    const g = new Graph()
+    await src.load(g)
+    expect(g.nodes.size).toBe(3)
+    expect(g.edges).toHaveLength(0)
+  })
+
   it('draws a flow edge for each depends_on relationship', async () => {
     const src = new PlanSource('p', {
       listTasks: async () => [
