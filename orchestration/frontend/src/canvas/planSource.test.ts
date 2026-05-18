@@ -62,6 +62,9 @@ describe('PlanSource', () => {
         makeTask({ id: 'c', status: 'running' }),
         makeTask({ id: 'd', status: 'completed' }),
         makeTask({ id: 'e', status: 'failed' }),
+        makeTask({ id: 'f', status: 'blocked' }),
+        makeTask({ id: 'g', status: 'cancelled' }),
+        makeTask({ id: 'h', status: 'needs_review' }),
       ],
     })
     const g = new Graph()
@@ -71,6 +74,12 @@ describe('PlanSource', () => {
     expect(g.nodes.get('c')?.status).toBe('running')
     expect(g.nodes.get('d')?.status).toBe('done')
     expect(g.nodes.get('e')?.status).toBe('failed')
+    // 'blocked' = waiting on upstream deps, not a terminal error
+    expect(g.nodes.get('f')?.status).toBe('planned')
+    // 'cancelled' rendered as 'planned' too (state, not error)
+    expect(g.nodes.get('g')?.status).toBe('planned')
+    // 'needs_review' = completed but verifier flagged
+    expect(g.nodes.get('h')?.status).toBe('done')
   })
 
   it('draws a flow edge for each depends_on relationship', async () => {

@@ -19,15 +19,20 @@ export interface PlanSourceDeps {
   listTasks(projectId: string): Promise<Task[]>
 }
 
+// Hekate's TaskStatus → canvas NodeStatus.
+// 'blocked' means "waiting on upstream deps" (a future wave), not a
+// terminal error — render as 'planned' (gray) so the canvas doesn't
+// look like everything failed when a project has just been decomposed.
+// 'cancelled' is the same — it's a state, not an error visually.
 const STATUS_MAP: Record<TaskStatus, NodeStatus> = {
   pending: 'planned',
-  blocked: 'failed',
+  blocked: 'planned',
   queued: 'ready',
   running: 'running',
   completed: 'done',
   needs_review: 'done',
   failed: 'failed',
-  cancelled: 'failed',
+  cancelled: 'planned',
 }
 
 export class PlanSource {
