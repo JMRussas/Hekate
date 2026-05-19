@@ -35,3 +35,16 @@ __pycache__/
 
 # Odin runtime data
 Odin/gods/odin/data/
+
+# Logs
+*.log
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# mkdocs build output
+docs/site/
+
+# auto-generated openapi dumps
+orchestration/backend/openapi.json
+orchestration/backend/tools/openapi.json
