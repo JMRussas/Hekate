@@ -24,6 +24,19 @@ class NodeKind(str, Enum):
     TASK = "task"
     QUESTION = "question"
     RISK = "risk"
+    # Filesystem kinds — synthetic, used by CodeFileSource to nest files by
+    # directory when the context store only stores flat absolute paths.
+    DIRECTORY = "directory"
+    FILE = "file"
+    # Code kinds — mirror the context store's C# decomposer ontology.
+    COMPILATION_UNIT = "compilation_unit"
+    NAMESPACE = "namespace"
+    CLASS = "class"
+    STRUCT = "struct"
+    METHOD = "method"
+    FIELD = "field"
+    CONSTRUCTOR = "constructor"
+    PARAMETER = "parameter"
 
 
 class NodeStatus(str, Enum):

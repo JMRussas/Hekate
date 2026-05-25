@@ -42,6 +42,18 @@ KIND_GLYPH = {
     NodeKind.TASK:       "□",
     NodeKind.QUESTION:   "?",
     NodeKind.RISK:       "△",
+    # filesystem (synthetic)
+    NodeKind.DIRECTORY:  "▸",
+    NodeKind.FILE:       "▤",
+    # code (context store decomposer)
+    NodeKind.COMPILATION_UNIT: "≡",
+    NodeKind.NAMESPACE:        "§",
+    NodeKind.CLASS:            "▦",
+    NodeKind.STRUCT:           "▥",
+    NodeKind.METHOD:           "→",
+    NodeKind.FIELD:            "·",
+    NodeKind.CONSTRUCTOR:      "+",
+    NodeKind.PARAMETER:        "·",
 }
 
 
