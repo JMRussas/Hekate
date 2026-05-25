@@ -34,9 +34,9 @@ CodeStoragePoc/
 ├── Decomposer/
 │   ├── CSharpDecomposer.cs        # C# source → node tree (Roslyn parser)
 │   └── EdgeSeeder.cs              # Scan bodies → CALLS/REFERENCES edges
-├── Generator/
+├── Generator/                     # See ../PLAN_TO_CODE.md for the typed-plan + deterministic-codegen architecture this implements
 │   ├── CSharpGenerator.cs         # Node tree → C# source (the core)
-│   ├── PlanToCodeGenerator.cs     # Plan tasks → code nodes + temporal edges
+│   ├── PlanToCodeGenerator.cs     # Plan tasks → code nodes + temporal edges (the C# Lowerer)
 │   └── RoslynValidator.cs         # Parse-level validation before write
 ├── BuildRunner/
 │   └── DotnetBuilder.cs           # dotnet build wrapper

@@ -179,6 +179,8 @@ Read **on-demand** when working in the relevant area.
 
 | Doc | When to read |
 |-----|-------------|
+| `PLAN_TO_CODE.md` | Working on the Planner, codegen (Generator/Lowerer/Emitter), Hermes execution, or any of the four open gap-fills. Explains the typed-plan + bounded-hole model the system is converging on. |
+| `context-store/plans/011-typed-changes-hermes-refactor.md` | Status of the four Plan→Code gap-fills; pick up where the last person stopped |
 | `context-store/CLAUDE.md` | Working on agent memory, context router, node types, DB schema |
 | `orchestration/CLAUDE.md` | Working on task execution, planning, wave dispatch, auth |
 | `.claude/architecture.md` | Understanding cross-component design |

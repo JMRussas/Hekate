@@ -22,6 +22,8 @@ Plans the work. Takes requirements and produces a structured execution plan thro
 
 **Talks to:** LLM Gateway (Gemini for generation, different provider for review)
 
+> See [`PLAN_TO_CODE.md`](PLAN_TO_CODE.md) for the architectural model Athena's L1–L5 implements — typed plans as the boundary between AI (planning, body-fill) and machine logic (lowering, emission, validation).
+
 ### Odin — The Orchestrator
 
 Decides what runs, when, and on what. Manages the lifecycle of projects from start to completion.
