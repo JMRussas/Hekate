@@ -38,20 +38,30 @@ public class CodeService
 
         var decomposer = new CSharpDecomposer(_repo);
         var rootId = await decomposer.DecomposeFileAsync(projectId, filePath);
+        return await FinalizeDecomposition(projectId, filePath, rootId);
+    }
 
-        // Sync AGE vertices for the decomposed nodes
-        int vertexCount = 0;
+    /// <summary>
+    /// Decompose C# source text (posted in request body) into nodes.
+    /// </summary>
+    public async Task<DecomposeResult> DecomposeSource(Guid projectId, string filePath, string sourceText)
+    {
+        var decomposer = new CSharpDecomposer(_repo);
+        var rootId = await decomposer.DecomposeSourceAsync(projectId, filePath, sourceText);
+        return await FinalizeDecomposition(projectId, filePath, rootId);
+    }
+
+    private async Task<DecomposeResult> FinalizeDecomposition(Guid projectId, string filePath, Guid rootId)
+    {
         try
         {
             await _age.SyncAllVertices(_repo, projectId);
-            vertexCount = (await _repo.GetAllNodes(projectId)).Count;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[WARN] AGE sync failed: {ex.Message}");
         }
 
-        // Seed edges
         var fileId = await _repo.GetOrCreateFile(projectId, filePath);
         int calls = 0, refs = 0;
         try
@@ -64,24 +74,8 @@ public class CodeService
             Console.WriteLine($"[WARN] Edge seeding failed: {ex.Message}");
         }
 
-        // Count nodes
         var nodes = await _repo.GetNodesByFile(fileId);
-
         return new DecomposeResult(rootId, fileId, filePath, nodes.Count, calls, refs);
-    }
-
-    /// <summary>
-    /// Decompose C# source text (posted in request body) into nodes.
-    /// </summary>
-    public async Task<DecomposeResult> DecomposeSource(Guid projectId, string filePath, string sourceText)
-    {
-        var decomposer = new CSharpDecomposer(_repo);
-        var rootId = await decomposer.DecomposeSourceAsync(projectId, filePath, sourceText);
-
-        var fileId = await _repo.GetOrCreateFile(projectId, filePath);
-        var nodes = await _repo.GetNodesByFile(fileId);
-
-        return new DecomposeResult(rootId, fileId, filePath, nodes.Count, 0, 0);
     }
 
     /// <summary>
