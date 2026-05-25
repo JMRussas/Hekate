@@ -19,9 +19,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:5200',
+      '/api': process.env.VITE_ORCH_API ?? 'http://localhost:5200',
       '/context-api': {
-        target: 'http://localhost:5102',
+        target: process.env.VITE_CONTEXT_API ?? 'http://localhost:5102',
         rewrite: (path) => path.replace(/^\/context-api/, '/api'),
       },
     },
