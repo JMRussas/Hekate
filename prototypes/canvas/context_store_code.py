@@ -37,6 +37,15 @@ class NodeChild:
     sibling_order: int
 
 
+@dataclass
+class Edge:
+    edge_type: str
+    target_id: Optional[str]
+    target_name: Optional[str]
+    target_type: Optional[str]
+    direction: str  # "outgoing" or "incoming"
+
+
 class CodeClient:
     def __init__(self, base_url: str = DEFAULT_CTX_STORE, timeout: float = 15.0):
         self.base_url = base_url.rstrip("/")
@@ -85,4 +94,18 @@ class CodeClient:
                 sibling_order=int(n.get("siblingOrder", 0)),
             )
             for n in resp.json()
+        ]
+
+    async def get_edges(self, node_id: str) -> list[Edge]:
+        resp = await self._client.get(f"{self.base_url}/api/node/{node_id}/edges")
+        resp.raise_for_status()
+        return [
+            Edge(
+                edge_type=e["edgeType"],
+                target_id=e.get("targetId"),
+                target_name=e.get("targetName"),
+                target_type=e.get("targetType"),
+                direction=e["direction"],
+            )
+            for e in resp.json()
         ]

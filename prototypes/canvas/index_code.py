@@ -64,7 +64,7 @@ async def decompose_file(
             "filePath": str(path),
             "sourceText": text,
         },
-        timeout=60.0,
+        timeout=600.0,
     )
     resp.raise_for_status()
     return resp.json()
