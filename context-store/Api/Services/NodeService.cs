@@ -133,30 +133,32 @@ public class NodeService
                 "SET search_path = ag_catalog, \"$user\", public;", conn);
             await path.ExecuteNonQueryAsync();
 
-            // Query outgoing edges (sanitize nodeId for Cypher)
+            // Query outgoing edges (sanitize nodeId for Cypher).
+            // The cypher() function's AS column list must match the RETURN
+            // arity — earlier versions declared a single agtype column for a
+            // four-column RETURN, which failed with 42804 and the catch below
+            // swallowed it as an empty edge list.
             var safeId = AgeLayer.EscapeCypher(nodeId.ToString());
             var outCypher = $"MATCH (a:CodeNode {{node_id: '{safeId}'}})-[r]->(b:CodeNode) RETURN type(r), b.node_id, b.name, b.node_type";
-            var outSql = $"SELECT result::text FROM (SELECT * FROM cypher('code_graph', $$ {outCypher} $$) as (result agtype)) sub;";
+            var outSql = $"SELECT rel::text, target_id::text, target_name::text, target_type::text FROM cypher('code_graph', $$ {outCypher} $$) as (rel agtype, target_id agtype, target_name agtype, target_type agtype);";
             await using var outCmd = new NpgsqlCommand(outSql, conn);
             await using (var reader = await outCmd.ExecuteReaderAsync())
             {
                 while (await reader.ReadAsync())
                 {
-                    var raw = reader.GetString(0);
-                    edges.Add(ParseEdgeResult(raw, "outgoing"));
+                    edges.Add(BuildEdgeResult(reader, "outgoing"));
                 }
             }
 
             // Query incoming edges
             var inCypher = $"MATCH (a:CodeNode)-[r]->(b:CodeNode {{node_id: '{safeId}'}}) RETURN type(r), a.node_id, a.name, a.node_type";
-            var inSql = $"SELECT result::text FROM (SELECT * FROM cypher('code_graph', $$ {inCypher} $$) as (result agtype)) sub;";
+            var inSql = $"SELECT rel::text, target_id::text, target_name::text, target_type::text FROM cypher('code_graph', $$ {inCypher} $$) as (rel agtype, target_id agtype, target_name agtype, target_type agtype);";
             await using var inCmd = new NpgsqlCommand(inSql, conn);
             await using (var reader = await inCmd.ExecuteReaderAsync())
             {
                 while (await reader.ReadAsync())
                 {
-                    var raw = reader.GetString(0);
-                    edges.Add(ParseEdgeResult(raw, "incoming"));
+                    edges.Add(BuildEdgeResult(reader, "incoming"));
                 }
             }
         }
@@ -447,35 +449,33 @@ public class NodeService
         return crumbs;
     }
 
-    /// <summary>Parse AGE Cypher result row into an edge object.</summary>
-    private static object ParseEdgeResult(string raw, string direction)
+    /// <summary>Build an edge result object from a 4-column agtype reader row.</summary>
+    private static object BuildEdgeResult(NpgsqlDataReader reader, string direction) => new
     {
-        // AGE returns results as agtype — for multi-column RETURN, it comes as a JSON-like array
-        // Simple parsing: strip outer brackets and split
-        // Format varies but typically: ["EDGE_TYPE", "uuid", "name", "node_type"]
+        edgeType = UnwrapAgtype(reader, 0) ?? "UNKNOWN",
+        targetId = UnwrapAgtype(reader, 1),
+        targetName = UnwrapAgtype(reader, 2),
+        targetType = UnwrapAgtype(reader, 3),
+        direction,
+    };
+
+    /// <summary>agtype scalars round-trip through Npgsql as text in JSON form
+    /// (string columns arrive as `"value"`). Npgsql doesn't expose a typed
+    /// reader for agtype, so we go through GetString — GetValue / GetFieldValue
+    /// fail with "not supported for ag_catalog.agtype".</summary>
+    private static string? UnwrapAgtype(NpgsqlDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal)) return null;
+        var raw = reader.GetString(ordinal);
+        if (string.IsNullOrEmpty(raw) || raw == "null") return null;
         try
         {
-            // Try parsing as JSON array
-            var arr = JsonSerializer.Deserialize<JsonElement>(raw);
-            if (arr.ValueKind == JsonValueKind.Array)
-            {
-                var elements = new List<string>();
-                foreach (var el in arr.EnumerateArray())
-                    elements.Add(el.GetString() ?? el.ToString());
-
-                return new
-                {
-                    edgeType = elements.ElementAtOrDefault(0) ?? "UNKNOWN",
-                    targetId = elements.ElementAtOrDefault(1),
-                    targetName = elements.ElementAtOrDefault(2),
-                    targetType = elements.ElementAtOrDefault(3),
-                    direction,
-                };
-            }
+            var el = JsonSerializer.Deserialize<JsonElement>(raw);
+            return el.ValueKind == JsonValueKind.String ? el.GetString() : el.ToString();
         }
-        catch { }
-
-        // Fallback — return raw
-        return new { edgeType = "UNKNOWN", targetId = (string?)null, targetName = raw, targetType = (string?)null, direction };
+        catch
+        {
+            return raw;
+        }
     }
 }
