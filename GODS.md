@@ -31,7 +31,7 @@ Decides what runs, when, and on what. Manages the lifecycle of projects from sta
 - Dispatches tasks to available providers based on type and complexity
 - Manages wave progression (wave 0 completes → unblock wave 1)
 - Detects deadlocks (all tasks blocked, none progressing)
-- Diagnoses failures (30 error patterns) and decides: retry, reassign provider, skip, or escalate
+- Diagnoses failures (32 error patterns) and decides: retry, reassign provider, skip, or escalate
 - Computes retry backoff (fixed, exponential, linear) using Conductor-style task definitions
 - Completes projects when all tasks are done
 
@@ -72,10 +72,12 @@ Checks the work. Determines if task output satisfies requirements and extracts k
 Handles git operations. Stages files after verified tasks.
 
 **What he does:**
+- Syntax-checks Python files before staging
 - Stages changed files via `git add` after task verification
-- Timeout protection on git operations (30s)
-
-**Future:** Commits, creates branches, opens PRs, reverts on failure.
+- Creates feature branches (`hekate/<project-slug>`)
+- Commits all project changes with task summary
+- Pushes to origin and creates PRs via `gh`
+- Timeout protection on all git operations (30s)
 
 ### Tyche — The Accountant
 
@@ -83,8 +85,9 @@ Tracks spending and budget.
 
 **What she does:**
 - Records cost from completed tasks (tokens, USD)
+- Enforces budget limits as a gate on task dispatch (daily and per-project)
 
-**Future:** Budget enforcement, provider quota tracking, cost alerts.
+**Future:** Monthly budget aggregation, provider quota tracking, cost alerts.
 
 ## Infrastructure Gods
 

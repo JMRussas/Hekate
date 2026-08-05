@@ -255,16 +255,20 @@ def create_server(config_path: Path | None = None) -> FastMCP:
         requirements: str,
         ctx: Context,
         planning_rigor: str = "L2",
+        repo_path: str = "",
     ) -> str:
-        """Create a project. planning_rigor: L1 (quick), L2 (standard), L3 (thorough)."""
+        """Create a project. planning_rigor: L1 (quick), L2 (standard), L3 (thorough). repo_path: working directory for the project."""
         _capture_session(ctx)
         try:
-            result = await _post("/projects", {
+            body: dict = {
                 "name": name,
                 "requirements": requirements,
                 "planning_rigor": planning_rigor,
                 "config": {"execution_mode": "auto"},
-            })
+            }
+            if repo_path:
+                body["repo_path"] = repo_path
+            result = await _post("/projects", body)
             return (
                 f"--- Project Created ---\n"
                 f"ID: {result['id']}\n"

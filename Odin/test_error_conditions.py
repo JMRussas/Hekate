@@ -209,10 +209,11 @@ class TestOdinErrors:
             pass
 
         # Test the actual fallback in _get_provider_availability
+        # Fail-conservative: on timeout, assume all providers down to avoid dispatching to broken infra
         from gods.handlers.odin import _get_provider_availability
         with patch("httpx.AsyncClient.get", side_effect=asyncio.TimeoutError()):
             result = await _get_provider_availability("http://localhost:9999")
-        assert result == {"claude_code": True, "gemini_cli": True, "ollama": True}
+        assert result == {"claude_code": False, "gemini_cli": False, "ollama": False}
 
     @pytest.mark.asyncio
     async def test_dispatch_with_no_tasks(self, db):
