@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard'
 import ProjectDetail from './pages/ProjectDetail'
 import TaskDetail from './pages/TaskDetail'
 import Services from './pages/Services'
+import Observatory from './pages/Observatory'
 import NotFound from './pages/NotFound'
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/project/:id" element={<ProjectDetail />} />
             <Route path="/project/:id/task/:taskId" element={<TaskDetail />} />
+            <Route path="/project/:id/observatory" element={<Observatory />} />
             <Route path="/services" element={<Services />} />
           </Route>
           <Route path="*" element={<NotFound />} />

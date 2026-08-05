@@ -13,6 +13,7 @@ import { useSSE } from '../hooks/useSSE'
 import { useFetch } from '../hooks/useFetch'
 import type { Project, Plan, Task, Checkpoint, CoverageReport, PlanningRigor, GitStatus } from '../types'
 import PlanTree from '../components/PlanTree'
+import CheckpointForm from '../components/CheckpointForm'
 
 interface ProjectData {
   project: Project
@@ -55,7 +56,6 @@ export default function ProjectDetail() {
 
   // Checkpoint resolve state
   const [resolveId, setResolveId] = useState<string | null>(null)
-  const [resolveGuidance, setResolveGuidance] = useState('')
 
   // Task grouping mode
   const [groupBy, setGroupBy] = useState<'wave' | 'phase'>('wave')
@@ -80,13 +80,12 @@ export default function ProjectDetail() {
     setLoading('')
   }
 
-  const handleResolve = async (checkpointId: string, resolveAction: string) => {
+  const handleResolve = async (checkpointId: string, resolveAction: string, guidance = '', structured_response?: Record<string, unknown>) => {
     setLoading(`resolve-${checkpointId}`)
     setActionError('')
     try {
-      await resolveCheckpoint(checkpointId, resolveAction, resolveGuidance)
+      await resolveCheckpoint(checkpointId, resolveAction, guidance, structured_response)
       setResolveId(null)
-      setResolveGuidance('')
       refetch()
     } catch (e) {
       setActionError(String(e))
@@ -208,6 +207,7 @@ export default function ProjectDetail() {
             <button className="btn btn-danger btn-sm" onClick={() => action('cancel', () => cancelProject(id!))}
               disabled={!!loading}>Cancel</button>
           )}
+          <Link to={`/project/${id}/observatory`} className="btn btn-secondary btn-sm">Observatory</Link>
         </div>
       </div>
 
@@ -478,22 +478,12 @@ export default function ProjectDetail() {
               </div>
               <p className="text-sm mb-1" style={{ color: 'var(--warning)' }}>{cp.question}</p>
               {resolveId === cp.id ? (
-                <div>
-                  <div className="form-group">
-                    <textarea value={resolveGuidance} onChange={e => setResolveGuidance(e.target.value)}
-                      placeholder="Optional guidance..." style={{ minHeight: '50px' }} />
-                  </div>
-                  <div className="flex gap-1">
-                    <button className="btn btn-primary btn-sm" onClick={() => handleResolve(cp.id, 'retry')}
-                      disabled={!!loading}>Retry</button>
-                    <button className="btn btn-secondary btn-sm" onClick={() => handleResolve(cp.id, 'skip')}
-                      disabled={!!loading}>Skip</button>
-                    <button className="btn btn-danger btn-sm" onClick={() => handleResolve(cp.id, 'fail')}
-                      disabled={!!loading}>Fail</button>
-                    <button className="btn btn-sm" style={{ background: 'transparent', color: 'var(--text-dim)' }}
-                      onClick={() => { setResolveId(null); setResolveGuidance('') }}>Cancel</button>
-                  </div>
-                </div>
+                <CheckpointForm
+                  checkpoint={cp}
+                  loading={loading === `resolve-${cp.id}`}
+                  onResolve={(action, guidance, structured) => handleResolve(cp.id, action, guidance, structured)}
+                  onCancel={() => setResolveId(null)}
+                />
               ) : (
                 <button className="btn btn-secondary btn-sm" onClick={() => setResolveId(cp.id)}>
                   Resolve
