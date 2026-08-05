@@ -48,3 +48,9 @@ docs/site/
 # auto-generated openapi dumps
 orchestration/backend/openapi.json
 orchestration/backend/tools/openapi.json
+
+# Local planner scratch (hekate-mcp plan cache)
+**/.hekate/plans/
+
+# Stray nested copy created by a bad relative path
+context-store/context-store/
