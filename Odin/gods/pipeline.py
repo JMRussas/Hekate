@@ -30,8 +30,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from gods import safe_json
+from gods.task_definition import load_task_definition
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
@@ -341,10 +343,55 @@ class Pipeline:
         except Exception as e:
             logger.warning("Pipeline: cleanup of old events failed: %s", e)
 
+    async def _extract_log_metrics(self):
+        """Parse engine log and insert daily metrics into daily_metrics table.
+
+        Runs periodically (every 1000 ticks). Catches all exceptions so
+        extraction failure never blocks the pipeline.
+        """
+        try:
+            from gods.log_extractor import parse_log, daily_summary
+            from datetime import date
+
+            log_dir = os.environ.get("LOG_DIR", "D:/Hekate/logs/")
+            log_file = os.path.join(log_dir, "pipeline.log")
+            if not os.path.exists(log_file):
+                logger.debug("Pipeline: log file not found for metrics extraction: %s", log_file)
+                return
+
+            metrics = parse_log(log_file)
+            rows = daily_summary(metrics, date.today())
+            if not rows:
+                return
+
+            today = date.today().isoformat()
+            ts = time.time()
+
+            for metric_name, metric_value, details_json in rows:
+                # Upsert: delete existing row for today+metric, then insert fresh
+                try:
+                    await self.db.execute_write(
+                        "DELETE FROM daily_metrics WHERE date = $1 AND metric_name = $2",
+                        (today, metric_name),
+                    )
+                    await self.db.execute_write(
+                        "INSERT INTO daily_metrics (date, metric_name, metric_value, details_json, extracted_at) "
+                        "VALUES ($1, $2, $3, $4, $5)",
+                        (today, metric_name, metric_value, details_json, ts),
+                    )
+                except Exception as row_err:
+                    logger.debug("Pipeline: metric insert failed for %s: %s", metric_name, row_err)
+
+            logger.info("Pipeline: extracted %d daily metrics from log", len(rows))
+        except Exception as e:
+            logger.warning("Pipeline: log metrics extraction failed: %s", e)
+
     async def tick(self):
         self._tick_count += 1
         if self._tick_count % 100 == 0:
             await self._cleanup_old_events()
+        if self._tick_count % 1000 == 0:
+            await self._extract_log_metrics()
         subscribed = list({r.event_type for r in self._handlers})
         if not subscribed:
             return

@@ -53,6 +53,8 @@ from backend.routes.services import health_router, router as services_router
 from backend.routes.tasks import router as tasks_router
 from backend.routes.usage import router as usage_router
 from backend.routes.fixes import router as fixes_router
+from backend.routes.metrics import router as metrics_router
+from backend.routes.prometheus import router as prometheus_router
 
 logger = logging.getLogger("orchestration.app")
 
@@ -350,6 +352,10 @@ app.include_router(odin_router, prefix="/api", dependencies=_auth_dep)
 
 # Fix queue routes
 app.include_router(fixes_router, prefix="/api", dependencies=_auth_dep)
+app.include_router(metrics_router, prefix="/api", dependencies=_auth_dep)
+
+# Prometheus scrape endpoint — top-level /metrics, no auth
+app.include_router(prometheus_router)
 
 # Serve frontend build if available (SPA catch-all for client-side routing)
 frontend_dist = PROJECT_ROOT / "frontend" / "dist"

@@ -306,6 +306,16 @@ _SCHEMA_STATEMENTS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_security_findings_plan ON security_findings(plan_id)",
     "CREATE INDEX IF NOT EXISTS idx_security_findings_project ON security_findings(project_id)",
+    # Daily metrics (aggregated analytics)
+    """CREATE TABLE IF NOT EXISTS daily_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        metric_name TEXT NOT NULL,
+        metric_value DOUBLE PRECISION,
+        details_json TEXT,
+        extracted_at DOUBLE PRECISION
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_daily_metrics_date_metric ON daily_metrics(date, metric_name)",
 ]
 
 

@@ -54,6 +54,7 @@ class Container(containers.DeclarativeContainer):
             "backend.routes.checkpoints",
             "backend.routes.admin",
             "backend.routes.analytics",
+            "backend.routes.metrics",
             "backend.routes.rag",
             "backend.routes.auth_oidc",
             "backend.routes.external",
@@ -62,6 +63,7 @@ class Container(containers.DeclarativeContainer):
             "backend.routes.odin",
             "backend.routes.fixes",
             "backend.routes.chat",
+            "backend.routes.prometheus",
             "backend.middleware.auth",
             "backend.services.model_discovery",
         ]
