@@ -650,8 +650,9 @@ async def _ingest_retry_success(task_row, output_text: str, db, ingester):
 
 async def create_checkpoint(
     *, project_id, task_id, task_row, error_msg, db, progress,
+    schema_json=None, checkpoint_type="retry_exhausted",
 ):
-    """Create a checkpoint for a task that exhausted retries.
+    """Create a checkpoint for a task that needs human review.
 
     Sets the task to NEEDS_REVIEW and creates a structured checkpoint record
     with attempt history for the user to resolve.
@@ -672,14 +673,15 @@ async def create_checkpoint(
 
     await db.execute_write(
         "INSERT INTO checkpoints "
-        "(id, project_id, task_id, checkpoint_type, summary, attempts_json, question, created_at) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "(id, project_id, task_id, checkpoint_type, summary, attempts_json, question, schema_json, created_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         (
-            checkpoint_id, project_id, task_id, "retry_exhausted",
+            checkpoint_id, project_id, task_id, checkpoint_type,
             f"Task '{task_row['title']}' failed after {task_row['max_retries']} attempts",
             json.dumps(attempts),
             "How should we proceed? Options: retry with modified approach, "
             "skip this task, or fail it.",
+            schema_json,
             time.time(),
         ),
     )
