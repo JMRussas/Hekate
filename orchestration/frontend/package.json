@@ -11,6 +11,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@rjsf/core": "^6.4.2",
+    "@rjsf/utils": "^6.4.2",
+    "@rjsf/validator-ajv8": "^6.4.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.0.0"

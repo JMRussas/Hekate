@@ -81,8 +81,17 @@ export const fetchCoverage = (projectId: string) =>
 export const fetchCheckpoints = (projectId: string, resolved = false) =>
   apiFetch<Checkpoint[]>(`/checkpoints/project/${projectId}${resolved ? '?resolved=true' : ''}`)
 
-export const resolveCheckpoint = (checkpointId: string, action: string, guidance = '') =>
-  apiPost<Checkpoint>(`/checkpoints/${checkpointId}/resolve`, { action, guidance })
+export const resolveCheckpoint = (
+  checkpointId: string,
+  action: string,
+  guidance = '',
+  structured_response?: Record<string, unknown>,
+) =>
+  apiPost<Checkpoint>(`/checkpoints/${checkpointId}/resolve`, {
+    action,
+    guidance,
+    ...(structured_response ? { structured_response } : {}),
+  })
 
 export const reviewTask = (taskId: string, action: string, feedback = '') =>
   apiPost<Task>(`/tasks/${taskId}/review`, { action, feedback })

@@ -291,3 +291,171 @@ class TestCheckpointAPI:
         })
         assert resp.status_code == 400
         assert "already resolved" in resp.json()["detail"].lower()
+
+
+class TestCheckpointSchemaValidation:
+    """Tests for structured checkpoint responses with JSON Schema validation."""
+
+    async def _setup_checkpoint_with_schema(self, client, schema_json=None):
+        """Helper: create project + task + checkpoint, optionally with schema_json."""
+        resp = await client.post("/api/projects", json={
+            "name": "Schema Test", "requirements": "test",
+        })
+        project_id = resp.json()["id"]
+
+        from backend.app import container
+        db = container.db()
+
+        now = time.time()
+        plan_id = f"plan_schema_{now}"
+        task_id = f"task_schema_{now}"
+        cp_id = f"cp_schema_{now}"
+
+        await db.execute_write(
+            "INSERT INTO plans (id, project_id, version, model_used, plan_json, status, created_at) "
+            "VALUES (?, ?, 1, 'test', ?, 'approved', ?)",
+            (plan_id, project_id, '{"summary":"t","tasks":[]}', now),
+        )
+        await db.execute_write(
+            "INSERT INTO tasks (id, project_id, plan_id, title, description, task_type, "
+            "priority, status, model_tier, wave, retry_count, error, context_json, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, project_id, plan_id, "Schema Task", "Test task", "code", 0,
+             TaskStatus.NEEDS_REVIEW, "haiku", 0, 3, "Max retries", "[]", now, now),
+        )
+        await db.execute_write(
+            "INSERT INTO checkpoints (id, project_id, task_id, checkpoint_type, "
+            "summary, attempts_json, question, schema_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (cp_id, project_id, task_id, "retry_exhausted",
+             "Task failed", "[]", "What to do?",
+             json.dumps(schema_json) if schema_json else None, now),
+        )
+        return db, project_id, task_id, cp_id
+
+    async def test_create_checkpoint_with_schema(self, authed_client):
+        """Checkpoint created with schema_json should persist and return it."""
+        schema = {
+            "type": "object",
+            "properties": {"action": {"type": "string", "enum": ["approve", "reject"]}},
+            "required": ["action"],
+        }
+        db, project_id, task_id, cp_id = await self._setup_checkpoint_with_schema(
+            authed_client, schema_json=schema,
+        )
+
+        resp = await authed_client.get(f"/api/checkpoints/{cp_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["schema_json"] is not None
+        assert data["schema_json"]["required"] == ["action"]
+
+    async def test_resolve_with_valid_structured_response(self, authed_client):
+        """Resolving with a structured_response that passes schema validation succeeds."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["approve", "reject"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        }
+        db, project_id, task_id, cp_id = await self._setup_checkpoint_with_schema(
+            authed_client, schema_json=schema,
+        )
+
+        resp = await authed_client.post(f"/api/checkpoints/{cp_id}/resolve", json={
+            "action": "retry",
+            "structured_response": {"action": "approve", "reason": "Looks good"},
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["resolved_at"] is not None
+        # Response should contain the structured data as JSON
+        assert "approve" in data["response"]
+
+    async def test_resolve_with_invalid_structured_response_returns_422(self, authed_client):
+        """Resolving with a structured_response that fails schema validation returns 422."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["approve", "reject"]},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        }
+        db, project_id, task_id, cp_id = await self._setup_checkpoint_with_schema(
+            authed_client, schema_json=schema,
+        )
+
+        resp = await authed_client.post(f"/api/checkpoints/{cp_id}/resolve", json={
+            "action": "retry",
+            "structured_response": {"action": "invalid_value"},
+        })
+        assert resp.status_code == 422
+        assert "validation failed" in resp.json()["detail"].lower()
+
+    async def test_structured_response_injected_into_task_context(self, authed_client):
+        """Valid structured response should be injected into task context_json."""
+        schema = {
+            "title": "approve_reject",
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["approve", "reject"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        }
+        db, project_id, task_id, cp_id = await self._setup_checkpoint_with_schema(
+            authed_client, schema_json=schema,
+        )
+
+        resp = await authed_client.post(f"/api/checkpoints/{cp_id}/resolve", json={
+            "action": "retry",
+            "structured_response": {"action": "reject", "reason": "Needs rework"},
+        })
+        assert resp.status_code == 200
+
+        task = await db.fetchone("SELECT context_json FROM tasks WHERE id = ?", (task_id,))
+        ctx = json.loads(task["context_json"])
+        structured_entries = [e for e in ctx if e.get("type") == "checkpoint_structured_response"]
+        assert len(structured_entries) == 1
+        assert structured_entries[0]["schema_name"] == "approve_reject"
+        assert structured_entries[0]["data"]["action"] == "reject"
+        assert structured_entries[0]["data"]["reason"] == "Needs rework"
+
+    async def test_backward_compat_no_schema_accepts_plain_guidance(self, authed_client):
+        """Checkpoint without schema_json accepts plain guidance (backward compat)."""
+        db, project_id, task_id, cp_id = await self._setup_checkpoint_with_schema(
+            authed_client, schema_json=None,
+        )
+
+        resp = await authed_client.post(f"/api/checkpoints/{cp_id}/resolve", json={
+            "action": "retry",
+            "guidance": "Try a different approach",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["resolved_at"] is not None
+
+        # Guidance should land in context as plain checkpoint_guidance
+        task = await db.fetchone("SELECT context_json FROM tasks WHERE id = ?", (task_id,))
+        ctx = json.loads(task["context_json"])
+        guidance_entries = [e for e in ctx if e.get("type") == "checkpoint_guidance"]
+        assert len(guidance_entries) == 1
+        assert "different approach" in guidance_entries[0]["content"]
+
+    async def test_predefined_schemas_endpoint(self, authed_client):
+        """GET /api/checkpoints/schemas returns all predefined schemas."""
+        resp = await authed_client.get("/api/checkpoints/schemas")
+        assert resp.status_code == 200
+        data = resp.json()
+        expected_keys = {"approve_reject", "select_option", "provide_file_path", "free_text_with_reason"}
+        assert set(data.keys()) == expected_keys
+        # Each schema should be a valid JSON Schema object
+        for name, schema in data.items():
+            assert schema["type"] == "object"
+            assert "properties" in schema
+            assert "required" in schema

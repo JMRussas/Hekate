@@ -208,6 +208,7 @@ class CheckpointOut(BaseModel):
     question: str
     response: str | None = None
     resolved_at: float | None = None
+    schema_json: dict | None = None
     created_at: float
 
 
@@ -216,6 +217,13 @@ class CheckpointResolve(BaseModel):
     action: str = Field(..., pattern="^(retry|skip|fail)$")
     guidance: str = Field(default="", max_length=10_000)
     gotcha: str = Field(default="", max_length=2_000)
+    structured_response: dict | None = None
+
+
+class CheckpointCreate(BaseModel):
+    """Create a checkpoint with optional structured schema."""
+    schema_name: str | None = None
+    schema_json: dict | None = None
 
 
 # ---------------------------------------------------------------------------

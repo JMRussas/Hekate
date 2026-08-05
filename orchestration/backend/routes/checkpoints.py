@@ -17,6 +17,7 @@ from backend.container import Container
 from backend.db.connection import Database
 from backend.middleware.auth import get_current_user
 from backend.models.enums import TaskStatus
+from backend.models.checkpoint_schemas import validate_checkpoint_response
 from backend.models.schemas import CheckpointOut, CheckpointResolve
 from backend.services.diagnostic_ingest import DiagnosticIngester
 
@@ -39,6 +40,7 @@ async def _verify_checkpoint_ownership(db: Database, checkpoint_id: str, user: d
 
 
 def _row_to_checkpoint(row) -> dict:
+    schema_raw = row.get("schema_json") if hasattr(row, "get") else row["schema_json"]
     return {
         "id": row["id"],
         "project_id": row["project_id"],
@@ -49,6 +51,7 @@ def _row_to_checkpoint(row) -> dict:
         "question": row["question"],
         "response": row["response"],
         "resolved_at": row["resolved_at"],
+        "schema_json": json.loads(schema_raw) if schema_raw else None,
         "created_at": row["created_at"],
     }
 
@@ -56,6 +59,13 @@ def _row_to_checkpoint(row) -> dict:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@router.get("/schemas")
+async def list_schemas() -> dict[str, dict]:
+    """Return predefined checkpoint response schemas."""
+    from backend.models.checkpoint_schemas import PREDEFINED_SCHEMAS
+    return PREDEFINED_SCHEMAS
+
 
 @router.get("/project/{project_id}")
 @inject
@@ -120,6 +130,20 @@ async def resolve_checkpoint(
     if row["resolved_at"] is not None:
         raise HTTPException(400, "Checkpoint already resolved")
 
+    # --- Schema validation for structured responses ---
+    schema_raw = row.get("schema_json") if hasattr(row, "get") else row["schema_json"]
+    checkpoint_schema = json.loads(schema_raw) if schema_raw else None
+    validated_structured = None
+
+    if checkpoint_schema and body.structured_response is not None:
+        ok, err_msg = validate_checkpoint_response(checkpoint_schema, body.structured_response)
+        if not ok:
+            raise HTTPException(422, f"Structured response validation failed: {err_msg}")
+        validated_structured = body.structured_response
+    elif checkpoint_schema and body.structured_response is None and body.action == "retry":
+        # Schema exists but no structured response — allow if plain guidance provided
+        pass
+
     task_id = row["task_id"]
     now = time.time()
 
@@ -127,7 +151,15 @@ async def resolve_checkpoint(
         if task_id:
             task_row = await db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
             ctx = json.loads(task_row["context_json"]) if task_row and task_row["context_json"] else []
-            if body.guidance:
+            if validated_structured is not None:
+                # Inject structured response with schema metadata
+                schema_name = checkpoint_schema.get("title", row["checkpoint_type"])
+                ctx.append({
+                    "type": "checkpoint_structured_response",
+                    "schema_name": schema_name,
+                    "data": validated_structured,
+                })
+            elif body.guidance:
                 ctx.append({
                     "type": "checkpoint_guidance",
                     "content": body.guidance,
@@ -164,10 +196,13 @@ async def resolve_checkpoint(
                 (TaskStatus.FAILED, now, task_id),
             )
 
-    # Mark checkpoint resolved
-    response_text = f"Action: {body.action}"
-    if body.guidance:
-        response_text += f" | Guidance: {body.guidance}"
+    # Mark checkpoint resolved — store structured response as JSON if validated
+    if validated_structured is not None:
+        response_text = json.dumps(validated_structured)
+    else:
+        response_text = f"Action: {body.action}"
+        if body.guidance:
+            response_text += f" | Guidance: {body.guidance}"
 
     await db.execute_write(
         "UPDATE checkpoints SET response = $1, resolved_at = $2 WHERE id = $3",

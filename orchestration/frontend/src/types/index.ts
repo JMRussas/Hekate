@@ -225,6 +225,7 @@ export interface Checkpoint {
   question: string
   response: string | null
   resolved_at: number | null
+  schema_json: Record<string, unknown> | null
   created_at: number
 }
 
@@ -254,4 +255,32 @@ export interface GitStatus {
   modified_files_count: number
   last_commit: GitStatusCommit | null
   open_pr_url: string | null
+}
+
+// Pipeline Observatory
+export interface RelayEvent {
+  id: number
+  event_type: string
+  source: string
+  payload: Record<string, unknown>
+  severity: string
+  created_at: number
+}
+
+export type EventCategory =
+  | 'planning'
+  | 'dispatch'
+  | 'execution'
+  | 'verification'
+  | 'gate'
+  | 'lifecycle'
+  | 'error'
+  | 'budget'
+
+export interface EventFilters {
+  categories: Set<EventCategory>
+  sources: Set<string>
+  severities: Set<string>
+  search: string
+  followTail: boolean
 }

@@ -173,6 +173,7 @@ checkpoints = Table(
     Column("question", Text, nullable=False),
     Column("response", Text),
     Column("resolved_at", Float),
+    Column("schema_json", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 

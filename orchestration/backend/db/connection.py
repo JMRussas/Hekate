@@ -185,6 +185,7 @@ _SCHEMA_STATEMENTS = [
         question TEXT NOT NULL,
         response TEXT,
         resolved_at DOUBLE PRECISION,
+        schema_json TEXT,
         created_at DOUBLE PRECISION NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS user_identities (
