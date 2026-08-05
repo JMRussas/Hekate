@@ -22,6 +22,8 @@ import httpx
 import psycopg2
 import psycopg2.extras
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent  # tools/agent-context-mcp -> tools -> CodeStoragePoc
@@ -52,6 +54,11 @@ AGE_GRAPH = "code_graph"
 
 _PORT = int(os.environ.get("MCP_PORT", "0"))
 mcp = FastMCP("agent-context", port=_PORT) if _PORT else FastMCP("agent-context")
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok", "service": "agent-context", "port": 5213})
 
 
 # --- Helpers ---

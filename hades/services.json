@@ -79,6 +79,33 @@
       "group": "core",
       "managed": true
     },
+    "HekateHadesMcp": {
+      "port": 5211,
+      "health": "http://localhost:5211/health",
+      "app": "C:\\Users\\jruss\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "app_args": "C:\\Hekate\\hades\\mcp_bridge.py",
+      "app_dir": "C:\\Hekate\\hades",
+      "group": "mcp",
+      "managed": true
+    },
+    "HekatePrometheusMcp": {
+      "port": 5212,
+      "health": "http://localhost:5212/health",
+      "app": "C:\\Users\\jruss\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "app_args": "C:\\Hekate\\Odin\\gods\\prometheus_mcp.py",
+      "app_dir": "C:\\Hekate\\Odin",
+      "group": "mcp",
+      "managed": true
+    },
+    "HekateAgentContextMcp": {
+      "port": 5213,
+      "health": "http://localhost:5213/health",
+      "app": "C:\\Users\\jruss\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "app_args": "C:\\Hekate\\context-store\\tools\\agent-context-mcp\\server.py",
+      "app_dir": "C:\\Hekate\\context-store\\tools\\agent-context-mcp",
+      "group": "mcp",
+      "managed": true
+    },
     "Ollama": {
       "port": 11434,
       "health": "http://localhost:11434/",
