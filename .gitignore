@@ -54,3 +54,7 @@ orchestration/backend/tools/openapi.json
 
 # Stray nested copy created by a bad relative path
 context-store/context-store/
+
+# One-off Playwright scratch scripts (hardcoded local test credentials)
+orchestration/frontend/test_*.mjs
+context-store/tools/test_chat_fix.js

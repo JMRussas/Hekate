@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__hekate__project_graph",
+      "mcp__hekate__find_patterns",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''Odin/gods/engine.py'', doraise=True\\); print\\(''OK''\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f''''Status: {d[\"\"status\"\"]}''''\\); print\\(f''''Tasks: {len\\(d.get\\(\"\"tasks\"\",[]\\)\\)}''''\\); [print\\(f''''  [{t[\"\"status\"\"]}] {t[\"\"title\"\"][:60]}''''\\) for t in d.get\\(''''tasks'''',[]\\)]\")",
+      "Bash(python -m pytest tests/test_gate_wiring.py tests/test_budget_gate.py tests/test_context_bridge_health.py -v --tb=short)",
+      "Bash(\"C:\\\\Users\\\\jruss\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\python.exe\" -m pytest tests/test_gate_wiring.py tests/test_budget_gate.py tests/test_context_bridge_health.py -v --tb=short)",
+      "Bash(\"C:\\\\Users\\\\jruss\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python311\\\\python.exe\" -m pytest tests/ -v --tb=short -x)",
+      "Bash(python -m json.tool)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('context_bridge:', d['context_bridge']\\)\")",
+      "mcp__hades-admin__list_services",
+      "Bash(C:/Users/jruss/AppData/Local/Programs/Python/Python311/python.exe -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('\\\\n'.join\\(sorted\\(d['paths'].keys\\(\\)\\)\\)\\)\")"
+    ]
+  }
+}
