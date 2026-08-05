@@ -1,0 +1,137 @@
+site_name: Hekate
+site_description: AI Agent Orchestration Platform — durable execution for autonomous coding agents
+site_url: https://jrussell-ivern.github.io/Hekate/
+repo_url: https://github.com/jrussell-ivern/Hekate
+repo_name: Hekate
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.mark
+  - pymdownx.critic
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - tags
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/jrussell-ivern/Hekate
+
+nav:
+  - Home: index.md
+  - Concepts:
+    - concepts/index.md
+    - Events and Handlers: concepts/events-and-handlers.md
+    - Gods Pipeline: concepts/gods-pipeline.md
+    - Plans and Tasks: concepts/plans-and-tasks.md
+    - Agent Memory: concepts/agent-memory.md
+    - MCP Integration: concepts/mcp-integration.md
+  - Getting Started:
+    - Quick Start: getting-started/quickstart.md
+    - Installation: getting-started/installation.md
+    - Your First Project: getting-started/first-project.md
+    - Dashboard Tour: getting-started/dashboard-tour.md
+  - Guides:
+    - Creating Projects: guides/creating-projects.md
+    - Plan Levels (L1-L5): guides/plan-levels.md
+    - Task Lifecycle: guides/task-lifecycle.md
+    - Failure Handling: guides/failure-handling.md
+    - Budget Management: guides/budget-management.md
+    - Git Integration: guides/git-integration.md
+    - Context Store Basics: guides/context-store-basics.md
+    - Adding MCP Servers: guides/adding-mcp-servers.md
+  - Cookbook:
+    - Your First Pipeline: cookbook/first-pipeline.md
+    - Multi-Wave Execution: cookbook/multi-wave-execution.md
+    - Failure Semantics: cookbook/failure-semantics.md
+    - Custom Gates: cookbook/custom-gates.md
+    - External Agents: cookbook/external-agents.md
+    - Context-Enriched Planning: cookbook/context-enriched-planning.md
+  - Architecture:
+    - System Overview: architecture/overview.md
+    - Data Flow: architecture/data-flow.md
+    - Event Protocol: architecture/event-protocol.md
+    - Design Decisions: architecture/design-decisions.md
+  - Reference:
+    - Gods:
+      - Athena (Planner): reference/gods/athena.md
+      - Odin (Orchestrator): reference/gods/odin.md
+      - Hermes (Executor): reference/gods/hermes.md
+      - Mimir (Verifier): reference/gods/mimir.md
+      - Hephaestus (Git): reference/gods/hephaestus.md
+      - Tyche (Budget): reference/gods/tyche.md
+    - Event Types: reference/event-types.md
+    - Task States: reference/task-states.md
+    - Plan Levels: reference/plan-levels.md
+    - REST API:
+      - Projects: reference/api/projects.md
+      - Tasks: reference/api/tasks.md
+      - Events: reference/api/events.md
+      - Auth: reference/api/auth.md
+    - MCP Tools:
+      - Prometheus: reference/mcp/prometheus.md
+      - Agent Context: reference/mcp/agent-context.md
+      - Hades Admin: reference/mcp/hades.md
+      - Code Analysis: reference/mcp/hekate.md
+    - Providers:
+      - Claude Code: reference/providers/claude-code.md
+    - Configuration: reference/configuration.md
+    - Database Schema: reference/database-schema.md
+  - Deployment:
+    - Local Development: deployment/local-dev.md
+    - Windows Services (NSSM): deployment/windows-nssm.md
+    - Docker: deployment/docker.md
+    - Service Management: deployment/service-management.md
+    - Environment Variables: deployment/environment-variables.md
+  - Contributing:
+    - Development Setup: contributing/setup.md
+    - Testing: contributing/testing.md
