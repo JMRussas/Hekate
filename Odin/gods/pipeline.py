@@ -530,6 +530,19 @@ class Pipeline:
                 t0 = time.monotonic()
                 results = await reg.handler(run_event, self.db)
                 ms = (time.monotonic() - t0) * 1000
+                # Observatory: emit handler timing for every handler invocation
+                await self._emit(Emit(
+                    event_type="handler_timing",
+                    payload={
+                        "handler": reg.name,
+                        "event_type": event.event_type,
+                        "duration_ms": round(ms, 1),
+                        "emit_count": len(results) if results else 0,
+                        "has_gate": reg.gate is not None,
+                        "attempt": attempt + 1,
+                    },
+                    source=reg.name,
+                ))
             except Exception as e:
                 logger.error("[%s] failed: %s", reg.name, e, exc_info=True)
                 await self._emit(Emit(
@@ -588,6 +601,25 @@ class Pipeline:
             )
             last_gate_feedback = gate_result.reason
 
+            # Compute retry delay from task definition or default
+            delay_seconds = 30  # default for non-task events
+            task_id = event.payload.get("task_id")
+            if task_id:
+                try:
+                    row = await self.db.fetchone(
+                        "SELECT context_json FROM tasks WHERE id = $1",
+                        (task_id,),
+                    )
+                    if row:
+                        ctx = row["context_json"] if isinstance(row, dict) else row[0]
+                        td = load_task_definition(ctx)
+                        delay_seconds = td.compute_retry_delay(attempt)
+                except Exception as e:
+                    logger.warning(
+                        "[%s] failed to load task definition for retry delay: %s",
+                        reg.name, e,
+                    )
+
             await self._emit(Emit(
                 event_type="gate_failed",
                 payload={
@@ -598,11 +630,20 @@ class Pipeline:
                     "event_type": event.event_type,
                     "original_payload": event.payload,
                     "provider": event.payload.get("provider"),
+                    "time_until_retry_seconds": delay_seconds,
                     **gate_result.details,
                 },
                 source=reg.name,
                 severity="warning",
             ))
+
+            # Wait before next retry attempt
+            if attempt < reg.max_retries:
+                logger.info(
+                    "[%s] waiting %.1fs before retry %d/%d",
+                    reg.name, delay_seconds, attempt + 2, reg.max_retries + 1,
+                )
+                await asyncio.sleep(delay_seconds)
 
         # All retries exhausted
         logger.error("[%s] gate failed after %d attempts", reg.name, reg.max_retries + 1)
@@ -614,6 +655,7 @@ class Pipeline:
                 "last_reason": last_gate_feedback,
                 "original_payload": event.payload,
                 "provider": event.payload.get("provider"),
+                "retry_delay_seconds": 0,
             },
             source=reg.name,
             severity="error",

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import random
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
@@ -34,6 +35,79 @@ class RetryLogic(enum.Enum):
     FIXED = "FIXED"
     EXPONENTIAL_BACKOFF = "EXPONENTIAL_BACKOFF"
     LINEAR_BACKOFF = "LINEAR_BACKOFF"
+
+
+@dataclass
+class RetryPolicy:
+    """Standalone retry policy with delay computation.
+
+    Encapsulates retry strategy, delays, and jitter into a reusable unit.
+    Uses equal jitter: half + random(0, half) — guarantees >= 50% of computed
+    delay while providing good de-correlation across retries.
+    """
+
+    strategy: RetryLogic = RetryLogic.EXPONENTIAL_BACKOFF
+    base_delay_seconds: int = 30
+    max_delay_seconds: int = 300
+    jitter: bool = True
+    backoff_rate: float = 2.0
+
+    def compute_delay(self, attempt: int) -> float:
+        """Compute delay for a retry attempt (0-indexed).
+
+        attempt=0 is the first retry, matching the convention where
+        2 ** 0 yields 1x on first retry.
+        """
+        if self.strategy == RetryLogic.FIXED:
+            computed = float(self.base_delay_seconds)
+        elif self.strategy == RetryLogic.EXPONENTIAL_BACKOFF:
+            computed = self.base_delay_seconds * (self.backoff_rate ** attempt)
+        elif self.strategy == RetryLogic.LINEAR_BACKOFF:
+            computed = self.base_delay_seconds * self.backoff_rate * max(attempt, 1)
+        else:
+            computed = float(self.base_delay_seconds)
+
+        computed = min(computed, self.max_delay_seconds)
+
+        if self.jitter:
+            half = computed / 2
+            computed = half + random.uniform(0, half)
+
+        return computed
+
+    def to_dict(self) -> dict:
+        """Serialize to dict with strategy as string value."""
+        return {
+            "strategy": self.strategy.value,
+            "base_delay_seconds": self.base_delay_seconds,
+            "max_delay_seconds": self.max_delay_seconds,
+            "jitter": self.jitter,
+            "backoff_rate": self.backoff_rate,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RetryPolicy:
+        """Deserialize from dict. Gracefully handles invalid enum values."""
+        if not data or not isinstance(data, dict):
+            return cls()
+
+        kwargs: dict[str, Any] = {}
+
+        if "strategy" in data:
+            try:
+                kwargs["strategy"] = RetryLogic(data["strategy"])
+            except ValueError:
+                pass  # fall back to default
+        if "base_delay_seconds" in data:
+            kwargs["base_delay_seconds"] = int(data["base_delay_seconds"])
+        if "max_delay_seconds" in data:
+            kwargs["max_delay_seconds"] = int(data["max_delay_seconds"])
+        if "jitter" in data:
+            kwargs["jitter"] = bool(data["jitter"])
+        if "backoff_rate" in data:
+            kwargs["backoff_rate"] = float(data["backoff_rate"])
+
+        return cls(**kwargs)
 
 
 class TimeoutPolicy(enum.Enum):
@@ -58,6 +132,7 @@ class TaskDefinition:
     retry_logic: RetryLogic = RetryLogic.FIXED
     retry_delay_seconds: int = 60
     backoff_rate: float = 2.0
+    retry_policy: RetryPolicy | None = None
 
     # Timeout
     timeout_policy: TimeoutPolicy = TimeoutPolicy.RETRY
@@ -77,6 +152,9 @@ class TaskDefinition:
 
     def compute_retry_delay(self, attempt: int) -> int:
         """Compute delay before next retry based on logic and attempt number."""
+        if self.retry_policy is not None:
+            return int(self.retry_policy.compute_delay(attempt))
+
         if self.retry_logic == RetryLogic.FIXED:
             delay = self.retry_delay_seconds
 
@@ -133,6 +211,9 @@ class TaskDefinition:
         if "human_timeout_seconds" in data:
             kwargs["human_timeout_seconds"] = int(data["human_timeout_seconds"])
 
+        if "retry_policy" in data and isinstance(data["retry_policy"], dict):
+            kwargs["retry_policy"] = RetryPolicy.from_dict(data["retry_policy"])
+
         return cls(**kwargs)
 
     def to_dict(self) -> dict:
@@ -140,6 +221,10 @@ class TaskDefinition:
         d = asdict(self)
         d["retry_logic"] = self.retry_logic.value
         d["timeout_policy"] = self.timeout_policy.value
+        if self.retry_policy is not None:
+            d["retry_policy"] = self.retry_policy.to_dict()
+        else:
+            d.pop("retry_policy", None)
         return d
 
 
@@ -161,6 +246,29 @@ def apply_defaults(
             timeout_policy=TimeoutPolicy.ALERT_ONLY,
         )
 
+    _fixed_policy = RetryPolicy(
+        strategy=RetryLogic.FIXED,
+        base_delay_seconds=30,
+        max_delay_seconds=120,
+        jitter=True,
+    )
+
+    if task_type == "integration":
+        return TaskDefinition(
+            retry_count=5,
+            retry_logic=RetryLogic.EXPONENTIAL_BACKOFF,
+            retry_delay_seconds=60,
+            timeout_seconds=1800,
+            response_timeout_seconds=600,
+            retry_policy=RetryPolicy(
+                strategy=RetryLogic.EXPONENTIAL_BACKOFF,
+                base_delay_seconds=60,
+                max_delay_seconds=300,
+                jitter=True,
+                backoff_rate=2.0,
+            ),
+        )
+
     if task_type == "research":
         return TaskDefinition(
             retry_count=2,
@@ -168,6 +276,7 @@ def apply_defaults(
             retry_delay_seconds=30,
             timeout_seconds=300,
             response_timeout_seconds=300,
+            retry_policy=_fixed_policy,
         )
 
     if task_type == "test":
@@ -177,9 +286,28 @@ def apply_defaults(
             retry_delay_seconds=30,
             timeout_seconds=300,
             response_timeout_seconds=300,
+            retry_policy=_fixed_policy,
+        )
+
+    if task_type == "documentation":
+        return TaskDefinition(
+            retry_count=2,
+            retry_logic=RetryLogic.FIXED,
+            retry_delay_seconds=30,
+            timeout_seconds=300,
+            response_timeout_seconds=300,
+            retry_policy=_fixed_policy,
         )
 
     # Code tasks
+    _expo_policy = RetryPolicy(
+        strategy=RetryLogic.EXPONENTIAL_BACKOFF,
+        base_delay_seconds=30,
+        max_delay_seconds=300,
+        jitter=True,
+        backoff_rate=2.0,
+    )
+
     if complexity == "simple":
         return TaskDefinition(
             retry_count=3,
@@ -187,14 +315,16 @@ def apply_defaults(
             retry_delay_seconds=30,
             timeout_seconds=300,
             response_timeout_seconds=300,
+            retry_policy=_fixed_policy,
         )
     elif complexity == "complex":
         return TaskDefinition(
             retry_count=5,
             retry_logic=RetryLogic.EXPONENTIAL_BACKOFF,
             retry_delay_seconds=60,
-            timeout_seconds=1200,
+            timeout_seconds=1800,
             response_timeout_seconds=600,
+            retry_policy=_expo_policy,
         )
     else:  # medium
         return TaskDefinition(
@@ -203,6 +333,7 @@ def apply_defaults(
             retry_delay_seconds=60,
             timeout_seconds=600,
             response_timeout_seconds=600,
+            retry_policy=_expo_policy,
         )
 
 
@@ -210,13 +341,47 @@ def apply_defaults(
 # Merge plan-level config with task-level overrides
 # ---------------------------------------------------------------------------
 
+def _is_default_retry_policy(
+    task_def: TaskDefinition,
+    task_type: str = "code",
+    complexity: str = "medium",
+) -> bool:
+    """Check if the task's retry_policy matches the registry/apply_defaults output.
+
+    Used to decide whether plan-level retry_policy should override. If the
+    task was explicitly given a retry_policy (via context_json.task_definition),
+    it won't match the default and plan-level config won't clobber it.
+    """
+    registry_def = get_registry().get_definition(task_type, complexity)
+
+    # Both None → default
+    if task_def.retry_policy is None and registry_def.retry_policy is None:
+        return True
+    # One None, other not → not default
+    if task_def.retry_policy is None or registry_def.retry_policy is None:
+        return False
+    # Compare serialized form (avoids float equality issues with dataclass eq)
+    return task_def.retry_policy.to_dict() == registry_def.retry_policy.to_dict()
+
+
 def merge_with_plan_config(
     task_def: TaskDefinition,
     plan_config: dict | None = None,
+    task_type: str = "code",
+    complexity: str = "medium",
 ) -> TaskDefinition:
-    """Apply plan-level config as defaults, task-level overrides win.
+    """Apply plan-level config as overrides when task still has registry defaults.
 
-    Plan config keys: max_retries, timeout_seconds, retry_delay_seconds
+    Precedence (lowest → highest):
+      1. Registry default — from create_default_registry / apply_defaults
+      2. Plan-level config — from plan_config dict passed here; applied only
+         when the task's value still matches the registry default
+      3. Task-level context_json.task_definition — parsed in from_dict before
+         this function is called; always wins since it's explicitly set on
+         the task and won't match the registry default
+
+    Plan config keys: max_retries, timeout_seconds, retry_delay_seconds,
+    retry_policy (dict).
     """
     if not plan_config:
         return task_def
@@ -225,15 +390,20 @@ def merge_with_plan_config(
 
     overrides: dict[str, Any] = {}
 
-    # Only apply plan config if task has the default value
-    defaults = TaskDefinition()
+    # Compare against registry defaults for the task's type, not bare TaskDefinition()
+    registry_def = get_registry().get_definition(task_type, complexity)
 
-    if "max_retries" in plan_config and task_def.retry_count == defaults.retry_count:
+    if "max_retries" in plan_config and task_def.retry_count == registry_def.retry_count:
         overrides["retry_count"] = int(plan_config["max_retries"])
-    if "timeout_seconds" in plan_config and task_def.timeout_seconds == defaults.timeout_seconds:
+    if "timeout_seconds" in plan_config and task_def.timeout_seconds == registry_def.timeout_seconds:
         overrides["timeout_seconds"] = int(plan_config["timeout_seconds"])
-    if "retry_delay_seconds" in plan_config and task_def.retry_delay_seconds == defaults.retry_delay_seconds:
+    if "retry_delay_seconds" in plan_config and task_def.retry_delay_seconds == registry_def.retry_delay_seconds:
         overrides["retry_delay_seconds"] = int(plan_config["retry_delay_seconds"])
+
+    # Plan-level retry_policy: apply only if task still has the registry default
+    if "retry_policy" in plan_config and isinstance(plan_config["retry_policy"], dict):
+        if _is_default_retry_policy(task_def, task_type, complexity):
+            overrides["retry_policy"] = RetryPolicy.from_dict(plan_config["retry_policy"])
 
     if overrides:
         return dataclasses.replace(task_def, **overrides)
@@ -396,6 +566,12 @@ def create_default_registry() -> TaskTypeRegistry:
             retry_delay_seconds=60,
             timeout_seconds=900,
             response_timeout_seconds=600,
+            retry_policy=RetryPolicy(
+                strategy=RetryLogic.EXPONENTIAL_BACKOFF,
+                base_delay_seconds=30,
+                max_delay_seconds=300,
+                jitter=True,
+            ),
         ),
         provider_preference=["claude_code"],
         input_schema={"description": "str"},
@@ -428,6 +604,12 @@ def create_default_registry() -> TaskTypeRegistry:
             retry_delay_seconds=30,
             timeout_seconds=600,
             response_timeout_seconds=600,
+            retry_policy=RetryPolicy(
+                strategy=RetryLogic.EXPONENTIAL_BACKOFF,
+                base_delay_seconds=30,
+                max_delay_seconds=300,
+                jitter=True,
+            ),
         ),
         provider_preference=["claude_code"],
         input_schema={"description": "str"},
@@ -444,6 +626,12 @@ def create_default_registry() -> TaskTypeRegistry:
             retry_delay_seconds=30,
             timeout_seconds=300,
             response_timeout_seconds=300,
+            retry_policy=RetryPolicy(
+                strategy=RetryLogic.FIXED,
+                base_delay_seconds=30,
+                max_delay_seconds=120,
+                jitter=True,
+            ),
         ),
         provider_preference=["ollama", "claude_code"],
         input_schema={"description": "str"},

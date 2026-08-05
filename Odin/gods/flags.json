@@ -1,0 +1,19 @@
+{
+  "athena_bubble_up": true,
+  "athena_deepen": true,
+  "athena_l0": true,
+  "athena_leveled": true,
+  "athena_materialize": true,
+  "athena_reassess": true,
+  "context_bridge": true,
+  "hephaestus": true,
+  "hermes_async": true,
+  "mimir_rejection": true,
+  "mimir_review": true,
+  "odin_dispatch": true,
+  "odin_lifecycle": true,
+  "odin_workflow": true,
+  "tyche_budget": true,
+  "tyche_rate_limit": true,
+  "tyche_spend": true
+}

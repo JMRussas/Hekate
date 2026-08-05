@@ -74,6 +74,9 @@ async def check_plan_reviewed(
     review = reviewed_emit.payload.get("review")
 
     if not review:
+        # Allow through if review was explicitly skipped (review_cycle=False)
+        if reviewed_emit.payload.get("review_skipped"):
+            return GateResult(True, "Review skipped by configuration")
         return GateResult(False, "No review data in project_planned event")
 
     # Check the review verdict
@@ -250,37 +253,51 @@ async def check_files_staged(
     event: Event, emits: list[Emit], db
 ) -> GateResult:
     """Gate: Were files actually staged in git?"""
-    git_emit = next((e for e in emits if e.event_type == "files_committed"), None)
+    # hephaestus_stage emits "files_staged" or "stage_failed"
+    failed_emit = next((e for e in emits if e.event_type == "stage_failed"), None)
+    if failed_emit:
+        return GateResult(False, f"Staging failed: {failed_emit.payload.get('error', 'unknown')}")
+
+    git_emit = next((e for e in emits if e.event_type == "files_staged"), None)
     if not git_emit:
-        return GateResult(False, "No files_committed event emitted")
+        # Handler returned None (no affected_files) — nothing to stage is OK
+        return GateResult(True, "No files to stage")
 
     files = git_emit.payload.get("files", [])
-    commit_sha = git_emit.payload.get("commit_sha")
-
     if not files:
-        return GateResult(False, "Commit has no files")
-    if not commit_sha:
-        return GateResult(False, "No commit SHA reported")
+        return GateResult(False, "files_staged event has empty file list")
 
-    return GateResult(True, f"Committed {len(files)} file(s) ({commit_sha[:8]})", {
-        "files": files,
-        "commit_sha": commit_sha,
-    })
+    return GateResult(True, f"Staged {len(files)} file(s)", {"files": files})
 
 
 async def check_pr_created(
     event: Event, emits: list[Emit], db
 ) -> GateResult:
-    """Gate: Was a PR actually created?"""
-    pr_emit = next((e for e in emits if e.event_type == "pr_created"), None)
+    """Gate: Was the project committed (and optionally PR created)?"""
+    # hephaestus_complete emits "project_committed" or "commit_failed"
+    failed_emit = next((e for e in emits if e.event_type == "commit_failed"), None)
+    if failed_emit:
+        return GateResult(False, f"Commit failed: {failed_emit.payload.get('error', 'unknown')}")
+
+    pr_emit = next((e for e in emits if e.event_type == "project_committed"), None)
     if not pr_emit:
-        return GateResult(False, "No pr_created event emitted")
+        return GateResult(False, "No project_committed event emitted")
 
+    # Skipped (no changes) is a valid outcome
+    if pr_emit.payload.get("skipped"):
+        return GateResult(True, "No changes to commit", {"skipped": True})
+
+    # Pushed without PR is valid (e.g., already on feature branch)
     pr_url = pr_emit.payload.get("pr_url")
-    if not pr_url:
-        return GateResult(False, "pr_created event has no pr_url")
+    pushed = pr_emit.payload.get("pushed", False)
+    commit_sha = pr_emit.payload.get("commit_sha", "")
 
-    return GateResult(True, f"PR created: {pr_url}", {"pr_url": pr_url})
+    if pr_url:
+        return GateResult(True, f"PR created: {pr_url}", {"pr_url": pr_url})
+    if pushed:
+        return GateResult(True, f"Committed and pushed ({commit_sha})", {"commit_sha": commit_sha})
+
+    return GateResult(True, f"Committed locally ({commit_sha})", {"commit_sha": commit_sha})
 
 
 # ---------------------------------------------------------------------------
