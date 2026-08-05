@@ -401,7 +401,11 @@ async def _decompose_plan(
                 td = apply_defaults(task_type, task.get("complexity", "medium"))
 
             # Merge with plan-level config if present
-            td = merge_with_plan_config(td, plan_config)
+            td = merge_with_plan_config(
+                td, plan_config,
+                task_type=task_type,
+                complexity=task.get("complexity", "medium"),
+            )
 
             # Build context_json with task_definition embedded
             context = {"task_definition": td.to_dict()}
@@ -800,6 +804,11 @@ async def athena_plan_leveled(event: Event, db) -> list[Emit] | None:
         if test_specs:
             planned_payload["test_specs"] = test_specs
 
+        # Gate checks for plan_generated to verify plan exists in DB
+        emits.append(Emit("plan_generated", {
+            "plan_id": current_plan.get("plan_id", ""),
+            "project_id": project_id,
+        }, source="athena"))
         emits.append(Emit("project_planned", planned_payload, source="athena"))
         return emits
 

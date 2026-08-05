@@ -6,6 +6,7 @@ Replaces orchestration/backend/app.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -19,11 +20,34 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import uuid
+
 from gods.engine import HekateEngine, create_engine, _init_engine
 from gods import safe_json
 from gods.task_states import transition_task
 
 logger = logging.getLogger("gods.api")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _checkpoint_row_to_dict(row) -> dict:
+    """Convert a checkpoint DB row to the dict shape the dashboard expects."""
+    return {
+        "id": row["id"],
+        "project_id": row["project_id"],
+        "task_id": row.get("task_id"),
+        "checkpoint_type": row["checkpoint_type"],
+        "summary": row["summary"],
+        "attempts": json.loads(row["attempts_json"]) if row.get("attempts_json") else [],
+        "question": row["question"],
+        "schema_json": json.loads(row["schema_json"]) if row.get("schema_json") else None,
+        "response": row.get("response"),
+        "resolved_at": row.get("resolved_at"),
+        "created_at": row["created_at"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +223,19 @@ def create_app(
 
     @app.get("/api/tasks/project/{project_id}")
     async def list_tasks(project_id: str, status: str | None = None, wave: int | None = None):
+        """List tasks for a project.
+
+        Includes the per-task dependency list (joined from `task_deps`) so
+        downstream consumers can render the wave DAG without an N+1 fetch.
+        Also surfaces phase, priority, parsed tools, output_text, error,
+        started_at, and completed_at — fields the TS Task type already
+        expects but the previous slim SELECT omitted.
+        """
         e: HekateEngine = app.state.engine
         sql = (
             "SELECT id, title, description, task_type, status, wave, model_tier, "
-            "retry_count, verification_status, cost_usd, created_at, updated_at "
+            "retry_count, verification_status, cost_usd, created_at, updated_at, "
+            "phase, priority, tools_json, output_text, error, started_at, completed_at "
             "FROM tasks WHERE project_id = $1"
         )
         params: list = [project_id]
@@ -214,8 +247,36 @@ def create_app(
             params.append(wave)
         sql += " ORDER BY wave, priority"
 
-        return await e.db.fetchall(sql, tuple(params))
+        rows = await e.db.fetchall(sql, tuple(params))
+        if not rows:
+            return rows
 
+        # Fetch dependencies for these tasks in a single follow-up query.
+        # Two queries instead of a JOIN+GROUP keeps the SQL cross-backend
+        # compatible (PG asyncpg in prod, sqlite in tests; neither has a
+        # cleanly portable array_agg).
+        task_ids = [r["id"] for r in rows]
+        dep_placeholders = ",".join(f"${i + 1}" for i in range(len(task_ids)))
+        dep_sql = (
+            f"SELECT task_id, depends_on FROM task_deps "
+            f"WHERE task_id IN ({dep_placeholders})"
+        )
+        dep_rows = await e.db.fetchall(dep_sql, tuple(task_ids))
+        deps_by_task: dict[str, list[str]] = {}
+        for d in dep_rows:
+            deps_by_task.setdefault(d["task_id"], []).append(d["depends_on"])
+
+        # Parse tools_json once + attach depends_on. The frontend wants
+        # `tools: string[]`, not the raw stored JSON string.
+        for r in rows:
+            r["depends_on"] = deps_by_task.get(r["id"], [])
+            tools_raw = r.pop("tools_json", None)
+            try:
+                r["tools"] = json.loads(tools_raw) if tools_raw else []
+            except (ValueError, TypeError):
+                r["tools"] = []
+
+        return rows
     @app.get("/api/tasks/{task_id}")
     async def get_task(task_id: str):
         e: HekateEngine = app.state.engine
@@ -366,12 +427,117 @@ def create_app(
         return events
 
     # ------------------------------------------------------------------
+    # Observatory — pipeline observability
+    # ------------------------------------------------------------------
+
+    @app.get("/api/observatory/{project_id}/stream")
+    async def observatory_sse(project_id: str, since: int = 0):
+        """True SSE stream for Pipeline Observatory."""
+        from fastapi.responses import StreamingResponse
+
+        e: HekateEngine = app.state.engine
+
+        async def event_generator():
+            cursor = since
+            while True:
+                events = []
+                async for ev in e.stream_events(
+                    since_id=cursor, project_id=project_id, max_events=50,
+                ):
+                    events.append(ev)
+                for ev in events:
+                    cursor = max(cursor, ev.get("id", cursor))
+                    yield f"data: {json.dumps(ev, default=str)}\n\n"
+                if not events:
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(1.0)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/observatory/task/{task_id}/timeline")
+    async def task_timeline(task_id: str, since: int = 0, limit: int = 200):
+        """All relay events for a specific task, chronologically."""
+        e: HekateEngine = app.state.engine
+        rows = await e.db.fetchall(
+            "SELECT id, event_type, source, payload, severity, created_at "
+            "FROM god_relay_events "
+            "WHERE id > $1 AND payload LIKE $2 "
+            "ORDER BY id ASC LIMIT $3",
+            (since, f'%{task_id}%', limit),
+        )
+        return [dict(r) for r in (rows or [])]
+
+    @app.get("/api/observatory/{project_id}/summary")
+    async def event_summary(project_id: str):
+        """Count of events by type for a project."""
+        e: HekateEngine = app.state.engine
+        rows = await e.db.fetchall(
+            "SELECT event_type, COUNT(*) AS cnt "
+            "FROM god_relay_events "
+            "WHERE payload LIKE $1 "
+            "GROUP BY event_type ORDER BY cnt DESC",
+            (f'%{project_id}%',),
+        )
+        return [dict(r) for r in (rows or [])]
+
+    @app.get("/api/observatory/handlers")
+    async def list_handlers():
+        """List all registered pipeline handlers and their configurations."""
+        e: HekateEngine = app.state.engine
+        handlers = []
+        for reg in e.pipeline._handlers:
+            handlers.append({
+                "name": reg.name,
+                "event_type": reg.event_type,
+                "has_gate": reg.gate is not None,
+                "max_retries": reg.max_retries,
+            })
+        return handlers
+
+    # ------------------------------------------------------------------
     # Services (provider status)
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
-    # Usage (stubs — return empty data so dashboard doesn't 404)
+    # Usage
     # ------------------------------------------------------------------
+
+    @app.get("/api/usage/rate-limits")
+    async def get_rate_limits():
+        """Per-provider rate limit status + recent rate_limit_hit events."""
+        from gods.handlers.registration import _rate_limiter
+
+        e: HekateEngine = app.state.engine
+        providers = _rate_limiter.status()
+
+        # Recent rate-limit gate failures (last hour)
+        # The rate gate emits gate_failed events with handler=tyche_rate_gate
+        one_hour_ago = time.time() - 3600
+        rows = await e.db.fetchall(
+            "SELECT id, event_type, source, payload, severity, created_at "
+            "FROM god_relay_events "
+            "WHERE event_type = $1 AND created_at > $2 "
+            "ORDER BY created_at DESC LIMIT 50",
+            ("gate_failed", one_hour_ago),
+        )
+        recent_hits = []
+        for r in rows:
+            hit = dict(r)
+            if isinstance(hit.get("payload"), str):
+                try:
+                    hit["payload"] = json.loads(hit["payload"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            # Filter to only rate-gate failures
+            payload = hit.get("payload") or {}
+            if isinstance(payload, dict) and payload.get("handler") == "tyche_rate_gate":
+                recent_hits.append(hit)
+
+        return {"providers": providers, "recent_hits": recent_hits}
 
     @app.get("/api/usage/budget")
     async def get_budget():
@@ -481,13 +647,161 @@ def create_app(
     async def get_coverage(project_id: str):
         return {"total": 0, "covered": 0, "uncovered": []}
 
+    @app.get("/api/checkpoints/schemas")
+    async def list_checkpoint_schemas():
+        """Return predefined checkpoint response schemas."""
+        return {
+            "approve_reject": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["approve", "reject"]},
+                    "reason": {"type": "string", "maxLength": 10000},
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+            "select_option": {
+                "type": "object",
+                "properties": {
+                    "selected": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "maxLength": 10000},
+                },
+                "required": ["selected"],
+                "additionalProperties": False,
+            },
+            "provide_file_path": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "minLength": 1, "description": "Absolute file path"},
+                    "description": {"type": "string", "maxLength": 10000},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            "free_text_with_reason": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "minLength": 1},
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                },
+                "required": ["text", "reason", "confidence"],
+                "additionalProperties": False,
+            },
+        }
+
     @app.get("/api/checkpoints/project/{project_id}")
-    async def list_checkpoints(project_id: str):
-        return []
+    async def list_checkpoints(project_id: str, resolved: bool = False):
+        e: HekateEngine = app.state.engine
+        if resolved:
+            rows = await e.db.fetchall(
+                "SELECT * FROM checkpoints WHERE project_id = $1 "
+                "ORDER BY created_at DESC",
+                (project_id,),
+            )
+        else:
+            rows = await e.db.fetchall(
+                "SELECT * FROM checkpoints WHERE project_id = $1 AND resolved_at IS NULL "
+                "ORDER BY created_at DESC",
+                (project_id,),
+            )
+        return [_checkpoint_row_to_dict(r) for r in rows]
+
+    @app.get("/api/checkpoints/{checkpoint_id}")
+    async def get_checkpoint(checkpoint_id: str):
+        e: HekateEngine = app.state.engine
+        row = await e.db.fetchone(
+            "SELECT * FROM checkpoints WHERE id = $1", (checkpoint_id,),
+        )
+        if not row:
+            raise HTTPException(404, f"Checkpoint {checkpoint_id} not found")
+        return _checkpoint_row_to_dict(row)
+
+    @app.post("/api/checkpoints/{checkpoint_id}/resolve")
+    async def resolve_checkpoint(checkpoint_id: str, req: Request):
+        """Resolve a checkpoint: retry, skip, or fail the associated task."""
+        e: HekateEngine = app.state.engine
+        body = await req.json()
+        action = body.get("action", "retry")
+        guidance = body.get("guidance", "")
+
+        row = await e.db.fetchone(
+            "SELECT * FROM checkpoints WHERE id = $1", (checkpoint_id,),
+        )
+        if not row:
+            raise HTTPException(404, f"Checkpoint {checkpoint_id} not found")
+        if row.get("resolved_at") is not None:
+            raise HTTPException(400, "Checkpoint already resolved")
+
+        task_id = row.get("task_id")
+        project_id = row.get("project_id")
+        now = time.time()
+
+        if action == "retry" and task_id:
+            await e.db.execute_write(
+                "UPDATE tasks SET status = $1, error = NULL, output_text = NULL, "
+                "retry_count = 0, updated_at = $2 WHERE id = $3",
+                ("pending", now, task_id),
+            )
+            if project_id:
+                await e.db.execute_write(
+                    "INSERT INTO god_relay_events (event_type, source, payload, severity, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    ("project_tick", "checkpoint_resolve", json.dumps({"project_id": project_id}), "info", now),
+                )
+        elif action == "skip" and task_id:
+            await e.db.execute_write(
+                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+                ("cancelled", now, task_id),
+            )
+            if project_id:
+                await e.db.execute_write(
+                    "INSERT INTO god_relay_events (event_type, source, payload, severity, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    ("task_verified", "checkpoint_resolve", json.dumps({
+                        "task_id": task_id, "project_id": project_id, "confidence": 1.0,
+                    }), "info", now),
+                )
+        elif action == "fail" and task_id:
+            await e.db.execute_write(
+                "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+                ("failed", now, task_id),
+            )
+
+        # Mark checkpoint resolved
+        response_text = f"Action: {action}"
+        if guidance:
+            response_text += f" | Guidance: {guidance}"
+        await e.db.execute_write(
+            "UPDATE checkpoints SET response = $1, resolved_at = $2 WHERE id = $3",
+            (response_text, now, checkpoint_id),
+        )
+
+        updated = await e.db.fetchone(
+            "SELECT * FROM checkpoints WHERE id = $1", (checkpoint_id,),
+        )
+        return _checkpoint_row_to_dict(updated)
 
     @app.get("/api/projects/{project_id}/git-status")
     async def get_git_status(project_id: str):
         return None
+
+    # ------------------------------------------------------------------
+    # Feature flags — hot-toggle handlers without restart
+    # ------------------------------------------------------------------
+
+    @app.get("/api/flags")
+    async def get_flags():
+        from gods.flags import get_all
+        return get_all()
+
+    @app.post("/api/flags/{flag_name}")
+    async def set_flag(flag_name: str, request: Request):
+        from gods.flags import set_flag as _set_flag, is_enabled
+        body = await request.json()
+        value = body.get("enabled", not is_enabled(flag_name))
+        _set_flag(flag_name, value)
+        return {"flag": flag_name, "enabled": value}
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def catch_all(path: str):

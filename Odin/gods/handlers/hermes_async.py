@@ -202,6 +202,16 @@ class HermesRunner:
                 except (json.JSONDecodeError, TypeError):
                     pass
 
+            # Observatory: capture the CLI prompt for debugging/observability
+            await self._write_relay_event("cli_prompt", {
+                "task_id": task_id,
+                "project_id": project_id,
+                "provider": provider,
+                "prompt_text": prompt[:10000],
+                "prompt_length": len(prompt),
+                "retry_count": retry_count,
+            })
+
             # Launch background task — registered inside the lock so the slot
             # count is updated before any concurrent dispatch can re-check.
             bg_task = asyncio.create_task(
@@ -216,6 +226,7 @@ class HermesRunner:
                     retry_count=retry_count,
                     timeout=task_timeout,
                     worktree=worktree_name,
+                    context_json=context_json,
                 ),
                 name=f"hermes-{task_id}",
             )
@@ -268,6 +279,7 @@ class HermesRunner:
         retry_count: int = 0,
         timeout: int | None = None,
         worktree: str | None = None,
+        context_json: dict | str | None = None,
     ):
         """Background coroutine that runs CLI and writes results to relay.
 
@@ -374,22 +386,57 @@ class HermesRunner:
 
         except asyncio.TimeoutError as e:
             error_msg = f"Timeout: {e}" if str(e) else "CLI execution timed out"
-            logger.error("Hermes: task %s timed out", task_id[:8])
+            elapsed = time.time() - t0
+            logger.error("Hermes: task %s timed out after %.0fs", task_id[:8], elapsed)
 
             # Kill the orphaned subprocess
             await self._kill_process(task_id)
 
+            # Capture partial progress from narration events already in relay
+            partial_summary = ""
+            try:
+                rows = await self.db.fetchall(
+                    "SELECT payload FROM god_relay_events "
+                    "WHERE event_type = 'narration' AND payload LIKE $1 "
+                    "ORDER BY id DESC LIMIT 10",
+                    (f'%{task_id}%',),
+                )
+                if rows:
+                    parts = []
+                    for row in reversed(rows):
+                        p = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+                        if p.get("type") == "tool_use":
+                            parts.append(f"Used: {p.get('tool', '?')}")
+                        elif p.get("type") == "assistant":
+                            parts.append(p.get("text", "")[:200])
+                    if parts:
+                        partial_summary = " | ".join(parts[-5:])  # last 5 actions
+            except Exception:
+                pass  # best-effort
+
+            timeout_error = error_msg
+            if partial_summary:
+                timeout_error += f"\n\nPartial progress before timeout:\n{partial_summary}"
+
             await self.db.execute_write(
                 "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
-                ("failed", error_msg, time.time(), task_id),
+                ("failed", timeout_error, time.time(), task_id),
             )
-            await self._write_relay_event("worker_event", {
+            # Compute time_until_retry for dashboard display
+            td = load_task_definition(context_json)
+            retry_payload = {
                 "task_id": task_id,
                 "project_id": project_id,
                 "status": "failed",
-                "error": error_msg,
+                "error": timeout_error,
                 "timeout": True,
-            }, idempotency_key=idem_key("hermes_failed", task_id, str(retry_count)))
+                "elapsed_seconds": round(elapsed, 1),
+            }
+            if retry_count < td.retry_count:
+                retry_payload["time_until_retry"] = td.compute_retry_delay(retry_count)
+
+            await self._write_relay_event("worker_event", retry_payload,
+                idempotency_key=idem_key("hermes_failed", task_id, str(retry_count)))
 
         except asyncio.CancelledError:
             logger.info("Hermes: task %s cancelled", task_id[:8])
@@ -419,12 +466,18 @@ class HermesRunner:
                 "UPDATE tasks SET status = $1, error = $2, updated_at = $3 WHERE id = $4",
                 ("failed", error_msg, time.time(), task_id),
             )
-            await self._write_relay_event("worker_event", {
+            # Compute time_until_retry for dashboard display
+            td = load_task_definition(context_json)
+            fail_payload = {
                 "task_id": task_id,
                 "project_id": project_id,
                 "status": "failed",
                 "error": error_msg,
-            })
+            }
+            if retry_count < td.retry_count:
+                fail_payload["time_until_retry"] = td.compute_retry_delay(retry_count)
+
+            await self._write_relay_event("worker_event", fail_payload)
 
         finally:
             # Always stop heartbeat and clean up process ref

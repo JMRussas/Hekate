@@ -29,6 +29,20 @@ _PIPELINE_PROJECT_NAME = "Hekate Pipeline"
 _cs_project_id: str | None = None
 
 
+def _health_warning(handler_name: str, error: str) -> Emit:
+    """Create a throttled warning event when context store is unreachable.
+
+    Uses 5-minute bucketed idempotency key to limit relay noise.
+    """
+    return Emit(
+        event_type="context_store_unreachable",
+        payload={"handler": handler_name, "error": error},
+        source="context_bridge",
+        severity="warning",
+        idempotency_key=f"cs-unreachable-{handler_name}-{int(time.time() // 300)}",
+    )
+
+
 async def _ensure_project() -> str | None:
     """Get or create the pipeline project in context store. Returns UUID string."""
     global _cs_project_id
@@ -109,8 +123,8 @@ async def _update_node(node_id: str, name: str | None = None, value: str | None 
             await client.put(f"{_CS_URL}/api/node/{node_id}", json={
                 "name": name, "value": (value or "")[:10000],
             })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Context bridge: update_node error: %s", e)
 
 
 async def _update_attrs(node_id: str, attributes: dict):
@@ -120,8 +134,8 @@ async def _update_attrs(node_id: str, attributes: dict):
             await client.put(f"{_CS_URL}/api/node/{node_id}/attributes", json={
                 "attributes": attributes,
             })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Context bridge: update_attrs error: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +151,7 @@ async def context_bridge_plan(event: Event, db) -> list[Emit] | None:
 
     cs_project = await _ensure_project()
     if not cs_project:
-        return None
+        return [_health_warning("context_bridge_plan", "context store unreachable")]
 
     project = await db.fetchone(
         "SELECT name, requirements FROM projects WHERE id = $1", (project_id,))
@@ -205,7 +219,7 @@ async def context_bridge_task_verified(event: Event, db) -> list[Emit] | None:
 
     cs_project = await _ensure_project()
     if not cs_project:
-        return None
+        return [_health_warning("context_bridge_task_verified", "context store unreachable")]
 
     task = await db.fetchone(
         "SELECT title, output_text, verification_status, verification_notes, cost_usd "
@@ -244,6 +258,7 @@ async def context_bridge_task_verified(event: Event, db) -> list[Emit] | None:
                     break
     except Exception as e:
         logger.debug("Context bridge: task_verified error: %s", e)
+        return [_health_warning("context_bridge_task_verified", str(e))]
 
     # Sync knowledge findings from project_knowledge → context store nodes
     if task_node_id and project_id:
@@ -286,7 +301,7 @@ async def context_bridge_project_complete(event: Event, db) -> list[Emit] | None
 
     cs_project = await _ensure_project()
     if not cs_project:
-        return None
+        return [_health_warning("context_bridge_project_complete", "context store unreachable")]
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -310,5 +325,6 @@ async def context_bridge_project_complete(event: Event, db) -> list[Emit] | None
                     return None
     except Exception as e:
         logger.debug("Context bridge: project_complete error: %s", e)
+        return [_health_warning("context_bridge_project_complete", str(e))]
 
     return None

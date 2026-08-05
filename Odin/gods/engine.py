@@ -330,6 +330,21 @@ CREATE TABLE IF NOT EXISTS god_registry (
     last_seen_id INTEGER DEFAULT 0,
     last_heartbeat REAL
 );
+
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    task_id TEXT,
+    checkpoint_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    attempts_json TEXT DEFAULT '[]',
+    question TEXT NOT NULL,
+    schema_json TEXT,
+    response TEXT,
+    resolved_at REAL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_project ON checkpoints (project_id);
 """
 
 _SCHEMA_SQL_POSTGRES = """
@@ -454,6 +469,21 @@ CREATE TABLE IF NOT EXISTS god_registry (
     last_seen_id BIGINT DEFAULT 0,
     last_heartbeat DOUBLE PRECISION
 );
+
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    task_id TEXT,
+    checkpoint_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    attempts_json TEXT DEFAULT '[]',
+    question TEXT NOT NULL,
+    schema_json TEXT,
+    response TEXT,
+    resolved_at DOUBLE PRECISION,
+    created_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_project ON checkpoints (project_id);
 """
 
 
@@ -872,7 +902,11 @@ class HekateEngine:
                     td = apply_defaults(task_type, task.get("complexity", "medium"))
 
                 # Merge with plan-level config if present
-                td = merge_with_plan_config(td, plan_config)
+                td = merge_with_plan_config(
+                    td, plan_config,
+                    task_type=task_type,
+                    complexity=task.get("complexity", "medium"),
+                )
 
                 # Build context_json with task_definition embedded
                 context = {"task_definition": td.to_dict()}

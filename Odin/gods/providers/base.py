@@ -116,8 +116,8 @@ class CLIProvider(ABC):
         # Per-line inactivity timeout: if no output for N seconds, CLI is stuck.
         # First line gets a longer grace period for cold start (CLI init, MCP connect).
         # Subsequent lines use a shorter timeout since the session is active.
-        first_line_timeout = min(600.0, timeout)   # 10 min for cold start
-        active_line_timeout = min(300.0, timeout)   # 5 min between active lines
+        first_line_timeout = min(600.0, timeout)            # 10 min for cold start
+        active_line_timeout = max(600.0, timeout / 2)       # at least 10 min — builds/tests run long
         got_first_line = False
         try:
             async with asyncio.timeout(timeout):

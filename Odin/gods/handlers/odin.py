@@ -474,6 +474,22 @@ async def odin_lifecycle(event: Event, db) -> list[Emit] | None:
     unblocked_count = getattr(unblock_result, "rowcount", 0) if unblock_result else 0
     if unblocked_count:
         logger.info("Odin: unblocked %d task(s) for project %s", unblocked_count, project_id[:8])
+        # Observatory: emit task_unblocked events for newly-pending tasks
+        try:
+            unblocked_rows = await db.fetchall(
+                "SELECT id, title, wave FROM tasks "
+                "WHERE project_id = $1 AND status = $2 AND updated_at >= $3",
+                (project_id, "pending", now - 1),
+            )
+            for ur in (unblocked_rows or []):
+                emits.append(Emit("task_unblocked", {
+                    "task_id": ur["id"],
+                    "project_id": project_id,
+                    "title": ur.get("title", ""),
+                    "wave": ur.get("wave", 0),
+                }, source="odin"))
+        except Exception:
+            pass  # best-effort observability
 
     # JOIN threshold unblock — for tasks with join_threshold in context_json.
     # These are blocked tasks waiting for M-of-N deps (ANY or THRESHOLD mode).

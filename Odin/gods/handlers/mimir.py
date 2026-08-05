@@ -27,6 +27,7 @@ from typing import Any
 from gods.pipeline import Event, Emit
 from gods import safe_json
 from gods.providers.response_validator import validate_verdict, validate_review, extract_json
+from gods.task_definition import load_task_definition
 from gods.task_states import transition_task
 
 logger = logging.getLogger("gods.handlers.mimir")
@@ -205,7 +206,7 @@ async def _call_reviewer(
 
     async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
-            "provider": "gemini",
+            "provider": "claude",
             "system_prompt": "You are a code review assistant. Always respond with valid JSON.",
             "user_message": prompt,
         })
@@ -241,7 +242,7 @@ async def _call_knowledge_extractor(
 
     async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(f"{gateway_url}/v1/chat", json={
-            "provider": "gemini",
+            "provider": "claude",
             "system_prompt": "You are a knowledge extraction assistant. Always respond with valid JSON.",
             "user_message": prompt,
         })
@@ -486,7 +487,7 @@ class MimirRunner:
                 "reason": reason,
             }, source="mimir")]
 
-        # Reset for retry
+        # Reset for retry — respect configured backoff policy
         fresh = await self.db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
         fresh_ctx_str = fresh.get("context_json", "{}") if fresh else "{}"
         try:
@@ -495,6 +496,14 @@ class MimirRunner:
             ctx = {}
         if not isinstance(ctx, dict):
             ctx = {}
+
+        td = load_task_definition(ctx)
+        delay = td.compute_retry_delay(retry_count)
+        if delay > 0:
+            logger.info("Mimir: heuristic retry delay %.1fs for task %s (attempt %d)",
+                        delay, task_id[:8], retry_count + 1)
+            await asyncio.sleep(delay)
+
         ctx["verification_feedback"] = reason
 
         await transition_task(
@@ -509,6 +518,7 @@ class MimirRunner:
             "task_id": task_id,
             "project_id": project_id,
             "feedback": reason,
+            "retry_delay_seconds": delay,
         }, source="mimir")]
 
     # ------------------------------------------------------------------
@@ -604,7 +614,7 @@ class MimirRunner:
                 })
                 return
 
-            # Reset for retry with feedback
+            # Reset for retry with feedback — respect configured backoff policy
             fresh = await self.db.fetchone("SELECT context_json FROM tasks WHERE id = $1", (task_id,))
             fresh_ctx_str = fresh.get("context_json", "{}") if fresh else "{}"
             try:
@@ -613,6 +623,14 @@ class MimirRunner:
                 ctx = {}
             if not isinstance(ctx, dict):
                 ctx = {}
+
+            td = load_task_definition(ctx)
+            delay = td.compute_retry_delay(retry_count)
+            if delay > 0:
+                logger.info("Mimir: gaps_found retry delay %.1fs for task %s (attempt %d)",
+                            delay, task_id[:8], retry_count + 1)
+                await asyncio.sleep(delay)
+
             ctx["verification_feedback"] = feedback
 
             await transition_task(
@@ -627,6 +645,7 @@ class MimirRunner:
                 "task_id": task_id,
                 "project_id": project_id,
                 "feedback": feedback,
+                "retry_delay_seconds": delay,
             })
 
         else:  # human_needed
