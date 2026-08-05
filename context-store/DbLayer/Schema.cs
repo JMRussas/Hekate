@@ -47,7 +47,8 @@ public static class Schema
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 project_id UUID NOT NULL REFERENCES projects(id),
                 file_path TEXT NOT NULL,
-                root_node_id UUID
+                root_node_id UUID,
+                CONSTRAINT uq_files_project_path UNIQUE (project_id, file_path)
             );
 
             CREATE TABLE IF NOT EXISTS nodes (
@@ -134,6 +135,20 @@ public static class Schema
             CREATE TRIGGER trg_node_changed
                 AFTER INSERT OR UPDATE ON nodes
                 FOR EACH ROW EXECUTE FUNCTION notify_node_changed();
+        """);
+
+        await Execute(conn, """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'uq_files_project_path'
+                      AND conrelid = 'files'::regclass
+                ) THEN
+                    ALTER TABLE files
+                        ADD CONSTRAINT uq_files_project_path UNIQUE (project_id, file_path);
+                END IF;
+            END $$;
         """);
 
         Console.WriteLine("[INIT]     Schema migrated");

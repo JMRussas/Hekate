@@ -342,6 +342,24 @@ app.MapPost("/api/code/materialize", async (MaterializeRequest req, CodeService 
 app.MapGet("/api/code/files/{projectId:guid}", async (Guid projectId, CodeService code) =>
     Results.Ok(await code.ListFiles(projectId)));
 
+// Rebuild semantic CALLS / REFERENCES edges across the whole project. The
+// per-file EdgeSeeder runs as part of /api/code/decompose but only sees
+// intra-file references; this endpoint augments with cross-file edges
+// resolved by Roslyn over a single CSharpCompilation.
+app.MapPost("/api/code/rebuild-edges/{projectId:guid}", async (Guid projectId, CodeService code) =>
+{
+    try
+    {
+        var result = await code.RebuildSemanticEdges(projectId);
+        return Results.Ok(result);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[REBUILD]  Failed: {ex}");
+        return Results.Problem(ex.Message);
+    }
+});
+
 // --- Project endpoints (used by Hekate indexer) ---
 app.MapGet("/api/projects", async (string? name) =>
 {
