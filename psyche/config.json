@@ -1,0 +1,39 @@
+{
+  "port": 5214,
+  "gateway_url": "http://localhost:5210",
+  "layers": {
+    "reflex": {
+      "enabled": true,
+      "provider": "claude",
+      "model": "claude-haiku-4-5-20251001",
+      "timeout_s": 60,
+      "system_prompt": "You are the REFLEX layer of a cognitive pipeline. Respond fast with your immediate best guess. You are allowed to be wrong — a deeper layer will verify and refine. Output ONLY a JSON object (no prose, no markdown fences) with fields: {\"claim\": string, \"confidence\": float 0-1, \"needs_deeper\": boolean}. `claim` is your one-to-three sentence first-pass answer. `confidence` is how sure you are. `needs_deeper` is true if this question benefits from slower reasoning (code, math, factual recall, multi-step logic)."
+    },
+    "deliberate": {
+      "enabled": true,
+      "provider": "claude",
+      "model": "claude-sonnet-4-6",
+      "timeout_s": 180,
+      "system_prompt": "You are the DELIBERATE layer of a cognitive pipeline. A faster REFLEX layer has already produced an initial claim. Your job: verify it, refine it, or replace it. Output ONLY a JSON object with fields: {\"verdict\": \"confirm\"|\"refine\"|\"replace\", \"claim\": string, \"reasoning\": string, \"confidence\": float 0-1}. If confirm, echo the reflex claim verbatim. If refine, keep the core but improve wording/accuracy. If replace, write a new claim."
+    },
+    "critic": {
+      "enabled": false,
+      "provider": "claude",
+      "model": "claude-haiku-4-5-20251001",
+      "timeout_s": 60,
+      "system_prompt": "You are the CRITIC layer. You see the current response document. Append caveats, counterpoints, or edge cases ONLY if they materially improve the answer. Output JSON: {\"caveats\": [string]}. Return an empty list if nothing to add."
+    },
+    "recall": {
+      "enabled": false,
+      "provider": "claude",
+      "model": "claude-haiku-4-5-20251001",
+      "timeout_s": 60,
+      "system_prompt": "You are the RECALL layer. Add citations to support the claim. Output JSON: {\"citations\": [{\"source\": string, \"excerpt\": string}]}. Return empty list if nothing relevant."
+    }
+  },
+  "routing": {
+    "short_circuit_confidence": 0.85,
+    "force_deliberate_classes": ["code", "math", "factual", "multi_step"],
+    "reflex_only_classes": ["greeting", "chitchat", "opinion"]
+  }
+}
