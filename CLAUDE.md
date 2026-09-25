@@ -221,7 +221,12 @@ Tier map: `Odin/gods/handlers/odin.py` `_TIER_MAP`. Fallback chain: `["claude_co
 
 ## Git Workflow
 
-- workflow: direct
+- workflow: PR-based (changed 2026-09-25 — was direct). Branch off `main`, commit,
+  push, and open a PR for review before merging. Do not commit directly to `main`.
 - base_branch: main
-- Executor creates worktrees per project, auto-PRs on completion
-- Always merge executor branches back to main promptly
+- Executor creates worktrees per project, auto-PRs on completion (unchanged)
+- Always merge executor branches back to main promptly (unchanged — still applies
+  to PRs once reviewed, not to direct pushes)
+- Stale PRs: if a branch has been open a long time (e.g. PR #11,
+  `feat/plan-nodes-migration`, open since May), get it reviewed and either merged
+  or explicitly closed rather than left accumulating unrelated commits.
