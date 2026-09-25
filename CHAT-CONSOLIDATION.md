@@ -2,6 +2,24 @@
 
 2026-09-25 — planning checkpoint, not an implemented migration.
 
+**Runtime ownership ADR recorded:** ChatAgent repo's
+`docs/adr/0001-chat-runtime-ownership.md`. Decision: ChatRuntime (the ChatAgent
+repo) keeps owning chat request-handling/context logic; Hekate's context-store
+is reused as ChatRuntime's durable persistence backend via a new adapter,
+rather than porting context logic into this repo's Python codebase. Two
+findings from tracing this repo's actual code (not assumptions) drove that
+call: `chat_agent.py` builds the model's message history from client-supplied
+messages only — `/api/brain/assemble`'s output only feeds the system prompt,
+not turn history — and `/api/chat/stream` plus `/api/brain/*` have **no
+auth/project-isolation boundary at all** today (explicit "no auth for now"
+comment in `orchestration/backend/app.py`; conversation scope is a bare,
+guessable GUID). Also confirmed while tracing: the gods pipeline is not part of
+the chat path in any way, and `Odin/gods/providers/` (this repo's CLI provider
+abstraction) is actually wired into `hermes_async.py` — this repo's own
+CLAUDE.md's "built, not wired" annotation is stale.
+Full evidence and the protocol v1 proposal are in the ADR; nothing in this
+repo was changed to produce it.
+
 The user wants Hekate, Iris, and ChatAgent to share the chat runtime: conversation
 history/context, model selection, provider execution, and streaming lifecycle.
 Keep application-specific workflows and presentation in each application.
