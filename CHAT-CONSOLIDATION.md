@@ -1,0 +1,55 @@
+# Shared chat runtime consolidation
+
+2026-09-25 — planning checkpoint, not an implemented migration.
+
+The user wants Hekate, Iris, and ChatAgent to share the chat runtime: conversation
+history/context, model selection, provider execution, and streaming lifecycle.
+Keep application-specific workflows and presentation in each application.
+Use a versioned service protocol across Python, C# and TypeScript.
+
+## Hekate assets to assess
+
+- `orchestration/backend/routes/chat.py` and `services/chat_agent.py`: streaming
+  chat with context-store resolve/assemble and turn persistence calls.
+- `orchestration/backend/services/model_router.py`, `model_discovery.py`,
+  `provider_quota.py`, `cli_provider.py`: routing and provider/CLI candidates.
+- `context-store/Api/Program.cs`: conversation and brain APIs.
+- `context-store/ContextRouter/ContextAssembler.cs` and `EmbeddingService.cs`:
+  context/retrieval candidates.
+- `llm-gateway` and `Odin/gods`: trace the active execution paths before choosing
+  an owner. CLAUDE.md marks parts of orchestration as legacy; do not build the
+  shared runtime around a retired path merely because its abstractions exist.
+
+## Required decisions and verification
+
+Hekate is an integration candidate, not yet the agreed runtime host. Record an ADR
+for runtime/persistence ownership, standalone use, auth/project isolation, and
+service-unavailable behavior. Avoid parallel provider/catalog implementations.
+
+Verify continuity: the inspected chat service builds prompt history from client
+messages while Iris's SSE handler does not persist the returned conversation ID.
+Existing chat truncation drops individual messages using a character estimate;
+adopt exchange preservation, output reservation and immutable queued context.
+Keep summaries internal with retained source records and attribution. Evaluate
+existing graph/vector retrieval against recall cases rather than duplicating it.
+
+Protocol v1 needs conversation/turn/task/attempt identity, ordered event identity,
+answer revisions, deltas, activity, model/usage metadata, and explicit terminal
+states. Specify idempotency, reconnect and cancellation. Subscription adapters
+must preserve permission boundaries and distinguish unknown cost from free use.
+
+## Next slice and acceptance
+
+Preserve ChatAgent's completed 01A context work. Reconcile its 01B and later specs
+before overlapping implementation. First integrate one Iris turn with fast/deep
+responses through an adapter, with a rollback switch; keep old clients working.
+Test two-turn continuity, isolation, retries, reconnect, cancellation, partial
+failure, late deep updates, tool pairs, budgets and source lookup after compaction.
+Only retire old paths after parity and separately recorded live checks.
+
+Detailed handoff: ChatAgent `docs/implementation/07-shared-chat-runtime.md`.
+Iris companion: root `CHAT-CONSOLIDATION.md`. Repository naming may change; the
+contract and owner ADR, not a folder name, define the architecture.
+
+This note records source inspection only. No deployment, migration or live
+verification was performed. Preserve unrelated in-progress changes.

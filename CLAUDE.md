@@ -1,5 +1,8 @@
 # Hekate
 
+Chat/context/provider work: read [CHAT-CONSOLIDATION.md](CHAT-CONSOLIDATION.md)
+before adding overlapping functionality shared with Iris and ChatAgent.
+
 Unified AI agent platform: gods pipeline (event-driven task execution) + orchestration backend (API + DB + dashboard) + context store (agent memory) + admin service (infra). Six components, one repo.
 
 ## Execution Architecture
