@@ -1,5 +1,20 @@
 # Shared chat runtime consolidation
 
+## Current handoff — September 28, 2026
+
+Read [ChatAgent integration handoff](CHATAGENT-INTEGRATION-HANDOFF.md) before
+overlapping implementation. It pins the implemented source checkpoint, specifies
+the task contract, maps reusable code to Hekate, and records migration decisions
+and acceptance tests. ChatRuntime now has background summaries, protocol v1,
+durable documentation tasks and an opt-in conversation/task bridge. These facts
+supersede the older next-slice instructions below. Hekate context-store integration
+remains a proposal, not an implemented adapter.
+
+## Historical planning checkpoint — September 25, 2026
+
+The following preserves the original source inspection and proposed ownership.
+Its statements about adapters and next steps are historical, not deployment status.
+
 2026-09-25 — planning checkpoint, not an implemented migration.
 
 **Runtime ownership ADR recorded:** ChatAgent repo's
