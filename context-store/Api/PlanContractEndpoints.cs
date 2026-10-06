@@ -88,8 +88,14 @@ public static class PlanContractEndpoints
             WorkStatus to;
             try { to = PlanStore.ParseWork(req.To!); } catch (FormatException) { return InvalidEnum("to", req.To); }
             return await Respond(store, await store.TransitionAsync(nodeId, to, Ctx(req.OperationKey, req.ExpectedStateRevision, req.Actor),
-                req.AttemptId, req.AttemptEpoch, req.ArtifactRef));
+                req.AttemptId, req.AttemptEpoch, req.ArtifactRef, req.ExecutorRef));
         });
+
+        // Read-only provenance history (plan 016). There is no public history-write endpoint.
+        api.MapGet("/plans/{rootId:guid}/events", async (Guid rootId, string? afterSeq, string? limit) =>
+            await Events(store, rootId, null, afterSeq, limit));
+        api.MapGet("/nodes/{nodeId:guid}/events", async (Guid nodeId, string? afterSeq, string? limit) =>
+            await Events(store, null, nodeId, afterSeq, limit));
 
         api.MapPost("/nodes/{nodeId:guid}/decide", async (Guid nodeId, DecideRequest req) =>
         {
@@ -139,6 +145,40 @@ public static class PlanContractEndpoints
         return missing.Count == 0 ? null : Error(400, MissingField, $"Required field(s) missing: {string.Join(", ", missing)}.");
     }
 
+    public const string InvalidQuery = "invalid_query";
+
+    private static async Task<IResult> Events(PlanStore store, Guid? rootId, Guid? nodeId, string? afterSeqText, string? limitText)
+    {
+        long afterSeq = 0;
+        if (afterSeqText is not null && (!long.TryParse(afterSeqText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out afterSeq)))
+            return Error(400, InvalidQuery, "afterSeq must be a non-negative integer.");
+        var limit = 100;
+        if (limitText is not null && (!int.TryParse(limitText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out limit) || limit < 1 || limit > 500))
+            return Error(400, InvalidQuery, "limit must be an integer between 1 and 500.");
+
+        var (page, notFound) = await store.ReadEventsAsync(rootId, nodeId, afterSeq, limit);
+        if (page is null) return Error(404, notFound!, nodeId is Guid n ? $"Node {n} is not part of a managed plan." : $"Plan {rootId} not found.");
+        return Results.Ok(new
+        {
+            contractVersion = PlanContract.Version,
+            events = page.Events.Select(s => new
+            {
+                seq = s.Seq, nodeId = s.Event.NodeId, nodeStateRevision = s.Event.NodeStateRevision, kind = PlanStore.EventKindName(s.Event.Kind),
+                workFrom = PlanStore.WorkName(s.Event.WorkFrom), workTo = PlanStore.WorkName(s.Event.WorkTo), contentRevision = s.Event.ContentRevision,
+                // Opaque correlation only; not identity or claim authority.
+                attemptId = s.Event.AttemptId, attemptEpoch = s.Event.AttemptEpoch, executorRef = s.Event.ExecutorRef,
+                artifactRef = s.Event.ArtifactRef,
+                decision = s.Event.Decision is AcceptanceDecision d ? PlanStore.DecisionName(d) : null,
+                reviewedContentRevision = s.Event.ReviewedContentRevision, evidenceRef = s.Event.EvidenceRef,
+                contentDigest = s.Event.ContentDigest, actor = s.Event.Actor, operationKey = s.Event.OperationKey, recordedAt = s.RecordedAt,
+            }),
+            nextAfterSeq = page.NextAfterSeq,
+            // First RECORDED event only; earlier work history (before plan 016) is unknown, never backfilled.
+            historyStartsAtSeq = page.HistoryStartsAtSeq,
+            historyBackfilled = false,
+        });
+    }
+
     private static OperationContext Ctx(string? key, long? expected, string? actor) => new(key!, expected!.Value, actor!);
 
     private static PlanContent Content(string? value, Dictionary<string, string>? attributes) => new(value, attributes);
@@ -164,7 +204,8 @@ public static class PlanContractEndpoints
     public static int StatusFor(string code) => code switch
     {
         PlanErrorCodes.InvalidEnum or PlanErrorCodes.InvalidOperationKey or PlanErrorCodes.ActorRequired
-            or PlanErrorCodes.AttemptRequired or PlanStoreErrorCodes.InvalidContent or MissingField => 400,
+            or PlanErrorCodes.AttemptRequired or PlanStoreErrorCodes.InvalidContent or MissingField
+            or PlanErrorCodes.InvalidExecutorRef or InvalidQuery => 400,
         PlanErrorCodes.NodeNotFound or PlanStoreErrorCodes.PlanNotFound or PlanStoreErrorCodes.ProjectNotFound => 404,
         PlanErrorCodes.StaleRevision or PlanErrorCodes.StaleContent or PlanErrorCodes.OperationKeyReused or PlanErrorCodes.RevisionExhausted
             or PlanStoreErrorCodes.PlanExists or PlanStoreErrorCodes.NodeExists or PlanStoreErrorCodes.ConcurrentModification
@@ -244,6 +285,7 @@ public static class PlanContractEndpoints
                     value = content.Value, contentAttributes = content.Attributes ?? new Dictionary<string, string>(),
                     siblingOrder = n.SiblingOrder, contentRevision = n.ContentRevision, stateRevision = s.StateRevision,
                     work = PlanStore.WorkName(s.Work), attemptId = s.AttemptId, attemptEpoch = s.AttemptEpoch, artifactRef = s.ArtifactRef,
+                    executorRef = s.ExecutorRef,
                     acceptance = a is null ? null : new
                     {
                         decision = PlanStore.DecisionName(a.Decision), contentRevision = a.ContentRevision, artifactRef = a.ArtifactRef,
@@ -266,7 +308,8 @@ public record CreatePlanRequest(Guid? RootId, Guid? ProjectId, string? Name, str
 public record AddChildRequest(Guid? ChildId, string? NodeType, string? Name, int? SiblingOrder, string? Value, Dictionary<string, string>? Attributes,
     string? OperationKey, long? ExpectedStateRevision, string? Actor);
 public record AddDependencyRequest(Guid? PredecessorId, string? Gate, string? OperationKey, long? ExpectedStateRevision, string? Actor);
-public record TransitionRequest(string? To, string? AttemptId, long? AttemptEpoch, string? ArtifactRef, string? OperationKey, long? ExpectedStateRevision, string? Actor);
+public record TransitionRequest(string? To, string? AttemptId, long? AttemptEpoch, string? ArtifactRef, string? OperationKey, long? ExpectedStateRevision,
+    string? Actor, string? ExecutorRef = null);
 public record DecideRequest(string? Decision, long? ReviewedContentRevision, string? ReviewedArtifactRef, long? ReviewedAttemptEpoch, string? EvidenceRef,
     string? OperationKey, long? ExpectedStateRevision, string? Actor);
 public record ContentRequest(string? Value, Dictionary<string, string>? Attributes, long? ExpectedContentRevision, string? OperationKey,

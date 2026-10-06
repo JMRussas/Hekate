@@ -60,7 +60,7 @@ public class PlanStoreLiveTests(LiveDatabase db)
         await PlanStoreSchema.Ensure(db.ConnectionString);
         await PlanStoreSchema.Ensure(db.ConnectionString);
         var triggers = (long)(await db.Scalar("SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'trg_hekate_guard_%'"))!;
-        Assert.Equal(10, triggers);
+        Assert.Equal(14, triggers);
     }
 
     [Fact]

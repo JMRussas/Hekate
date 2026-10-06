@@ -125,10 +125,13 @@ public static class PlanRules
         if (s.StateRevision < 0 || s.AttemptEpoch < 0) yield return new(InvalidRevision, "State revision and attempt epoch must be >= 0.", id);
         if (isContainer)
         {
-            if (s.Work != WorkStatus.Todo || s.AttemptId is not null || s.AttemptEpoch != 0 || s.ArtifactRef is not null || s.Acceptance is not null)
+            if (s.Work != WorkStatus.Todo || s.AttemptId is not null || s.AttemptEpoch != 0 || s.ArtifactRef is not null
+                || s.Acceptance is not null || s.ExecutorRef is not null)
                 yield return new(InvalidState, "A container cannot hold work, attempt, artifact or acceptance state (it is derived).", id);
             yield break;
         }
+        if (s.ExecutorRef is not null && (s.AttemptId is null || !IsValidExecutorRef(s.ExecutorRef)))
+            yield return new(InvalidState, "An executor reference needs a current attempt and must be 1-256 printable ASCII characters.", id);
         switch (s.Work)
         {
             case WorkStatus.InProgress when string.IsNullOrWhiteSpace(s.AttemptId) || s.AttemptEpoch < 1:
@@ -261,10 +264,14 @@ public static class PlanRules
     /// </summary>
     public static OpResult Transition(
         PlanGraph g, Guid nodeId, WorkStatus to, OperationContext ctx,
-        string? attemptId = null, long? attemptEpoch = null, string? artifactRef = null)
+        string? attemptId = null, long? attemptEpoch = null, string? artifactRef = null, string? executorRef = null)
     {
-        var fingerprint = Fingerprint("transition", ctx.Actor, to, attemptId, attemptEpoch, artifactRef);
+        var fingerprint = executorRef is null
+            ? Fingerprint("transition", ctx.Actor, to, attemptId, attemptEpoch, artifactRef)
+            : Fingerprint("transition", ctx.Actor, to, attemptId, attemptEpoch, artifactRef, "executor_ref", executorRef);
         if (!Enum.IsDefined(to)) return Rejected(g, new PlanError(InvalidEnum, $"Unknown work status {(int)to}.", nodeId));
+        if (executorRef is not null && !IsValidExecutorRef(executorRef))
+            return Rejected(g, new PlanError(InvalidExecutorRef, "executorRef must be 1-256 printable ASCII characters (no spaces).", nodeId));
         if (Prologue(g, nodeId, ctx, fingerprint) is { } early) return early;
 
         var ix = new Index(g);
@@ -285,17 +292,20 @@ public static class PlanRules
                 var blockers = ix.BlockersFor(nodeId);
                 if (!blockers.IsEmpty)
                     return new OpResult(OpOutcome.Rejected, g, [new PlanError(NotReady, "Predecessor gates are not satisfied.", nodeId)], blockers);
-                apply = st => st with { Work = WorkStatus.InProgress, AttemptId = attemptId, AttemptEpoch = st.AttemptEpoch + 1 };
+                // Start and reopen bind the given executor reference; a reopen never inherits the old one.
+                apply = st => st with { Work = WorkStatus.InProgress, AttemptId = attemptId, AttemptEpoch = st.AttemptEpoch + 1, ExecutorRef = executorRef };
                 break;
             case (WorkStatus.InProgress, WorkStatus.Done or WorkStatus.Todo):
                 if (attemptId != s.AttemptId || attemptEpoch != s.AttemptEpoch)
                     return Rejected(g, new PlanError(StaleAttempt, $"Attempt '{attemptId}'/{attemptEpoch} is not the current attempt.", nodeId));
+                if (executorRef is not null && executorRef != s.ExecutorRef)
+                    return Rejected(g, new PlanError(StaleAttempt, "executorRef does not match the current attempt's executor reference.", nodeId));
                 apply = to == WorkStatus.Done
-                    ? st => st with { Work = WorkStatus.Done, ArtifactRef = artifactRef }
-                    : st => st with { Work = WorkStatus.Todo, AttemptId = null };
+                    ? st => st with { Work = WorkStatus.Done, ArtifactRef = artifactRef }                  // keeps ExecutorRef
+                    : st => st with { Work = WorkStatus.Todo, AttemptId = null, ExecutorRef = null };
                 break;
             case (_, WorkStatus.Cancelled):
-                apply = st => st with { Work = WorkStatus.Cancelled, AttemptId = null };
+                apply = st => st with { Work = WorkStatus.Cancelled, AttemptId = null, ExecutorRef = null };
                 break;
             default: // Cancelled -> Todo
                 apply = st => st with { Work = WorkStatus.Todo };
@@ -381,6 +391,9 @@ public static class PlanRules
     // -----------------------------------------------------------------------
     // Internals
     // -----------------------------------------------------------------------
+
+    /// <summary>1-256 printable ASCII characters (0x21-0x7E): no spaces or control characters.</summary>
+    public static bool IsValidExecutorRef(string s) => s.Length is >= 1 and <= 256 && s.All(c => c is >= '!' and <= '~');
 
     private static readonly ImmutableHashSet<(WorkStatus, WorkStatus)> AllowedTransitions =
     [

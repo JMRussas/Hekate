@@ -134,7 +134,7 @@ try {
     Check 'C add dependency' ($r.Status -eq 200) "status=$($r.Status)"
     $r = Call GET "/api/plan-contract/v1/plans/$root/readiness"
     Check 'C T2 blocked before T1 accepted' ((($r.Json.leaves | Where-Object nodeId -eq "$t2").ready) -eq $false)
-    $s1 = Call POST "/api/plan-contract/v1/nodes/$t1/transition" @{ to = 'in_progress'; attemptId = 'attempt-1'; operationKey = (Key); expectedStateRevision = 0; actor = 'worker' }
+    $s1 = Call POST "/api/plan-contract/v1/nodes/$t1/transition" @{ to = 'in_progress'; attemptId = 'attempt-1'; executorRef = 'gods:engine_tasks:42'; operationKey = (Key); expectedStateRevision = 0; actor = 'worker' }
     $s2 = Call POST "/api/plan-contract/v1/nodes/$t1/transition" @{ to = 'done'; attemptId = 'attempt-1'; attemptEpoch = 1; artifactRef = 'sha-1'; operationKey = (Key); expectedStateRevision = 1; actor = 'worker' }
     $s3 = Call POST "/api/plan-contract/v1/nodes/$t1/decide" @{ decision = 'accepted'; reviewedContentRevision = 1; reviewedArtifactRef = 'sha-1'; reviewedAttemptEpoch = 1; evidenceRef = 'review-1'; operationKey = (Key); expectedStateRevision = 2; actor = 'reviewer' }
     Check 'C start/finish/accept' ($s1.Status -eq 200 -and $s2.Status -eq 200 -and $s3.Status -eq 200) "$($s1.Status)/$($s2.Status)/$($s3.Status)"
@@ -143,6 +143,27 @@ try {
     $r = Call GET "/api/plan-contract/v1/plans/$root"
     $n1 = $r.Json.nodes | Where-Object id -eq "$t1"
     Check 'C view has named states and content' ($n1.work -eq 'done' -and $n1.effectiveAcceptance -eq 'accepted' -and $n1.value -eq 'spec' -and $n1.contentAttributes.acceptance_criteria -eq 'green')
+    Check 'C view keeps executorRef after finish' ($n1.executorRef -eq 'gods:engine_tasks:42') "executorRef=$($n1.executorRef)"
+
+    # Read-only provenance history (plan 016).
+    $ev = Call GET "/api/plan-contract/v1/plans/$root/events"
+    $kinds = @($ev.Json.events | ForEach-Object kind)
+    Check 'E plan events ordered' ($ev.Status -eq 200 -and ($kinds -join ',') -eq 'attempt_started,attempt_finished,decision_recorded' -and (@($ev.Json.events | ForEach-Object seq) -join ',') -eq '1,2,3') "kinds=$($kinds -join ',')"
+    Check 'E event fields' ($ev.Json.events[0].executorRef -eq 'gods:engine_tasks:42' -and $ev.Json.events[0].attemptEpoch -eq 1 -and $ev.Json.events[2].decision -eq 'accepted' -and $ev.Json.events[2].evidenceRef -eq 'review-1')
+    Check 'E history markers' ($ev.Json.historyStartsAtSeq -eq 1 -and $ev.Json.historyBackfilled -eq $false -and $null -eq $ev.Json.nextAfterSeq -and $ev.Json.contractVersion -eq 'plan-contract/v1')
+    $p1 = Call GET "/api/plan-contract/v1/plans/$root/events?limit=2"
+    $p2 = Call GET "/api/plan-contract/v1/plans/$root/events?afterSeq=$($p1.Json.nextAfterSeq)&limit=2"
+    Check 'E pagination cursor' ($p1.Json.nextAfterSeq -eq 2 -and @($p1.Json.events).Count -eq 2 -and @($p2.Json.events).Count -eq 1 -and $p2.Json.events[0].seq -eq 3 -and $null -eq $p2.Json.nextAfterSeq)
+    $nodeEv = Call GET "/api/plan-contract/v1/nodes/$t1/events"
+    Check 'E node events filtered' ($nodeEv.Status -eq 200 -and @($nodeEv.Json.events).Count -eq 3 -and @($nodeEv.Json.events | Where-Object nodeId -ne "$t1").Count -eq 0)
+    $empty = Call GET "/api/plan-contract/v1/nodes/$t2/events"
+    Check 'E existing node with no history is 200 empty' ($empty.Status -eq 200 -and @($empty.Json.events).Count -eq 0 -and $null -eq $empty.Json.historyStartsAtSeq)
+    Check 'E missing plan 404' ((Call GET "/api/plan-contract/v1/plans/$([guid]::NewGuid())/events").Status -eq 404)
+    Check 'E missing node 404' ((Call GET "/api/plan-contract/v1/nodes/$([guid]::NewGuid())/events").Status -eq 404)
+    $bad = @('afterSeq=-1', 'afterSeq=abc', 'limit=0', 'limit=501', 'limit=x') | ForEach-Object { (Call GET "/api/plan-contract/v1/plans/$root/events?$_").Status }
+    Check 'E invalid query 400' (@($bad | Where-Object { $_ -ne 400 }).Count -eq 0) "statuses=$($bad -join ',')"
+    $badRef = Call POST "/api/plan-contract/v1/nodes/$t2/transition" @{ to = 'in_progress'; attemptId = 'x'; executorRef = 'has space'; operationKey = (Key); expectedStateRevision = 1; actor = 'w' }
+    Check 'E invalid executorRef 400' ($badRef.Status -eq 400 -and $badRef.Json.code -eq 'invalid_executor_ref') "status=$($badRef.Status)"
 
     $r = Call POST "/api/plan-contract/v1/nodes/$t2/transition" @{ to = 'in_progress'; attemptId = 'x'; operationKey = (Key); expectedStateRevision = 99; actor = 'w' }
     Check 'C stale revision 409' ($r.Status -eq 409 -and $r.Json.code -eq 'stale_revision') "status=$($r.Status) code=$($r.Json.code)"

@@ -3,6 +3,7 @@
 **Status:**
 - **Increment 2a:** pure rules, implemented.
 - **Increment 2b1:** PostgreSQL store plus an opt-in loopback API, implemented and live-tested on a disposable database.
+- **Increment 3a:** append-only attempt and review provenance, with an optional opaque executor reference; accepted. See [016](016-attempt-provenance-audit.md) and [017](017-attempt-provenance-validation.md).
 
 Not wired to execution, UI, auth, or legacy-plan enrollment. See *Increment 2b1* below.
 **Goal: one engine-neutral definition of how plan nodes, dependencies, work state and acceptance behave, before any storage or execution integration.**
@@ -336,7 +337,7 @@ Enum values are snake_case names.
    - `Odin/run_hekate.py` and `gods/engine.py` use Postgres when a DSN is set and fall back to SQLite otherwise.
    - The engine import was restored by recovery commit `a1f8237`, which brought back `athena_complete`, `sessions` and `conversation`. Imports and targeted tests are verified; pipeline **activation** is not.
    - Which ledger is authoritative, and how its states map to `WorkStatus`, needs an explicit adapter decision.
-4. **Snapshot loading:** implemented in 2b1 (`PlanStore.LoadSnapshot`). It loads atomically under the project lock, keeps the stored root parent without normalising it, and loads incomplete stored decisions as values that validation rejects.
+4. **Snapshot loading:** implemented in 2b1 (`PlanStore.LoadSnapshot`). Mutation snapshots load under the project lock; read-only snapshots use a repeatable-read transaction. Loading keeps the stored root parent without normalising it, and loads incomplete stored decisions as values that validation rejects.
 5. **Durability, concurrency and AGE projection:** live-tested in 2b1. Covered: concurrent compare-and-set (exactly one applies), opposing concurrent dependencies (exactly one gets `dependency_cycle`), AGE failure rollback, idempotent reconcile, the fence, and global id conflicts. Node deletion of managed nodes is fenced; no contract delete operation exists yet.
 
 ## Known limitations (v1)

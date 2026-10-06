@@ -10,6 +10,7 @@
 | 1 — local plan-only launcher (`scripts/local/`) | Live startup, restart persistence, backup/AGE restore, ownership and shutdown verified with Docker Desktop. See [`scripts/local/VALIDATION.md`](../../scripts/local/VALIDATION.md) for evidence and exclusions. |
 | 2a — pure plan contracts (`PlanContracts/`) | **Accepted** by codex-hekate, pure scope only. |
 | 2b1 — PostgreSQL store + opt-in loopback API + write fence | **Accepted by codex-hekate after independent final runs.** It covers **new** managed plans only. The fence blocks the generic writers below for managed nodes (409 `managed_plan_protected`). See [012](012-plan-node-contracts-v1.md) and the evidence in [014](014-plan-contract-integration-validation.md). |
+| 3a — attempt and review provenance | **Accepted** after independent 146 pure / 34 live / 39 HTTP checks. Append-only audit, no execution adapter or worker claims. See [016](016-attempt-provenance-audit.md) and [017](017-attempt-provenance-validation.md). |
 | 2b, remaining | Legacy-plan enrollment, the execution-ledger link, and the fate of each writer (section D) are **not started and not approved**. |
 
 ## Method and labels

@@ -14,6 +14,8 @@ public sealed class LiveDatabase : IAsyncLifetime
     public string ConnectionString { get; private set; } = "";
     public Guid ProjectId { get; } = Guid.NewGuid();
     private string _admin = "";
+    // Set only after CREATE DATABASE succeeded: Dispose never drops a database it did not create.
+    private bool _created;
 
     public async Task InitializeAsync()
     {
@@ -32,6 +34,7 @@ public sealed class LiveDatabase : IAsyncLifetime
             await conn.OpenAsync();
             await using var cmd = new NpgsqlCommand($"CREATE DATABASE \"{Name}\"", conn);
             await cmd.ExecuteNonQueryAsync();
+            _created = true;
         }
         csb.Database = Name;
         csb.Pooling = false;
@@ -63,13 +66,14 @@ public sealed class LiveDatabase : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        if (Environment.GetEnvironmentVariable("HEKATE_PLAN_LIVE_KEEP") == "1" || _admin == "") return;
+        if (!_created || Environment.GetEnvironmentVariable("HEKATE_PLAN_LIVE_KEEP") == "1" || _admin == "") return;
         if (!Name.StartsWith(Prefix, StringComparison.Ordinal)) return;
         NpgsqlConnection.ClearAllPools();
         await using var conn = new NpgsqlConnection(_admin);
         await conn.OpenAsync();
         await using var cmd = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{Name}\" WITH (FORCE)", conn);
         await cmd.ExecuteNonQueryAsync();
+        _created = false;
     }
 
     public async Task Exec(string sql, params (string Name, object Value)[] p)

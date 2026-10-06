@@ -82,7 +82,11 @@ public sealed record NodeState(
     string? ArtifactRef,
     AcceptanceRecord? Acceptance,
     string? LastOperationKey,
-    string? LastOperationFingerprint)
+    string? LastOperationFingerprint,
+    // Caller-provided opaque correlation to an executor's own run record (plan 016). Never
+    // verified identity or claim authority; bound on start/reopen, kept on finish, cleared
+    // with the attempt on release/cancel.
+    string? ExecutorRef = null)
 {
     public static NodeState Initial { get; } = new(WorkStatus.Todo, 0, null, 0, null, null, null, null);
 }
@@ -198,7 +202,37 @@ public static class PlanErrorCodes
     public const string EvidenceRequired = "evidence_required";
     public const string GatesNotSatisfied = "gates_not_satisfied";
     public const string InvalidChild = "invalid_child";
+    public const string InvalidExecutorRef = "invalid_executor_ref";
 }
+
+public enum AuditEventKind
+{
+    AttemptStarted, AttemptReopened, AttemptFinished, AttemptReleased, AttemptCancelled,
+    WorkRestored, DecisionRecorded, ContentRevised,
+}
+
+/// <summary>
+/// One append-only audit record of an APPLIED contract operation (plan 016). Derived from the
+/// before/after snapshots; never read by the rules. Attempt fields are the attempt as it was
+/// during the operation (for release/cancel: before it was cleared).
+/// </summary>
+public sealed record AuditEvent(
+    Guid NodeId,
+    long NodeStateRevision,
+    AuditEventKind Kind,
+    WorkStatus WorkFrom,
+    WorkStatus WorkTo,
+    long ContentRevision,
+    string? AttemptId,
+    long AttemptEpoch,
+    string? ExecutorRef,
+    string? ArtifactRef,
+    AcceptanceDecision? Decision,
+    long? ReviewedContentRevision,
+    string? EvidenceRef,
+    string? ContentDigest,
+    string Actor,
+    string OperationKey);
 
 /// <summary>Stable blocker reasons, in the precedence order they are reported.</summary>
 public static class BlockerReasons

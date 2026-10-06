@@ -73,6 +73,11 @@ public class ErrorCodeCoverageTests
             var g = new PlanBuilder().Node("a").Build();
             return Errors(PlanRules.AddChild(g, new PlanNode(Id("a"), Project, "task", Root, 0, 1), Ctx(g, "root"), "d"));
         },
+        [InvalidExecutorRef] = () =>
+        {
+            var g = new PlanBuilder().Node("a").Build();
+            return Errors(PlanRules.Transition(g, Id("a"), WorkStatus.InProgress, Ctx(g, "a"), "x", executorRef: "has space"));
+        },
         [RevisionExhausted] = () =>
         {
             var g = new PlanBuilder().Node("a").State("a", NodeState.Initial with { StateRevision = long.MaxValue }).Build();

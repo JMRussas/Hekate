@@ -95,6 +95,36 @@ public static class PlanStoreSchema
         );
         CREATE INDEX IF NOT EXISTS idx_plan_dependencies_root ON public.plan_dependencies(root_node_id);
 
+        -- Plan 016: executor reference + append-only attempt provenance audit.
+        ALTER TABLE public.plan_node_state ADD COLUMN IF NOT EXISTS executor_ref text;
+        ALTER TABLE public.managed_plans ADD COLUMN IF NOT EXISTS event_seq bigint NOT NULL DEFAULT 0 CHECK (event_seq >= 0);
+
+        CREATE TABLE IF NOT EXISTS public.plan_attempt_events (
+            root_node_id               uuid NOT NULL REFERENCES public.managed_plans(root_node_id) ON DELETE RESTRICT,
+            seq                        bigint NOT NULL CHECK (seq >= 1),
+            node_id                    uuid NOT NULL REFERENCES public.plan_node_state(node_id) ON DELETE RESTRICT,
+            node_state_revision        bigint NOT NULL,
+            kind                       text NOT NULL CHECK (kind IN ('attempt_started', 'attempt_reopened', 'attempt_finished',
+                                           'attempt_released', 'attempt_cancelled', 'work_restored', 'decision_recorded', 'content_revised')),
+            work_from                  text NOT NULL,
+            work_to                    text NOT NULL,
+            content_revision           bigint NOT NULL,
+            attempt_id                 text,
+            attempt_epoch              bigint NOT NULL,
+            executor_ref               text,
+            artifact_ref               text,
+            decision                   text CHECK (decision IS NULL OR decision IN ('accepted', 'rejected')),
+            reviewed_content_revision  bigint,
+            evidence_ref               text,
+            content_digest             text,
+            actor                      text NOT NULL,
+            operation_key              text NOT NULL,
+            recorded_at                timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (root_node_id, seq),
+            UNIQUE (node_id, node_state_revision)
+        );
+        CREATE INDEX IF NOT EXISTS idx_plan_attempt_events_node ON public.plan_attempt_events(node_id, seq);
+
         CREATE OR REPLACE FUNCTION public.hekate_plan_contract_active() RETURNS boolean
             LANGUAGE sql STABLE AS $$ SELECT coalesce(current_setting('hekate.plan_contract', true), '') = 'on' $$;
 
@@ -196,6 +226,36 @@ public static class PlanStoreSchema
             END IF;
             RETURN NULL;
         END $$;
+
+        -- Audit events are immutable even for the store (its write flag only permits INSERT).
+        CREATE OR REPLACE FUNCTION public.hekate_guard_events_immutable() RETURNS trigger
+            LANGUAGE plpgsql AS $$
+        BEGIN
+            PERFORM public.hekate_plan_fence('plan_attempt_events is append-only');
+            RETURN NULL;
+        END $$;
+
+        CREATE OR REPLACE FUNCTION public.hekate_guard_event_seq() RETURNS trigger
+            LANGUAGE plpgsql AS $$
+        BEGIN
+            IF NEW.event_seq < OLD.event_seq THEN
+                PERFORM public.hekate_plan_fence(format('event_seq of plan %s cannot decrease', OLD.root_node_id));
+            END IF;
+            RETURN NEW;
+        END $$;
+
+        DROP TRIGGER IF EXISTS trg_hekate_guard_events_insert ON public.plan_attempt_events;
+        CREATE TRIGGER trg_hekate_guard_events_insert BEFORE INSERT ON public.plan_attempt_events
+            FOR EACH ROW EXECUTE FUNCTION public.hekate_guard_plan_tables();
+        DROP TRIGGER IF EXISTS trg_hekate_guard_events_immutable ON public.plan_attempt_events;
+        CREATE TRIGGER trg_hekate_guard_events_immutable BEFORE UPDATE OR DELETE ON public.plan_attempt_events
+            FOR EACH ROW EXECUTE FUNCTION public.hekate_guard_events_immutable();
+        DROP TRIGGER IF EXISTS trg_hekate_guard_events_truncate ON public.plan_attempt_events;
+        CREATE TRIGGER trg_hekate_guard_events_truncate BEFORE TRUNCATE ON public.plan_attempt_events
+            FOR EACH STATEMENT EXECUTE FUNCTION public.hekate_guard_events_immutable();
+        DROP TRIGGER IF EXISTS trg_hekate_guard_event_seq ON public.managed_plans;
+        CREATE TRIGGER trg_hekate_guard_event_seq BEFORE UPDATE ON public.managed_plans
+            FOR EACH ROW EXECUTE FUNCTION public.hekate_guard_event_seq();
 
         DROP TRIGGER IF EXISTS trg_hekate_guard_nodes ON public.nodes;
         CREATE TRIGGER trg_hekate_guard_nodes BEFORE INSERT OR UPDATE OR DELETE ON public.nodes
