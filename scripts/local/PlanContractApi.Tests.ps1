@@ -102,6 +102,7 @@ try {
     $env:HEKATE_PLAN_CONTRACT = $ambientFlag
     Check 'A api ready (flag off)' (Wait-Ready $a)
     Check 'A endpoints absent' ((Call GET "/api/plan-contract/v1/plans/$([guid]::NewGuid())").Status -eq 404)
+    Check 'A list route absent' ((Call GET '/api/plan-contract/v1/plans').Status -eq 404)
     Check 'A no managed schema' (-not (ManagedSchemaExists))
     Check 'A ambient flag did not leak' ([bool](Select-String -Path (Join-Path $work 'a-flag-off.out.log') -Pattern "Plan contract: Disabled \(HEKATE_PLAN_CONTRACT='0'" -Quiet))
     Stop-Owned $a
@@ -231,6 +232,36 @@ try {
     $f2 = Call POST "/api/plan-contract/v1/nodes/$t2/transition" @{ to = 'done'; attemptId = 'k-att'; attemptEpoch = 1; artifactRef = 'sha-k'; operationKey = (Key); expectedStateRevision = 3; actor = 'worker' }
     Check 'K finish stale_content 409' ($rv2.Status -eq 200 -and $f2.Status -eq 409 -and $f2.Json.code -eq 'stale_content') "status=$($rv2.Status)/$($f2.Status) code=$($f2.Json.code)"
     Check 'K receipt unchanged after drift' (((Call GET "/api/plan-contract/v1/plans/$root/claims/x._~-123").Json.receipt | ConvertTo-Json -Depth 20 -Compress) -eq $receiptJson)
+
+    # L: read-only managed-plan discovery (plan 021).
+    $lProject = [guid]::NewGuid()
+    Psql "INSERT INTO projects (id, name, root_path) VALUES ('$lProject', 'plan-listing-test', 'disposable://plan-listing-test')" | Out-Null
+    $lRoots = @(1..3 | ForEach-Object {
+        $id = [guid]::NewGuid()
+        $r = Call POST '/api/plan-contract/v1/plans' @{ rootId = $id; projectId = $lProject; name = "L$_"; operationKey = (Key); expectedStateRevision = 0; actor = 'api-test' }
+        if ($r.Status -ne 200) { throw "L plan create failed: $($r.Status)" }
+        "$id"
+    })
+    $legacyRootResp = Call POST "/api/project/$lProject/nodes" @{ nodeType = 'plan'; name = 'legacy root' }
+    $legacyRoot = "$($legacyRootResp.Json.id)"
+    $legacyChild = Call POST "/api/node/$legacyRoot/children" @{ nodeType = 'plan'; name = 'legacy child plan' }
+    $legacyChildId = if ($legacyChild.Json.node) { "$($legacyChild.Json.node.id)" } else { "$($legacyChild.Json.id)" }
+    Check 'L legacy unmanaged plans created' ($legacyRootResp.Status -eq 200 -and $legacyChild.Status -eq 200 -and $legacyRoot -match '^[0-9a-f-]{36}$' -and $legacyChildId -match '^[0-9a-f-]{36}$') "status=$($legacyRootResp.Status)/$($legacyChild.Status)"
+    $all = Call GET "/api/plan-contract/v1/plans?projectId=$lProject"
+    $ids = @($all.Json.plans | ForEach-Object { "$($_.rootId)" })
+    $pgOrder = @((Psql "select root_node_id from managed_plans where project_id = '$lProject' order by root_node_id") -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    Check 'L list 200 managed only, database order' ($all.Status -eq 200 -and $all.Json.contractVersion -eq 'plan-contract/v1' -and ($ids -join ',') -eq ($pgOrder -join ',') -and $ids.Count -eq 3 -and $ids -notcontains "$legacyRoot" -and $ids -notcontains $legacyChildId -and $null -eq $all.Json.nextAfterRootId) "ids=$($ids -join ',')"
+    $item = $all.Json.plans | Where-Object rootId -eq $lRoots[0]
+    Check 'L item shape' ($item.name -eq 'L1' -and $item.supported -eq $true -and $item.contractVersion -eq 'plan-contract/v1' -and $item.defaultGate -eq 'accepted' -and $item.eventSeq -eq 0 -and "$($item.projectId)" -eq "$lProject" -and $null -eq $all.Json.supported -and $null -eq $all.Json.supportedContractVersion)
+    $p1 = Call GET "/api/plan-contract/v1/plans?projectId=$lProject&limit=2"
+    $p2 = Call GET "/api/plan-contract/v1/plans?projectId=$lProject&limit=2&afterRootId=$($p1.Json.nextAfterRootId)"
+    $paged = @($p1.Json.plans + $p2.Json.plans | ForEach-Object { "$($_.rootId)" })
+    Check 'L cursor pages' (@($p1.Json.plans).Count -eq 2 -and "$($p1.Json.nextAfterRootId)" -eq $pgOrder[1] -and @($p2.Json.plans).Count -eq 1 -and $null -eq $p2.Json.nextAfterRootId -and ($paged -join ',') -eq ($pgOrder -join ','))
+    Psql "SET hekate.plan_contract = 'on'; UPDATE managed_plans SET contract_version = 'plan-contract/v9' WHERE root_node_id = '$($lRoots[2])'" | Out-Null
+    $unsup = (Call GET "/api/plan-contract/v1/plans?projectId=$lProject").Json.plans | Where-Object rootId -eq $lRoots[2]
+    Check 'L unsupported version listed as metadata' ($unsup.supported -eq $false -and $unsup.contractVersion -eq 'plan-contract/v9')
+    $badQ = @('limit=0', 'limit=501', 'limit=x', 'afterRootId=nope', 'projectId=123') | ForEach-Object { $r = Call GET "/api/plan-contract/v1/plans?$_"; "$($r.Status):$($r.Json.code)" }
+    Check 'L invalid query 400' (@($badQ | Where-Object { $_ -ne '400:invalid_query' }).Count -eq 0) "got=$($badQ -join ',')"
     Stop-Owned $c
 }
 catch {

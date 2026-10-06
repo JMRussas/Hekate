@@ -3,7 +3,8 @@
 Run Hekate's plan store on this machine when you need it, without the Sisyphus
 deployment. It starts two things: the Postgres+AGE container and the
 context-store Api. That is enough to browse and edit plan nodes through
-`/api/plans`, `/api/plan/{id}`, `/api/node/*` and the context-store UI.
+`/api/plans`, `/api/plan/{id}` and `/api/node/*`, and (started by hand, see
+below) the context-store UI.
 
 ```powershell
 pwsh scripts/local/hekate-local.ps1 start      # preflight, start, wait for readiness
@@ -57,6 +58,29 @@ Process-level API check (needs the local profile's container running):
 ```powershell
 pwsh scripts/local/PlanContractApi.Tests.ps1
 ```
+
+### Browsing managed plans (read-only)
+
+The launcher does not start the UI. To browse managed plans, start it by hand
+against the local Api, which listens on `127.0.0.1:5103` rather than the
+Sisyphus port `5102` that the UI proxies to by default:
+
+```powershell
+# after: $env:HEKATE_LOCAL_PLAN_CONTRACT = '1'; pwsh scripts/local/hekate-local.ps1 start
+cd context-store/ui
+npm ci                                   # once, from the lockfile
+$env:HEKATE_UI_API_TARGET = 'http://127.0.0.1:5103'
+npm run dev                              # http://localhost:5179, fails if 5179 is taken
+```
+
+Open `http://localhost:5179` and choose **Plans**. The view only sends GET
+requests: it lists managed plans, and shows each plan's tree, dependency map,
+node detail (blockers, raw and effective acceptance, pins) and history. Plans
+on an unsupported contract version are listed but not rendered. Any counter
+outside JavaScript's safe-integer range is refused, never rounded. Requests go
+through the Vite proxy from loopback, so the plan-contract loopback filter
+passes and no CORS change is needed. See
+[context-store/plans/021-local-plan-browser-proposal.md](../../context-store/plans/021-local-plan-browser-proposal.md).
 
 The script runs against a new disposable database and its own Api processes, and
 cleans up only those. It checks three cases:

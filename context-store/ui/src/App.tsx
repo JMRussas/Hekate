@@ -6,7 +6,7 @@
 // debug log, and streaming status in a Map. Switching conversations changes which
 // state is displayed — active streams continue in the background.
 //
-// Depends on: api.ts, ChatPanel, ThreadsSidebar, StatsBar, DebugPanel, PlannerPanel, WorkspacePanel
+// Depends on: api.ts, ChatPanel, ThreadsSidebar, StatsBar, DebugPanel, PlannerPanel, WorkspacePanel, ManagedPlansView
 // Used by: main.tsx
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -16,6 +16,7 @@ import ThreadsSidebar from './components/ThreadsSidebar';
 import StatsBar from './components/StatsBar';
 import DebugPanel from './components/DebugPanel';
 import PlannerPanel from './components/PlannerPanel';
+import ManagedPlansView from './components/ManagedPlansView';
 import WorkspacePanel from './components/WorkspacePanel';
 import {
   type ChatMessage,
@@ -36,7 +37,7 @@ import {
 } from './api';
 
 type RightTab = 'stats' | 'debug' | 'planner';
-type AppView = 'chat' | 'workspace';
+type AppView = 'chat' | 'workspace' | 'plans';
 
 // Per-conversation cached state — streams write here even when another conversation is displayed
 interface ConversationState {
@@ -328,6 +329,16 @@ export default function App() {
             >
               Workspace
             </button>
+            <button
+              onClick={() => setAppView('plans')}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                appView === 'plans'
+                  ? 'bg-slate-600 text-slate-100'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Plans
+            </button>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -369,7 +380,9 @@ export default function App() {
 
       {/* View content */}
       <div className="flex-1 flex overflow-hidden">
-        {appView === 'workspace' ? (
+        {appView === 'plans' ? (
+          <ManagedPlansView />
+        ) : appView === 'workspace' ? (
           <WorkspacePanel />
         ) : (
           <>

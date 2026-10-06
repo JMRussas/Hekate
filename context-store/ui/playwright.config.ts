@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// HEKATE_UI_TEST_PORT isolates a test run's own Vite server (default 5179); with CI=1 an
+// already-running server is never adopted, and --strictPort refuses an occupied port.
+const port = Number(process.env.HEKATE_UI_TEST_PORT ?? 5179);
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -8,7 +12,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:5179',
+    baseURL: `http://localhost:${port}`,
     trace: 'on-first-retry',
   },
   projects: [
@@ -18,8 +22,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5179',
+    command: `npm run dev -- --port ${port} --strictPort`,
+    url: `http://localhost:${port}`,
     reuseExistingServer: !process.env.CI,
   },
 });

@@ -248,6 +248,56 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
     }
 
     // -----------------------------------------------------------------------
+    // Discovery (plan 021)
+    // -----------------------------------------------------------------------
+
+    /// <summary>A managed plan as listed (metadata only; the graph is not loaded or validated).</summary>
+    public sealed record PlanListItem(Guid RootId, Guid ProjectId, string? Name, string DefaultGate,
+        string ContractVersion, DateTime CreatedAt, string CreatedBy, long EventSeq)
+    {
+        public bool Supported => ContractVersion == PlanContract.Version;
+    }
+
+    public sealed record PlanListPage(IReadOnlyList<PlanListItem> Plans, Guid? NextAfterRootId);
+
+    /// <summary>
+    /// Managed plans ordered by root id with a strict "greater than" uuid cursor (the same
+    /// PostgreSQL ordering for ORDER BY and the cursor). Read-only: RepeatableRead, rolled back,
+    /// no fence flag, no lock. Unsupported or corrupt plans are still listed as metadata.
+    /// </summary>
+    public async Task<PlanListPage> ListPlansAsync(Guid? projectId, Guid? afterRootId, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 500);
+        await using var conn = new NpgsqlConnection(connectionString);
+        await conn.OpenAsync();
+        await using var tx = await conn.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+        var rows = new List<PlanListItem>();
+        await using (var cmd = new NpgsqlCommand("""
+            SELECT m.root_node_id, m.project_id, n.name, m.default_gate, m.contract_version, m.created_at, m.created_by, m.event_seq
+            FROM public.managed_plans m JOIN public.nodes n ON n.id = m.root_node_id
+            WHERE (@p::uuid IS NULL OR m.project_id = @p) AND (@a::uuid IS NULL OR m.root_node_id > @a)
+            ORDER BY m.root_node_id
+            LIMIT @lim
+            """, conn, tx))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)projectId ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("a", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)afterRootId ?? DBNull.Value });
+            cmd.Parameters.AddWithValue("lim", limit + 1);
+            await using var r = await cmd.ExecuteReaderAsync();
+            while (await r.ReadAsync())
+            {
+                rows.Add(new PlanListItem(r.GetGuid(0), r.GetGuid(1), NullableString(r, 2), r.GetString(3), r.GetString(4),
+                    r.GetDateTime(5), r.GetString(6), r.GetInt64(7)));
+            }
+        }
+        await tx.RollbackAsync();
+        var more = rows.Count > limit;
+        var page = more ? rows.Take(limit).ToList() : rows;
+        return new PlanListPage(page, more ? page[^1].RootId : null);
+    }
+
+    // -----------------------------------------------------------------------
     // Claims (plan 019)
     // -----------------------------------------------------------------------
 

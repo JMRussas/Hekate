@@ -44,6 +44,37 @@ public static class PlanContractEndpoints
             return await Respond(store, r);
         });
 
+        // Plan 021: read-only discovery of managed plans (metadata only; graphs are not loaded).
+        api.MapGet("/plans", async (string? projectId, string? afterRootId, string? limit) =>
+        {
+            Guid? project = null, after = null;
+            if (projectId is not null)
+            {
+                if (!Guid.TryParse(projectId, out var p)) return Error(400, InvalidQuery, "projectId must be a uuid.");
+                project = p;
+            }
+            if (afterRootId is not null)
+            {
+                if (!Guid.TryParse(afterRootId, out var a)) return Error(400, InvalidQuery, "afterRootId must be a uuid.");
+                after = a;
+            }
+            var lim = 100;
+            if (limit is not null && (!int.TryParse(limit, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out lim) || lim < 1 || lim > 500))
+                return Error(400, InvalidQuery, "limit must be an integer between 1 and 500.");
+            var page = await store.ListPlansAsync(project, after, lim);
+            return Results.Ok(new
+            {
+                contractVersion = PlanContract.Version,
+                plans = page.Plans.Select(p => new
+                {
+                    rootId = p.RootId, projectId = p.ProjectId, name = p.Name, defaultGate = p.DefaultGate,
+                    contractVersion = p.ContractVersion, supported = p.Supported,
+                    createdAt = p.CreatedAt, createdBy = p.CreatedBy, eventSeq = p.EventSeq,
+                }),
+                nextAfterRootId = page.NextAfterRootId,
+            });
+        });
+
         api.MapGet("/plans/{rootId:guid}", async (Guid rootId) =>
         {
             var snap = await store.LoadAsync(rootId);
