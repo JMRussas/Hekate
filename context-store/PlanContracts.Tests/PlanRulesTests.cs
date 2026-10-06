@@ -432,13 +432,24 @@ public class GateAndAcceptanceTests
     }
 
     [Fact]
-    public void State_only_operations_do_not_stale_acceptance()
+    public void Adding_a_dependency_stales_a_pinned_acceptance_even_when_the_new_gate_is_green()
     {
+        // 3b1 (plan 019 §1b): an added prerequisite is a changed input, so a pinned acceptance is Stale.
         var g = Complete(new PlanBuilder().Node("a").Node("c").Build(), "a");
         g = Complete(g, "c");
         var withDep = Ok(PlanRules.AddDependency(g, Id("c"), Id("a"), null, Ctx(g, "a")));
-        Assert.Equal(EffectiveAcceptance.Accepted, PlanRules.EffectiveAcceptanceOf(withDep, Id("a")));
         Assert.True(View.Leaf(withDep, "a").GatesHold);
+        Assert.Equal(EffectiveAcceptance.Stale, PlanRules.EffectiveAcceptanceOf(withDep, Id("a")));
+        Assert.Equal(AcceptanceDecision.Accepted, withDep.StateOf(Id("a")).Acceptance!.Decision);   // record not rewritten
+    }
+
+    [Fact]
+    public void Unrelated_state_operations_do_not_stale_acceptance()
+    {
+        var g = Complete(new PlanBuilder().Node("a").Node("c").Build(), "a");
+        g = Complete(g, "c");                                         // sibling start/finish/accept
+        g = Ok(PlanRules.ReviseContent(g, Id("c"), Ctx(g, "c")));     // sibling content
+        Assert.Equal(EffectiveAcceptance.Accepted, PlanRules.EffectiveAcceptanceOf(g, Id("a")));
     }
 
     [Fact]
@@ -482,7 +493,7 @@ public class GateAndAcceptanceTests
     }
 
     [Fact]
-    public void Upstream_change_after_start_is_reported_and_blocks_acceptance()
+    public void Upstream_change_after_start_is_reported_and_rejects_the_finish()
     {
         // B depends on A (Accepted gate). B starts, then A's content is revised.
         var g = Complete(new PlanBuilder().Node("a").Node("b").Dep("a", "b").Build(), "a");
@@ -493,8 +504,20 @@ public class GateAndAcceptanceTests
         Assert.Equal(WorkStatus.InProgress, b.Work);   // not auto-cancelled
         Assert.True(b.UpstreamChanged);
 
-        g = Finish(g, "b");
-        AssertRejected(Decide(g, "b", AcceptanceDecision.Accepted), g, GatesNotSatisfied);
+        // 3b1 (plan 019 §1b): the finish itself is now rejected; release stays possible.
+        AssertRejected(FinishResult(g, "b", "b-artifact"), g, StalePrerequisites);
+        var s = g.StateOf(Id("b"));
+        Ok(PlanRules.Transition(g, Id("b"), WorkStatus.Todo, Ctx(g, "b"), s.AttemptId, s.AttemptEpoch));
+    }
+
+    [Fact]
+    public void Upstream_change_after_finish_blocks_acceptance()
+    {
+        var g = Complete(new PlanBuilder().Node("a").Node("b").Dep("a", "b").Build(), "a");
+        g = Finish(Start(g, "b", "y1"), "b");
+        g = Ok(PlanRules.ReviseContent(g, Id("a"), Ctx(g, "a")));
+
+        AssertRejected(Decide(g, "b", AcceptanceDecision.Accepted), g, GatesNotSatisfied);   // keeps precedence over pins
         Assert.Equal(OpOutcome.Applied, Decide(g, "b", AcceptanceDecision.Rejected).Outcome); // rejecting stays possible
     }
 

@@ -183,6 +183,54 @@ try {
     $edges = Psql "LOAD 'age'; SET search_path = ag_catalog, `"`$user`", public; SELECT count::text FROM cypher('code_graph', `$`$ MATCH ()-[e:DEPENDS_ON {plan_root: '$root'}]->() RETURN count(e) `$`$) AS (count agtype)"
     Check 'C one tagged projected edge' ($edges -eq '1') "edges=$edges"
     Check 'C dispatcher disabled' ([bool](Select-String -Path (Join-Path $work 'c-enabled.out.log') -Pattern 'Agent dispatcher disabled' -Quiet))
+
+    # K: durable claim receipts and pins (plan 019). T1 is done+accepted, T2 is ready.
+    function Receipts { [int](Psql "select count(*) from plan_claim_receipts where root_node_id = '$root'") }
+    $claimBody = @{ claimKey = 'x._~-123'; attemptId = 'k-att'; executorRef = 'run-k'; actor = 'worker' }
+    $k1 = Call POST "/api/plan-contract/v1/plans/$root/claims" $claimBody
+    $rc = $k1.Json.receipt
+    Check 'K claim 200 claimed T2' ($k1.Status -eq 200 -and $rc.outcome -eq 'claimed' -and $rc.nodeId -eq "$t2" -and $rc.attemptEpoch -eq 1 -and $rc.executorRef -eq 'run-k' -and $k1.Json.replayed -eq $false -and $k1.Json.stillCurrent -eq $true -and $k1.Json.current.work -eq 'in_progress') "status=$($k1.Status) code=$($k1.Json.code)"
+    $t1Snap = $rc.prereqSnapshot.nodes | Where-Object id -eq "$t1"
+    Check 'K prereq snapshot has named states' ($rc.prereqSnapshot.digest -eq $rc.prereqDigest -and $t1Snap.work -eq 'done' -and $t1Snap.acceptance.decision -eq 'accepted' -and $t1Snap.acceptance.evidenceRef -eq 'review-1' -and ($rc.prereqSnapshot.declared | Where-Object predecessorId -eq "$t1").gate -eq 'accepted')
+    Check 'K content snapshot' ($rc.contentRevision -eq 1 -and $null -eq $rc.contentSnapshot.value -and $rc.contentDigest -match '^[0-9a-f]+$')
+    $t2View = (Call GET "/api/plan-contract/v1/plans/$root").Json.nodes | Where-Object id -eq "$t2"
+    Check 'K node view shows pins' ($t2View.attemptContentRevision -eq 1 -and $t2View.attemptPrereqDigest -eq $rc.prereqDigest)
+    $receiptJson = $rc | ConvertTo-Json -Depth 20 -Compress
+    $k2 = Call GET "/api/plan-contract/v1/plans/$root/claims/x._~-123"
+    Check 'K GET same receipt' ($k2.Status -eq 200 -and ($k2.Json.receipt | ConvertTo-Json -Depth 20 -Compress) -eq $receiptJson -and $k2.Json.stillCurrent -eq $true) "status=$($k2.Status)"
+    $k3 = Call POST "/api/plan-contract/v1/plans/$root/claims" $claimBody
+    Check 'K replay same receipt' ($k3.Status -eq 200 -and $k3.Json.replayed -eq $true -and ($k3.Json.receipt | ConvertTo-Json -Depth 20 -Compress) -eq $receiptJson -and (Receipts) -eq 1)
+    $k4 = Call POST "/api/plan-contract/v1/plans/$root/claims" @{ claimKey = 'x._~-123'; attemptId = 'other'; executorRef = 'run-k'; actor = 'worker' }
+    Check 'K payload conflict 409' ($k4.Status -eq 409 -and $k4.Json.code -eq 'operation_key_reused') "status=$($k4.Status)"
+    $k5 = Call POST "/api/plan-contract/v1/plans/$root/claims" @{ claimKey = 'k-none'; attemptId = 'k-att-2'; actor = 'worker' }
+    Check 'K no_ready_work 200' ($k5.Status -eq 200 -and $k5.Json.receipt.outcome -eq 'no_ready_work' -and $k5.Json.stillCurrent -eq $false -and $null -eq $k5.Json.current -and $null -eq $k5.Json.receipt.nodeId) "status=$($k5.Status)"
+    Check 'K GET missing claim 404' ((Call GET "/api/plan-contract/v1/plans/$root/claims/never").Json.code -eq 'claim_not_found')
+    Check 'K GET missing plan 404' ((Call GET "/api/plan-contract/v1/plans/$([guid]::NewGuid())/claims/x").Json.code -eq 'plan_not_found')
+    $beforeBad = Receipts
+    $badKeys = @('a/b', 'a%2Fb', 'a?b', 'a#b', '.', '..', 'hekate-claim:x') | ForEach-Object {
+        $r = Call POST "/api/plan-contract/v1/plans/$root/claims" @{ claimKey = $_; attemptId = 'a'; actor = 'w' }
+        "$($r.Status):$($r.Json.code)"
+    }
+    Check 'K invalid claim keys 400 invalid_input' (@($badKeys | Where-Object { $_ -ne '400:invalid_input' }).Count -eq 0 -and (Receipts) -eq $beforeBad) "got=$($badKeys -join ',')"
+    $mf = Call POST "/api/plan-contract/v1/plans/$root/claims" @{ attemptId = 'a'; actor = 'w' }
+    Check 'K missing claimKey 400' ($mf.Status -eq 400 -and $mf.Json.code -eq 'missing_field')
+    $br = Call POST "/api/plan-contract/v1/plans/$root/claims" @{ claimKey = 'k-badref'; attemptId = 'a'; executorRef = 'has space'; actor = 'w' }
+    Check 'K invalid executorRef 400' ($br.Status -eq 400 -and $br.Json.code -eq 'invalid_executor_ref' -and (Receipts) -eq $beforeBad)
+    $rp = Call POST "/api/plan-contract/v1/nodes/$t1/transition" @{ to = 'in_progress'; attemptId = 'r'; operationKey = 'hekate-claim:forged'; expectedStateRevision = 3; actor = 'w' }
+    Check 'K reserved operation key 400' ($rp.Status -eq 400 -and $rp.Json.code -eq 'invalid_operation_key') "status=$($rp.Status) code=$($rp.Json.code)"
+    $kev = (Call GET "/api/plan-contract/v1/nodes/$t2/events").Json.events
+    Check 'K claim event carries key and pins' ($kev[-1].kind -eq 'attempt_started' -and $kev[-1].claimKey -eq 'x._~-123' -and $kev[-1].operationKey -eq 'hekate-claim:x._~-123' -and $kev[-1].attemptPrereqDigest -eq $rc.prereqDigest -and $kev[-1].seq -eq $rc.eventSeq)
+
+    # Pinned finish: upstream content change -> 409 stale_prerequisites; own content change -> 409 stale_content.
+    $rv = Call PUT "/api/plan-contract/v1/nodes/$t1/content" @{ value = 'spec v2'; expectedContentRevision = 1; operationKey = (Key); expectedStateRevision = 3; actor = 'planner' }
+    Check 'K revise T1' ($rv.Status -eq 200) "status=$($rv.Status)"
+    $f1 = Call POST "/api/plan-contract/v1/nodes/$t2/transition" @{ to = 'done'; attemptId = 'k-att'; attemptEpoch = 1; artifactRef = 'sha-k'; operationKey = (Key); expectedStateRevision = 2; actor = 'worker' }
+    Check 'K finish stale_prerequisites 409' ($f1.Status -eq 409 -and $f1.Json.code -eq 'stale_prerequisites') "status=$($f1.Status) code=$($f1.Json.code)"
+    Check 'K stillCurrent false after drift' ((Call GET "/api/plan-contract/v1/plans/$root/claims/x._~-123").Json.stillCurrent -eq $false)
+    $rv2 = Call PUT "/api/plan-contract/v1/nodes/$t2/content" @{ value = 't2 v2'; expectedContentRevision = 1; operationKey = (Key); expectedStateRevision = 2; actor = 'planner' }
+    $f2 = Call POST "/api/plan-contract/v1/nodes/$t2/transition" @{ to = 'done'; attemptId = 'k-att'; attemptEpoch = 1; artifactRef = 'sha-k'; operationKey = (Key); expectedStateRevision = 3; actor = 'worker' }
+    Check 'K finish stale_content 409' ($rv2.Status -eq 200 -and $f2.Status -eq 409 -and $f2.Json.code -eq 'stale_content') "status=$($rv2.Status)/$($f2.Status) code=$($f2.Json.code)"
+    Check 'K receipt unchanged after drift' (((Call GET "/api/plan-contract/v1/plans/$root/claims/x._~-123").Json.receipt | ConvertTo-Json -Depth 20 -Compress) -eq $receiptJson)
     Stop-Owned $c
 }
 catch {

@@ -88,6 +88,16 @@ public class AuditLiveTests(LiveDatabase db)
         Assert.Equal(e.Select(x => x.Event.NodeStateRevision).Distinct().Count(), e.Count);
         Assert.Equal(1L, page.HistoryStartsAtSeq);
         Assert.Null((await State(s, root, t)).ExecutorRef);   // cleared by cancel
+
+        // Plan 019: every attempt event carries the attempt's pins; release/cancel carry them pre-clear.
+        var digest = PlanRules.PrerequisiteSnapshot((await s.LoadAsync(root))!.Graph, t).Digest;   // t has no prerequisites
+        (long?, string?) Pins(int i) => (e[i].Event.AttemptContentRevision, e[i].Event.AttemptPrereqDigest);
+        foreach (var i in new[] { 0, 1, 2, 3, 4, 5, 6 }) Assert.Equal((1L, digest), Pins(i));
+        Assert.Equal(((long?)null, (string?)null), Pins(7));   // work_restored: no attempt
+        Assert.Equal(((long?)null, (string?)null), Pins(8));   // content_revised on Todo
+        Assert.All(e, x => Assert.Null(x.Event.ClaimKey));    // generic operations carry no claim key
+        var final = await State(s, root, t);
+        Assert.Equal(((long?)null, (string?)null), (final.AttemptContentRevision, final.AttemptPrereqDigest));
         Assert.Equal(9L, await EventSeq(root));
     }
 
@@ -160,7 +170,17 @@ public class AuditLiveTests(LiveDatabase db)
         Applied(await s.TransitionAsync(t, WorkStatus.InProgress, Ctx(K(), await Rev(s, root, t)), "x1", null, null, "run-1"));
         await FencedExec("UPDATE public.plan_attempt_events SET actor = 'forged' WHERE root_node_id = @r", asStore: true, ("r", root));
         await FencedExec("DELETE FROM public.plan_attempt_events WHERE root_node_id = @r", asStore: true, ("r", root));
-        await FencedExec("TRUNCATE public.plan_attempt_events", asStore: true);
+        // Since 3b1 receipts reference events: a plain TRUNCATE is refused by the foreign key before
+        // any trigger runs; CASCADE reaches the append-only fence (on both tables).
+        await using (var conn = new NpgsqlConnection(db.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await using var tx = await conn.BeginTransactionAsync();
+            await using (var set = new NpgsqlCommand("SET LOCAL hekate.plan_contract = 'on'", conn, tx)) await set.ExecuteNonQueryAsync();
+            await using var trunc = new NpgsqlCommand("TRUNCATE public.plan_attempt_events", conn, tx);
+            Assert.Equal(PostgresErrorCodes.FeatureNotSupported, (await Assert.ThrowsAsync<PostgresException>(() => trunc.ExecuteNonQueryAsync())).SqlState);
+        }
+        await FencedExec("TRUNCATE public.plan_attempt_events CASCADE", asStore: true);
         await FencedExec("UPDATE public.managed_plans SET event_seq = 0 WHERE root_node_id = @r", asStore: true, ("r", root));
         await FencedExec("""
             INSERT INTO public.plan_attempt_events (root_node_id, seq, node_id, node_state_revision, kind, work_from, work_to,
@@ -245,8 +265,14 @@ public class AuditLiveTests(LiveDatabase db)
                 await tx.CommitAsync();
             }
 
-            // 1. Restore the 2b1 schema shape: remove ONLY the 3a additions.
+            // 1. Restore the 2b1 schema shape: remove the 3b1 additions (receipts first: they reference
+            //    events), then ONLY the 3a additions.
             await own.Exec("""
+                DROP TRIGGER IF EXISTS trg_hekate_guard_receipts_insert ON public.plan_claim_receipts;
+                DROP TRIGGER IF EXISTS trg_hekate_guard_receipts_immutable ON public.plan_claim_receipts;
+                DROP TRIGGER IF EXISTS trg_hekate_guard_receipts_truncate ON public.plan_claim_receipts;
+                DROP TABLE public.plan_claim_receipts;
+                ALTER TABLE public.plan_node_state DROP COLUMN attempt_content_revision, DROP COLUMN attempt_prereq_digest;
                 DROP TRIGGER IF EXISTS trg_hekate_guard_events_insert ON public.plan_attempt_events;
                 DROP TRIGGER IF EXISTS trg_hekate_guard_events_immutable ON public.plan_attempt_events;
                 DROP TRIGGER IF EXISTS trg_hekate_guard_events_truncate ON public.plan_attempt_events;
@@ -259,6 +285,8 @@ public class AuditLiveTests(LiveDatabase db)
                 """);
             Assert.Equal(0L, await Q("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND ((table_name = 'plan_node_state' AND column_name = 'executor_ref') OR (table_name = 'managed_plans' AND column_name = 'event_seq'))"));
             Assert.Equal(false, await Q("SELECT to_regclass('public.plan_attempt_events') IS NOT NULL"));
+            Assert.Equal(false, await Q("SELECT to_regclass('public.plan_claim_receipts') IS NOT NULL"));
+            Assert.Equal(0L, await Q("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'plan_node_state' AND column_name IN ('attempt_content_revision', 'attempt_prereq_digest')"));
 
             // 2. 2b1-era data: a plan with an in-progress attempt and the stored 2b1 start fingerprint.
             var root = Guid.NewGuid();
@@ -283,9 +311,9 @@ public class AuditLiveTests(LiveDatabase db)
 
             Assert.Equal(2L, await Q("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND ((table_name = 'plan_node_state' AND column_name = 'executor_ref') OR (table_name = 'managed_plans' AND column_name = 'event_seq'))"));
             Assert.Equal(true, await Q("SELECT to_regclass('public.plan_attempt_events') IS NOT NULL"));
-            Assert.Equal(14L, await Q("SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'trg_hekate_guard_%'"));
-            // Existing state preserved exactly; the only difference is the new column, NULL.
-            var after = (string)(await Q("SELECT (row_to_json(s)::jsonb - 'executor_ref')::text FROM public.plan_node_state s WHERE node_id = @t", ("t", task)))!;
+            Assert.Equal(17L, await Q("SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'trg_hekate_guard_%'"));
+            // Existing state preserved exactly; the only differences are the new columns, NULL.
+            var after = (string)(await Q("SELECT (row_to_json(s)::jsonb - 'executor_ref' - 'attempt_content_revision' - 'attempt_prereq_digest')::text FROM public.plan_node_state s WHERE node_id = @t", ("t", task)))!;
             Assert.Equal(before, after);   // both canonical jsonb text
             Assert.Equal(DBNull.Value, await Q("SELECT executor_ref FROM public.plan_node_state WHERE node_id = @t", ("t", task)) ?? DBNull.Value);
             Assert.Equal(0L, await Q("SELECT event_seq FROM public.managed_plans WHERE root_node_id = @r", ("r", root)));

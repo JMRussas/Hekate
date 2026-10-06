@@ -125,6 +125,42 @@ public static class PlanStoreSchema
         );
         CREATE INDEX IF NOT EXISTS idx_plan_attempt_events_node ON public.plan_attempt_events(node_id, seq);
 
+        -- Plan 019 (3b1): attempt pins, pin provenance on events, durable claim receipts.
+        -- Additive only; existing rows keep NULL pins (no backfill).
+        ALTER TABLE public.plan_node_state ADD COLUMN IF NOT EXISTS attempt_content_revision bigint;
+        ALTER TABLE public.plan_node_state ADD COLUMN IF NOT EXISTS attempt_prereq_digest text;
+        ALTER TABLE public.plan_attempt_events ADD COLUMN IF NOT EXISTS attempt_content_revision bigint;
+        ALTER TABLE public.plan_attempt_events ADD COLUMN IF NOT EXISTS attempt_prereq_digest text;
+        ALTER TABLE public.plan_attempt_events ADD COLUMN IF NOT EXISTS claim_key text;
+
+        CREATE TABLE IF NOT EXISTS public.plan_claim_receipts (
+            root_node_id         uuid NOT NULL REFERENCES public.managed_plans(root_node_id) ON DELETE RESTRICT,
+            claim_key            text NOT NULL CHECK (claim_key ~ '^[A-Za-z0-9._~-]{1,128}$' AND claim_key NOT IN ('.', '..')),
+            request_fingerprint  text NOT NULL,
+            outcome              text NOT NULL CHECK (outcome IN ('claimed', 'no_ready_work')),
+            node_id              uuid REFERENCES public.plan_node_state(node_id) ON DELETE RESTRICT,
+            attempt_id           text,
+            attempt_epoch        bigint,
+            executor_ref         text,
+            content_revision     bigint,
+            content_digest       text,
+            content_snapshot     jsonb,
+            prereq_digest        text,
+            prereq_snapshot      jsonb,
+            event_seq            bigint,
+            actor                text NOT NULL,
+            created_at           timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (root_node_id, claim_key),
+            FOREIGN KEY (root_node_id, event_seq) REFERENCES public.plan_attempt_events(root_node_id, seq) ON DELETE RESTRICT,
+            CHECK (CASE outcome
+                WHEN 'claimed' THEN node_id IS NOT NULL AND attempt_id IS NOT NULL AND attempt_epoch IS NOT NULL
+                    AND content_revision IS NOT NULL AND content_digest IS NOT NULL AND content_snapshot IS NOT NULL
+                    AND prereq_digest IS NOT NULL AND prereq_snapshot IS NOT NULL AND event_seq IS NOT NULL
+                ELSE node_id IS NULL AND attempt_id IS NULL AND attempt_epoch IS NULL AND executor_ref IS NULL
+                    AND content_revision IS NULL AND content_digest IS NULL AND content_snapshot IS NULL
+                    AND prereq_digest IS NULL AND prereq_snapshot IS NULL AND event_seq IS NULL END)
+        );
+
         CREATE OR REPLACE FUNCTION public.hekate_plan_contract_active() RETURNS boolean
             LANGUAGE sql STABLE AS $$ SELECT coalesce(current_setting('hekate.plan_contract', true), '') = 'on' $$;
 
@@ -227,11 +263,12 @@ public static class PlanStoreSchema
             RETURN NULL;
         END $$;
 
-        -- Audit events are immutable even for the store (its write flag only permits INSERT).
+        -- Audit events and claim receipts are immutable even for the store (its write flag only
+        -- permits INSERT).
         CREATE OR REPLACE FUNCTION public.hekate_guard_events_immutable() RETURNS trigger
             LANGUAGE plpgsql AS $$
         BEGIN
-            PERFORM public.hekate_plan_fence('plan_attempt_events is append-only');
+            PERFORM public.hekate_plan_fence(format('%s is append-only', TG_TABLE_NAME));
             RETURN NULL;
         END $$;
 
@@ -252,6 +289,15 @@ public static class PlanStoreSchema
             FOR EACH ROW EXECUTE FUNCTION public.hekate_guard_events_immutable();
         DROP TRIGGER IF EXISTS trg_hekate_guard_events_truncate ON public.plan_attempt_events;
         CREATE TRIGGER trg_hekate_guard_events_truncate BEFORE TRUNCATE ON public.plan_attempt_events
+            FOR EACH STATEMENT EXECUTE FUNCTION public.hekate_guard_events_immutable();
+        DROP TRIGGER IF EXISTS trg_hekate_guard_receipts_insert ON public.plan_claim_receipts;
+        CREATE TRIGGER trg_hekate_guard_receipts_insert BEFORE INSERT ON public.plan_claim_receipts
+            FOR EACH ROW EXECUTE FUNCTION public.hekate_guard_plan_tables();
+        DROP TRIGGER IF EXISTS trg_hekate_guard_receipts_immutable ON public.plan_claim_receipts;
+        CREATE TRIGGER trg_hekate_guard_receipts_immutable BEFORE UPDATE OR DELETE ON public.plan_claim_receipts
+            FOR EACH ROW EXECUTE FUNCTION public.hekate_guard_events_immutable();
+        DROP TRIGGER IF EXISTS trg_hekate_guard_receipts_truncate ON public.plan_claim_receipts;
+        CREATE TRIGGER trg_hekate_guard_receipts_truncate BEFORE TRUNCATE ON public.plan_claim_receipts
             FOR EACH STATEMENT EXECUTE FUNCTION public.hekate_guard_events_immutable();
         DROP TRIGGER IF EXISTS trg_hekate_guard_event_seq ON public.managed_plans;
         CREATE TRIGGER trg_hekate_guard_event_seq BEFORE UPDATE ON public.managed_plans

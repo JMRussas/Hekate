@@ -150,6 +150,13 @@ public class ErrorCodeCoverageTests
             g = Ok(PlanRules.ReviseContent(g, Id("a"), Ctx(g, "a")));
             return Errors(Decide(g, "b", AcceptanceDecision.Accepted));
         },
+        [StalePrerequisites] = () =>
+        {
+            var g = Complete(new PlanBuilder().Node("a").Node("b").Dep("a", "b").Build(), "a");
+            g = Start(g, "b", "y");
+            g = Ok(PlanRules.ReviseContent(g, Id("a"), Ctx(g, "a")));
+            return Errors(FinishResult(g, "b", "art"));
+        },
     };
 
     public static IEnumerable<object[]> AllCodes() =>

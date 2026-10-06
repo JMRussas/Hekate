@@ -18,6 +18,10 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Frozen historical schema shapes for real upgrade tests. -->
+    <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\CodeStoragePoc.csproj" />
     <ProjectReference Include="..\Api\Api.csproj" />
   </ItemGroup>

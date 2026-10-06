@@ -126,10 +126,14 @@ public static class PlanRules
         if (isContainer)
         {
             if (s.Work != WorkStatus.Todo || s.AttemptId is not null || s.AttemptEpoch != 0 || s.ArtifactRef is not null
-                || s.Acceptance is not null || s.ExecutorRef is not null)
+                || s.Acceptance is not null || s.ExecutorRef is not null || s.AttemptContentRevision is not null || s.AttemptPrereqDigest is not null)
                 yield return new(InvalidState, "A container cannot hold work, attempt, artifact or acceptance state (it is derived).", id);
             yield break;
         }
+        if (s.AttemptId is null && (s.AttemptContentRevision is not null || s.AttemptPrereqDigest is not null))
+            yield return new(InvalidState, "Attempt pins require a current attempt.", id);
+        if ((s.AttemptContentRevision is null) != (s.AttemptPrereqDigest is null) || s.AttemptContentRevision < 1)
+            yield return new(InvalidState, "Attempt pins must be both set (content revision >= 1) or both absent.", id);
         if (s.ExecutorRef is not null && (s.AttemptId is null || !IsValidExecutorRef(s.ExecutorRef)))
             yield return new(InvalidState, "An executor reference needs a current attempt and must be 1-256 printable ASCII characters.", id);
         switch (s.Work)
@@ -161,8 +165,24 @@ public static class PlanRules
     // Derived state (readiness is never stored)
     // -----------------------------------------------------------------------
 
-    /// <summary>Acceptance as it applies now: Stale if content, artifact or attempt changed, or the node is no longer Done.</summary>
-    public static EffectiveAcceptance EffectiveAcceptanceOf(PlanGraph g, Guid nodeId)
+    /// <summary>
+    /// Acceptance as it applies now: Stale if content, artifact or attempt changed, or the node is
+    /// no longer Done. For a PINNED attempt (plan 019) it is also Stale when the node's content
+    /// revision or prerequisite digest drifted from the attempt's pins. Legacy (unpinned) records
+    /// keep the 2a/2b1 meaning.
+    /// </summary>
+    public static EffectiveAcceptance EffectiveAcceptanceOf(PlanGraph g, Guid nodeId) => EffectiveAcceptanceOf(g, nodeId, null);
+
+    private static EffectiveAcceptance EffectiveAcceptanceOf(PlanGraph g, Guid nodeId, Index? ix)
+    {
+        var raw = RawAcceptance(g, nodeId);
+        if (raw is EffectiveAcceptance.None or EffectiveAcceptance.Stale) return raw;
+        var s = g.StateOf(nodeId);
+        if (s.AttemptContentRevision is null && s.AttemptPrereqDigest is null) return raw;   // legacy record
+        return PinsHold(g, nodeId, ix) ? raw : EffectiveAcceptance.Stale;
+    }
+
+    private static EffectiveAcceptance RawAcceptance(PlanGraph g, Guid nodeId)
     {
         var s = g.StateOf(nodeId);
         var a = s.Acceptance;
@@ -171,6 +191,43 @@ public static class PlanRules
         if (s.Work != WorkStatus.Done || a.ContentRevision != n.ContentRevision || a.ArtifactRef != s.ArtifactRef || a.AttemptEpoch != s.AttemptEpoch)
             return EffectiveAcceptance.Stale;
         return a.Decision == AcceptanceDecision.Accepted ? EffectiveAcceptance.Accepted : EffectiveAcceptance.Rejected;
+    }
+
+    /// <summary>True when the attempt's content and prerequisite pins still match. Fails closed on a corrupt graph.</summary>
+    private static bool PinsHold(PlanGraph g, Guid nodeId, Index? ix)
+    {
+        var s = g.StateOf(nodeId);
+        if (s.AttemptContentRevision is null || s.AttemptPrereqDigest is null) return false;
+        if (s.AttemptContentRevision != g.Nodes[nodeId].ContentRevision) return false;
+        try { return s.AttemptPrereqDigest == (ix ?? new Index(g)).PrereqSnapshot(nodeId).Digest; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    /// <summary>
+    /// Why the current attempt's pins no longer hold, or null. Order: missing pins (an unpinned
+    /// legacy attempt) and content drift are stale_content; prerequisite drift is stale_prerequisites.
+    /// </summary>
+    private static PlanError? PinFailure(PlanGraph g, Guid nodeId, Index ix)
+    {
+        var s = g.StateOf(nodeId);
+        var rev = g.Nodes[nodeId].ContentRevision;
+        if (s.AttemptContentRevision is null || s.AttemptPrereqDigest is null)
+            return new PlanError(StaleContent, "The attempt has no content/prerequisite pins (started before pinning); start a new attempt.", nodeId);
+        if (s.AttemptContentRevision != rev)
+            return new PlanError(StaleContent, $"The attempt was pinned to content revision {s.AttemptContentRevision}; current is {rev}.", nodeId);
+        if (s.AttemptPrereqDigest != ix.PrereqSnapshot(nodeId).Digest)
+            return new PlanError(StalePrerequisites, "The attempt's prerequisites changed since it started.", nodeId);
+        return null;
+    }
+
+    /// <summary>
+    /// The canonical prerequisite snapshot of a leaf (plan 019 §3). Requires a valid graph; throws
+    /// InvalidOperationException otherwise.
+    /// </summary>
+    public static PrereqSnapshot PrerequisiteSnapshot(PlanGraph g, Guid leafId)
+    {
+        if (ValidateGraph(g).Length > 0) throw new InvalidOperationException("Prerequisite snapshots need a valid plan graph.");
+        return new Index(g).PrereqSnapshot(leafId);
     }
 
     /// <summary>
@@ -292,20 +349,28 @@ public static class PlanRules
                 var blockers = ix.BlockersFor(nodeId);
                 if (!blockers.IsEmpty)
                     return new OpResult(OpOutcome.Rejected, g, [new PlanError(NotReady, "Predecessor gates are not satisfied.", nodeId)], blockers);
-                // Start and reopen bind the given executor reference; a reopen never inherits the old one.
-                apply = st => st with { Work = WorkStatus.InProgress, AttemptId = attemptId, AttemptEpoch = st.AttemptEpoch + 1, ExecutorRef = executorRef };
+                // Start and reopen bind the given executor reference (a reopen never inherits the old
+                // one) and pin the content revision and prerequisite digest the attempt works against.
+                var pinRevision = g.Nodes[nodeId].ContentRevision;
+                var pinDigest = ix.PrereqSnapshot(nodeId).Digest;
+                apply = st => st with
+                {
+                    Work = WorkStatus.InProgress, AttemptId = attemptId, AttemptEpoch = st.AttemptEpoch + 1, ExecutorRef = executorRef,
+                    AttemptContentRevision = pinRevision, AttemptPrereqDigest = pinDigest,
+                };
                 break;
             case (WorkStatus.InProgress, WorkStatus.Done or WorkStatus.Todo):
                 if (attemptId != s.AttemptId || attemptEpoch != s.AttemptEpoch)
                     return Rejected(g, new PlanError(StaleAttempt, $"Attempt '{attemptId}'/{attemptEpoch} is not the current attempt.", nodeId));
                 if (executorRef is not null && executorRef != s.ExecutorRef)
                     return Rejected(g, new PlanError(StaleAttempt, "executorRef does not match the current attempt's executor reference.", nodeId));
+                if (to == WorkStatus.Done && PinFailure(g, nodeId, ix) is { } pinError) return Rejected(g, pinError);
                 apply = to == WorkStatus.Done
-                    ? st => st with { Work = WorkStatus.Done, ArtifactRef = artifactRef }                  // keeps ExecutorRef
-                    : st => st with { Work = WorkStatus.Todo, AttemptId = null, ExecutorRef = null };
+                    ? st => st with { Work = WorkStatus.Done, ArtifactRef = artifactRef }                  // keeps ExecutorRef and pins
+                    : st => st with { Work = WorkStatus.Todo, AttemptId = null, ExecutorRef = null, AttemptContentRevision = null, AttemptPrereqDigest = null };
                 break;
             case (_, WorkStatus.Cancelled):
-                apply = st => st with { Work = WorkStatus.Cancelled, AttemptId = null, ExecutorRef = null };
+                apply = st => st with { Work = WorkStatus.Cancelled, AttemptId = null, ExecutorRef = null, AttemptContentRevision = null, AttemptPrereqDigest = null };
                 break;
             default: // Cancelled -> Todo
                 apply = st => st with { Work = WorkStatus.Todo };
@@ -349,6 +414,7 @@ public static class PlanRules
             var blockers = ix.BlockersFor(nodeId);
             if (!blockers.IsEmpty)
                 return new OpResult(OpOutcome.Rejected, g, [new PlanError(GatesNotSatisfied, "Upstream gates no longer hold; cannot accept.", nodeId)], blockers);
+            if (PinFailure(g, nodeId, ix) is { } pinError) return Rejected(g, pinError);
         }
 
         var record = new AcceptanceRecord(decision, n.ContentRevision, s.ArtifactRef, s.AttemptId, s.AttemptEpoch, ctx.Actor, evidenceRef);
@@ -408,7 +474,7 @@ public static class PlanRules
     ];
 
     /// <summary>Unambiguous length-prefixed encoding of every semantically relevant field.</summary>
-    private static string Fingerprint(params object?[] parts)
+    internal static string Fingerprint(params object?[] parts)
     {
         var sb = new StringBuilder();
         foreach (var p in parts)
@@ -630,7 +696,7 @@ public static class PlanRules
                     var leafGatesHold = BlockersFor(c).IsEmpty;
                     allComplete &= s.Work == WorkStatus.Done;
                     anyRejected |= IsCurrentRejection(s);
-                    allAccepted &= EffectiveAcceptanceOf(_g, c) == EffectiveAcceptance.Accepted && leafGatesHold;
+                    allAccepted &= EffectiveAcceptanceOf(_g, c, this) == EffectiveAcceptance.Accepted && leafGatesHold;
                     gatesHold &= leafGatesHold;
                 }
             }
@@ -685,11 +751,136 @@ public static class PlanRules
             if (!BlockersFor(predecessorId).IsEmpty) return BlockerReasons.PredecessorUpstreamChanged;
             if (gate == GatePolicy.Accepted)
             {
-                var eff = EffectiveAcceptanceOf(_g, predecessorId);
+                var eff = EffectiveAcceptanceOf(_g, predecessorId, this);
                 if (eff == EffectiveAcceptance.Stale) return BlockerReasons.PredecessorAcceptanceStale;
                 if (eff != EffectiveAcceptance.Accepted) return BlockerReasons.PredecessorNotAccepted;
             }
             return null;
+        }
+
+        private readonly Dictionary<Guid, PrereqSnapshot> _prereqs = new();
+
+        /// <summary>
+        /// Canonical prerequisite snapshot of a leaf (plan 019 §3). Built from RAW stored facts
+        /// only, never from derived or pin-aware acceptance. Covers the leaf's owner chain, every
+        /// declared edge (effective gate) of every visited owner, and the closure over predecessors:
+        /// a leaf predecessor contributes its raw state, acceptance and pins, and its own owners'
+        /// declared edges are followed; a container contributes its child ids (sorted by id) and
+        /// every child is visited. The target leaf's own state, all StateRevisions, names and
+        /// sibling order are excluded. Throws InvalidOperationException on a corrupt hierarchy.
+        /// </summary>
+        public PrereqSnapshot PrereqSnapshot(Guid leafId)
+        {
+            if (_prereqs.TryGetValue(leafId, out var cached)) return cached;
+            if (!_g.Nodes.ContainsKey(leafId)) throw new InvalidOperationException($"Node {leafId} is not in the plan.");
+
+            var chain = BoundedOwners(leafId);
+            var chainSet = chain.ToHashSet();
+            var upstreamOwners = new SortedSet<Guid>();
+            var edges = new SortedSet<(Guid Owner, Guid Pred)>();
+            var gates = new Dictionary<(Guid, Guid), GatePolicy>();
+            var nodes = new SortedDictionary<Guid, PrereqNode>();
+            var queue = new Queue<Guid>();
+            var walkedOwners = new HashSet<Guid>();
+
+            void WalkOwners(IEnumerable<Guid> owners)
+            {
+                foreach (var owner in owners)
+                {
+                    if (!walkedOwners.Add(owner)) continue;
+                    if (!chainSet.Contains(owner)) upstreamOwners.Add(owner);
+                    if (!_declared.TryGetValue(owner, out var deps)) continue;
+                    foreach (var d in deps)
+                    {
+                        edges.Add((owner, d.PredecessorId));
+                        gates[(owner, d.PredecessorId)] = d.Gate ?? _g.DefaultGate;
+                        queue.Enqueue(d.PredecessorId);
+                    }
+                }
+            }
+
+            WalkOwners(chain);
+            var budget = (long)_g.Nodes.Count * (_g.Nodes.Count + 1) + 16;
+            while (queue.Count > 0)
+            {
+                if (--budget < 0) throw new InvalidOperationException("Prerequisite closure did not terminate.");
+                var id = queue.Dequeue();
+                if (id == leafId || nodes.ContainsKey(id)) continue;
+                if (!_g.Nodes.TryGetValue(id, out var n)) throw new InvalidOperationException($"Predecessor {id} is not in the plan.");
+                if (IsContainer(id))
+                {
+                    var kids = ChildrenOf(id).OrderBy(c => c).ToImmutableArray();
+                    nodes[id] = new PrereqNode(id, "container", n.ParentId, n.NodeType, n.ContentRevision, kids,
+                        null, null, 0, null, null, null, null);
+                    foreach (var c in kids) queue.Enqueue(c);
+                }
+                else
+                {
+                    var s = _g.StateOf(id);
+                    nodes[id] = new PrereqNode(id, "leaf", n.ParentId, n.NodeType, n.ContentRevision, [],
+                        s.Work, s.AttemptId, s.AttemptEpoch, s.ArtifactRef, s.Acceptance, s.AttemptContentRevision, s.AttemptPrereqDigest);
+                }
+                WalkOwners(BoundedOwners(id));
+            }
+
+            var owners = chain.Concat(upstreamOwners)
+                .Select(o => new PrereqOwner(o, _g.Nodes[o].NodeType, _g.Nodes[o].ParentId)).ToImmutableArray();
+            var declared = edges.Select(e => new PrereqEdge(e.Owner, e.Pred, gates[e])).ToImmutableArray();
+            var nodeList = nodes.Values.ToImmutableArray();
+            var snapshot = new PrereqSnapshot(DigestOf(leafId, chain.Count, owners, declared, nodeList), owners, declared, nodeList);
+            _prereqs[leafId] = snapshot;
+            return snapshot;
+        }
+
+        /// <summary>OwnersOf with a cycle/dangling-parent guard (fails closed).</summary>
+        private List<Guid> BoundedOwners(Guid id)
+        {
+            var result = new List<Guid>();
+            var seen = new HashSet<Guid>();
+            var current = id;
+            while (true)
+            {
+                if (!seen.Add(current) || !_g.Nodes.TryGetValue(current, out var n))
+                    throw new InvalidOperationException($"Corrupt hierarchy at {current}.");
+                result.Add(current);
+                if (current == _g.RootId || n.ParentId is not Guid p) return result;
+                current = p;
+            }
+        }
+
+        private static string DigestOf(Guid leafId, int targetChainLength, ImmutableArray<PrereqOwner> owners,
+            ImmutableArray<PrereqEdge> declared, ImmutableArray<PrereqNode> nodes)
+        {
+            var parts = new List<object?> { "hekate-prereq/v1", leafId, targetChainLength, owners.Length };
+            foreach (var o in owners) parts.AddRange([o.Id, o.NodeType, o.ParentId]);
+            parts.Add(declared.Length);
+            foreach (var e in declared) parts.AddRange([e.OwnerId, e.PredecessorId, Snake(e.Gate)]);
+            parts.Add(nodes.Length);
+            foreach (var n in nodes)
+            {
+                parts.AddRange([n.Id, n.Kind, n.ParentId, n.NodeType, n.ContentRevision, n.Children.Length]);
+                foreach (var c in n.Children) parts.Add(c);
+                parts.AddRange([n.Work is { } w ? Snake(w) : null, n.AttemptId, n.AttemptEpoch, n.ArtifactRef, n.PinnedContentRevision, n.PinnedPrereqDigest]);
+                var a = n.Acceptance;
+                if (a is null) parts.Add(null);
+                else parts.AddRange(["acceptance", Snake(a.Decision), a.ContentRevision, a.ArtifactRef, a.AttemptId, a.AttemptEpoch, a.DecidedBy, a.EvidenceRef]);
+            }
+            var bytes = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Fingerprint([.. parts])));
+            return Convert.ToHexStringLower(bytes);
+        }
+
+        /// <summary>Stable snake_case enum name (InProgress -> in_progress); throws on an undefined value.</summary>
+        private static string Snake<T>(T value) where T : struct, Enum
+        {
+            if (!Enum.IsDefined(value)) throw new InvalidOperationException($"Undefined {typeof(T).Name} value {value}.");
+            var name = value.ToString();
+            var sb = new StringBuilder();
+            for (var i = 0; i < name.Length; i++)
+            {
+                if (char.IsUpper(name[i]) && i > 0) sb.Append('_');
+                sb.Append(char.ToLowerInvariant(name[i]));
+            }
+            return sb.ToString();
         }
     }
 }

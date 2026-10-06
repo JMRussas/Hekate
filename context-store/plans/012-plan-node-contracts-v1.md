@@ -4,6 +4,7 @@
 - **Increment 2a:** pure rules, implemented.
 - **Increment 2b1:** PostgreSQL store plus an opt-in loopback API, implemented and live-tested on a disposable database.
 - **Increment 3a:** append-only attempt and review provenance, with an optional opaque executor reference; accepted. See [016](016-attempt-provenance-audit.md) and [017](017-attempt-provenance-validation.md).
+- **Increment 3b1:** durable claim receipts plus attempt content and prerequisite pins (strict `stale_prerequisites`); implemented, independent root runs passed (172 pure / 48 live / 59 HTTP), **accepted by codex-hekate**. Leases are deferred to 3b2. See [019](019-durable-claims-and-pins.md) and [020](020-durable-claims-validation.md).
 
 Not wired to execution, UI, auth, or legacy-plan enrollment. See *Increment 2b1* below.
 **Goal: one engine-neutral definition of how plan nodes, dependencies, work state and acceptance behave, before any storage or execution integration.**
@@ -119,6 +120,7 @@ Consequences:
 - Reopening a node makes its acceptance `Stale`.
 - Finishing a new attempt does not revive the old approval, even with the same artifact, because the epoch changed.
 - A stale acceptance never satisfies an `Accepted` gate.
+- Since 3b1, pinned attempts also require their own content and canonical prerequisite pins to match. A changed dependency can stale acceptance even when its new gate is green. Legacy unpinned completed records retain their earlier meaning; new acceptance requires a pinned attempt. See [019](019-durable-claims-and-pins.md).
 
 ## Work transitions (leaves only)
 
@@ -126,10 +128,12 @@ Consequences:
 |---|---|---|
 | Todo → InProgress | attempt id; gates satisfied (`not_ready` with blockers otherwise) | issues epoch+1 |
 | Done → InProgress (reopen) | attempt id; gates satisfied | issues epoch+1; acceptance becomes Stale |
-| InProgress → Done | current attempt id **and** epoch | sets artifact (may be null) |
+| InProgress → Done | current attempt id **and** epoch; content and prerequisite pins still match | sets artifact (may be null) |
 | InProgress → Todo (release) | current attempt id **and** epoch | clears attempt id |
 | Todo / InProgress / Done → Cancelled | — | clears attempt id (fences the worker) |
 | Cancelled → Todo (restore) | — | — |
+
+Start/reopen records content and prerequisite pins; release/cancel clears them. Unpinned legacy attempts remain readable and releasable but cannot finish without a fresh start.
 
 Every other pair is rejected with `invalid_transition`. That includes same-status requests, Todo → Done and Cancelled → Done. `Done` and `Cancelled` are terminal unless explicitly reopened or restored.
 
@@ -212,7 +216,8 @@ These codes are part of the contract surface. `ErrorCodeCoverageTests` proves th
 | `stale_attempt` | finish/release/decide with an attempt id or epoch that is not current |
 | `not_ready` | start/reopen while gates are unsatisfied (blockers returned) |
 | `not_completed` | a decision on work that is not `Done` |
-| `stale_content` | the reviewed content revision ≠ current |
+| `stale_content` | reviewed content or the attempt content pin differs from current; also an unpinned legacy attempt cannot finish or receive new acceptance |
+| `stale_prerequisites` | the current prerequisite snapshot differs from the attempt pin |
 | `stale_artifact` | the reviewed artifact ≠ current |
 | `artifact_required` | accepting work that has no artifact |
 | `evidence_required` | a decision without an evidence reference |
@@ -313,7 +318,7 @@ Every precondition is **required**; an omitted field is 400 `missing_field`. Sta
 |---|---|
 | 400 | invalid input or enum |
 | 404 | not found |
-| 409 | `stale_revision`, `stale_content`, `operation_key_reused`, `revision_exhausted`, `plan_exists`, `node_exists`, `concurrent_modification`, `managed_plan_protected` |
+| 409 | `stale_revision`, `stale_content`, `stale_prerequisites`, `operation_key_reused`, `revision_exhausted`, `plan_exists`, `node_exists`, `concurrent_modification`, `managed_plan_protected` |
 | 422 | other rule codes, with blockers |
 | 503 | `projection_failed` |
 
@@ -344,6 +349,6 @@ Enum values are snake_case names.
 
 - There is no container-level review; container acceptance is derived only.
 - There is no explicit descope operation, so cancelling a child keeps its container incomplete.
-- Each node remembers only one operation key for replay.
+- Generic per-node operations remember only one operation key for replay. Claim requests have separate immutable plan-scoped receipts and survive later node mutations (3b1).
 - Adding a child to a leaf that already has work state makes the snapshot invalid (`invalid_state`). Restructuring started work needs an explicit future operation.
 - Nodes are created only through `CreatePlan` (new roots) and `AddChild`. **Reparenting and deletion are not supported**: the fence blocks them for managed nodes, and no contract operation exists yet.

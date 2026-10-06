@@ -11,6 +11,7 @@
 | 2a — pure plan contracts (`PlanContracts/`) | **Accepted** by codex-hekate, pure scope only. |
 | 2b1 — PostgreSQL store + opt-in loopback API + write fence | **Accepted by codex-hekate after independent final runs.** It covers **new** managed plans only. The fence blocks the generic writers below for managed nodes (409 `managed_plan_protected`). See [012](012-plan-node-contracts-v1.md) and the evidence in [014](014-plan-contract-integration-validation.md). |
 | 3a — attempt and review provenance | **Accepted** after independent 146 pure / 34 live / 39 HTTP checks. Append-only audit, no execution adapter or worker claims. See [016](016-attempt-provenance-audit.md) and [017](017-attempt-provenance-validation.md). |
+| 3b1 — durable claim receipts + attempt pins | **Accepted by codex-hekate after independent verification.** Independent root runs passed 172 pure / 48 live / 59 HTTP. Receipts and `stillCurrent` are factual correlation, not authority. No leases (3b2), no execution adapter, no worker activation. See [019](019-durable-claims-and-pins.md) and [020](020-durable-claims-validation.md). |
 | 2b, remaining | Legacy-plan enrollment, the execution-ledger link, and the fate of each writer (section D) are **not started and not approved**. |
 
 ## Method and labels

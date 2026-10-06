@@ -86,7 +86,11 @@ public sealed record NodeState(
     // Caller-provided opaque correlation to an executor's own run record (plan 016). Never
     // verified identity or claim authority; bound on start/reopen, kept on finish, cleared
     // with the attempt on release/cancel.
-    string? ExecutorRef = null)
+    string? ExecutorRef = null,
+    // Plan 019 pins, set on start/reopen, kept on finish, cleared on release/cancel: the content
+    // revision and prerequisite digest this attempt was started against. NULL = legacy attempt.
+    long? AttemptContentRevision = null,
+    string? AttemptPrereqDigest = null)
 {
     public static NodeState Initial { get; } = new(WorkStatus.Todo, 0, null, 0, null, null, null, null);
 }
@@ -203,7 +207,30 @@ public static class PlanErrorCodes
     public const string GatesNotSatisfied = "gates_not_satisfied";
     public const string InvalidChild = "invalid_child";
     public const string InvalidExecutorRef = "invalid_executor_ref";
+    public const string StalePrerequisites = "stale_prerequisites";
 }
+
+/// <summary>
+/// Canonical prerequisite snapshot of a leaf (plan 019 §3): the work node's parent chain, every
+/// declared gate on the chain and on the recursive closure of gating predecessors, and raw state
+/// facts of the closure's nodes. Built from RAW state only (never pin-aware acceptance).
+/// </summary>
+public sealed record PrereqSnapshot(
+    string Digest,
+    ImmutableArray<PrereqOwner> Chain,
+    ImmutableArray<PrereqEdge> Declared,
+    ImmutableArray<PrereqNode> Nodes);
+
+public sealed record PrereqOwner(Guid Id, string NodeType, Guid? ParentId);
+
+public sealed record PrereqEdge(Guid OwnerId, Guid PredecessorId, GatePolicy Gate);
+
+/// <summary>Leaf or container record. Containers list child ids (sorted by id); names and sibling order are never pinned.</summary>
+public sealed record PrereqNode(
+    Guid Id, string Kind, Guid? ParentId, string NodeType, long ContentRevision,
+    ImmutableArray<Guid> Children,
+    WorkStatus? Work, string? AttemptId, long AttemptEpoch, string? ArtifactRef, AcceptanceRecord? Acceptance,
+    long? PinnedContentRevision, string? PinnedPrereqDigest);
 
 public enum AuditEventKind
 {
@@ -232,7 +259,10 @@ public sealed record AuditEvent(
     string? EvidenceRef,
     string? ContentDigest,
     string Actor,
-    string OperationKey);
+    string OperationKey,
+    long? AttemptContentRevision = null,
+    string? AttemptPrereqDigest = null,
+    string? ClaimKey = null);
 
 /// <summary>Stable blocker reasons, in the precedence order they are reported.</summary>
 public static class BlockerReasons

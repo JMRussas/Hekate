@@ -27,7 +27,8 @@ public static class PlanAuditEvents
         AuditEvent Make(AuditEventKind kind, NodeState attempt, string? artifact = null, AcceptanceRecord? decision = null, string? digest = null) =>
             new(nodeId, a.StateRevision, kind, b.Work, a.Work, contentRevision,
                 attempt.AttemptId, attempt.AttemptEpoch, attempt.ExecutorRef, artifact,
-                decision?.Decision, decision?.ContentRevision, decision?.EvidenceRef, digest, ctx.Actor, ctx.OperationKey);
+                decision?.Decision, decision?.ContentRevision, decision?.EvidenceRef, digest, ctx.Actor, ctx.OperationKey,
+                attempt.AttemptContentRevision, attempt.AttemptPrereqDigest);
 
         switch (op)
         {
@@ -37,7 +38,7 @@ public static class PlanAuditEvents
                 return [Make(AuditEventKind.ContentRevised, a, digest: contentDigest)];
         }
 
-        // Transition: classify by (from, to). Release/cancel record the attempt BEFORE it was cleared.
+        // Transition: classify by (from, to). Release/cancel record the attempt (and its pins) BEFORE it was cleared.
         return (b.Work, a.Work) switch
         {
             (WorkStatus.Todo, WorkStatus.InProgress) => [Make(AuditEventKind.AttemptStarted, a)],

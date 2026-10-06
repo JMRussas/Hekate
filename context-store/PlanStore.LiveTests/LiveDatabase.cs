@@ -9,6 +9,16 @@ namespace CodeStoragePoc.PlanStore.LiveTests;
 /// </summary>
 public sealed class LiveDatabase : IAsyncLifetime
 {
+    /// <summary>xUnit fixture constructor: the current plan-contract schema is ensured.</summary>
+    public LiveDatabase() { }
+
+    // xUnit fixtures may have only one public constructor.
+    private LiveDatabase(bool ensurePlanSchema) => _ensurePlanSchema = ensurePlanSchema;
+    private readonly bool _ensurePlanSchema = true;
+
+    /// <summary>A base-only database (no plan-contract schema) for restoring a historical shape.</summary>
+    public static LiveDatabase WithoutPlanSchema() => new(false);
+
     public const string Prefix = "hekate_plan_live_";
     public string Name { get; } = $"{Prefix}{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}"[..48];
     public string ConnectionString { get; private set; } = "";
@@ -60,7 +70,8 @@ public sealed class LiveDatabase : IAsyncLifetime
             }
         }
         await CodeStoragePoc.DbLayer.Schema.Initialize(ConnectionString);
-        await CodeStoragePoc.PlanContracts.PlanStoreSchema.Ensure(ConnectionString);
+        // WithoutPlanSchema() gives an upgrade test a base-only database to restore a historical shape into.
+        if (_ensurePlanSchema) await CodeStoragePoc.PlanContracts.PlanStoreSchema.Ensure(ConnectionString);
         await Exec("INSERT INTO public.projects (id, name, root_path) VALUES (@p, 'plan-live-tests', 'disposable://plan-live-tests')", ("p", ProjectId));
     }
 

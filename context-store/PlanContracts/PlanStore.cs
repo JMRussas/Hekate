@@ -33,6 +33,8 @@ public static class PlanStoreErrorCodes
     public const string ProjectionFailed = "projection_failed";
     public const string ManagedPlanProtected = "managed_plan_protected";
     public const string UnsupportedContractVersion = "unsupported_contract_version";
+    public const string ClaimNotFound = "claim_not_found";
+    public const string InvalidInput = "invalid_input";
 }
 
 /// <summary>Contract content of a node: value plus content attributes (no null attribute values).</summary>
@@ -62,6 +64,26 @@ public sealed record PlanSnapshot(
     ImmutableDictionary<Guid, string?> Names,
     ImmutableDictionary<Guid, PlanContent> Contents,
     string ContractVersion);
+
+/// <summary>
+/// The immutable historical answer to one claim request (plan 019). Outcome is "claimed" or
+/// "no_ready_work". Snapshots are canonical JSON text. Not current authority.
+/// </summary>
+public sealed record ClaimReceipt(
+    Guid RootId, string ClaimKey, string Outcome, Guid? NodeId, string? AttemptId, long? AttemptEpoch, string? ExecutorRef,
+    long? ContentRevision, string? ContentDigest, string? ContentSnapshotJson, string? PrereqDigest, string? PrereqSnapshotJson,
+    long? EventSeq, string Actor, DateTime CreatedAt);
+
+/// <summary>The claimed node's current attempt facts (null when unreadable or for no_ready_work).</summary>
+public sealed record ClaimCurrent(WorkStatus Work, string? AttemptId, long AttemptEpoch);
+
+public sealed record ClaimResult(ClaimReceipt? Receipt, bool Replayed, bool StillCurrent, ClaimCurrent? Current, ImmutableArray<PlanError> Errors)
+{
+    public bool Ok => Errors.IsEmpty;
+
+    internal static ClaimResult Fail(string code, string message) => new(null, false, false, null, [new PlanError(code, message)]);
+    internal static ClaimResult From(PlanStoreResult failed) => new(null, false, false, null, failed.Errors);
+}
 
 public sealed class PlanStore(string connectionString, string graphName = "code_graph")
 {
@@ -126,6 +148,9 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
         }
         if (await Exists(conn, tx, "SELECT 1 FROM public.nodes WHERE id = @id", rootId))
             return await Abort(tx, PlanStoreResult.Fail(PlanStoreErrorCodes.NodeExists, $"Node {rootId} already exists and is not a managed plan.", rootId));
+        if (IsReservedOperationKey(ctx.OperationKey))
+            return await Abort(tx, PlanStoreResult.Fail(PlanErrorCodes.InvalidOperationKey,
+                $"Operation keys starting with '{ReservedClaimKeyPrefix}' are reserved for claims.", rootId));
         if (ctx.ExpectedStateRevision != 0)
             return await Abort(tx, PlanStoreResult.Fail(PlanErrorCodes.StaleRevision, "A new plan is created with expected state revision 0.", rootId));
 
@@ -165,25 +190,26 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
             async (conn, tx, before) =>
                 !before.Nodes.ContainsKey(childId) && await Exists(conn, tx, "SELECT 1 FROM public.nodes WHERE id = @id", childId)
                     ? PlanStoreResult.Fail(PlanStoreErrorCodes.NodeExists, $"Node id {childId} is already in use.", childId)
-                    : null);
+                    : null,
+            operationKey: ctx.OperationKey);
     }
 
     public Task<PlanStoreResult> AddDependencyAsync(Guid successorId, Guid predecessorId, GatePolicy? gate, OperationContext ctx) =>
-        MutateAsync(successorId, g => PlanRules.AddDependency(g, predecessorId, successorId, gate, ctx), ctx.Actor);
+        MutateAsync(successorId, g => PlanRules.AddDependency(g, predecessorId, successorId, gate, ctx), ctx.Actor, operationKey: ctx.OperationKey);
 
     public Task<PlanStoreResult> RemoveDependencyAsync(Guid successorId, Guid predecessorId, OperationContext ctx) =>
-        MutateAsync(successorId, g => PlanRules.RemoveDependency(g, predecessorId, successorId, ctx), ctx.Actor);
+        MutateAsync(successorId, g => PlanRules.RemoveDependency(g, predecessorId, successorId, ctx), ctx.Actor, operationKey: ctx.OperationKey);
 
     public Task<PlanStoreResult> TransitionAsync(Guid nodeId, WorkStatus to, OperationContext ctx, string? attemptId, long? attemptEpoch,
         string? artifactRef, string? executorRef = null) =>
         MutateAsync(nodeId, g => PlanRules.Transition(g, nodeId, to, ctx, attemptId, attemptEpoch, artifactRef, executorRef), ctx.Actor,
-            audit: (r, before) => PlanAuditEvents.Derive(r, before, nodeId, AuditedOperation.Transition, ctx));
+            audit: (r, before) => PlanAuditEvents.Derive(r, before, nodeId, AuditedOperation.Transition, ctx), operationKey: ctx.OperationKey);
 
     public Task<PlanStoreResult> DecideAsync(
         Guid nodeId, AcceptanceDecision decision, long reviewedContentRevision, string? reviewedArtifactRef,
         long reviewedAttemptEpoch, string? evidenceRef, OperationContext ctx) =>
         MutateAsync(nodeId, g => PlanRules.Decide(g, nodeId, decision, reviewedContentRevision, reviewedArtifactRef, reviewedAttemptEpoch, evidenceRef, ctx), ctx.Actor,
-            audit: (r, before) => PlanAuditEvents.Derive(r, before, nodeId, AuditedOperation.Decide, ctx));
+            audit: (r, before) => PlanAuditEvents.Derive(r, before, nodeId, AuditedOperation.Decide, ctx), operationKey: ctx.OperationKey);
 
     /// <summary>Replace a leaf's contract content (value + content attributes) and bump its content revision.</summary>
     public Task<PlanStoreResult> ReviseContentAsync(Guid nodeId, PlanContent content, long expectedContentRevision, OperationContext ctx)
@@ -194,7 +220,7 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
             g => PlanRules.ReviseContent(g, nodeId, ctx, digest, expectedContentRevision),
             ctx.Actor,
             (conn, tx, before, after) => WriteContent(conn, tx, nodeId, content, ctx.Actor),
-            audit: (r, before) => PlanAuditEvents.Derive(r, before, nodeId, AuditedOperation.ReviseContent, ctx, digest));
+            audit: (r, before) => PlanAuditEvents.Derive(r, before, nodeId, AuditedOperation.ReviseContent, ctx, digest), operationKey: ctx.OperationKey);
     }
 
     /// <summary>Re-run the AGE projection for a plan (idempotent repair).</summary>
@@ -222,6 +248,217 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
     }
 
     // -----------------------------------------------------------------------
+    // Claims (plan 019)
+    // -----------------------------------------------------------------------
+
+    /// <summary>Generic operation keys may not start with this; a claim's start uses prefix + claimKey.</summary>
+    public const string ReservedClaimKeyPrefix = "hekate-claim:";
+
+    public static bool IsReservedOperationKey(string? key) => key is not null && key.StartsWith(ReservedClaimKeyPrefix, StringComparison.Ordinal);
+
+    /// <summary>1-128 of [A-Za-z0-9._~-] (URL-safe, unreserved), except the dot segments "." and "..".</summary>
+    public static bool IsValidClaimKey(string? key) =>
+        key is { Length: >= 1 and <= 128 } && key is not "." and not ".."
+        && key.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '~' or '-');
+
+    private static readonly System.Text.Json.JsonSerializerOptions SnapshotJson = new()
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.SnakeCaseLower) },
+    };
+
+    /// <summary>
+    /// Durable claim: one transaction under the project lock. An existing receipt for (root, claimKey)
+    /// is read FIRST and replayed without any write (operation_key_reused on a different payload).
+    /// Otherwise the first ready leaf (hierarchy order) is started with operation key
+    /// "hekate-claim:&lt;claimKey&gt;", its attempt_started event carries claim_key, and the receipt
+    /// (with content and prerequisite snapshots) is inserted; or a no_ready_work receipt is
+    /// recorded. Both are writes: the projection is reconciled and any failure leaves nothing.
+    /// </summary>
+    public async Task<ClaimResult> ClaimAsync(Guid rootId, string claimKey, string attemptId, string? executorRef, string actor)
+    {
+        if (!IsValidClaimKey(claimKey))
+            return ClaimResult.Fail(PlanStoreErrorCodes.InvalidInput, "claimKey must be 1-128 characters of [A-Za-z0-9._~-] and not '.' or '..'.");
+        if (string.IsNullOrWhiteSpace(attemptId) || attemptId.Length > 256)
+            return ClaimResult.Fail(PlanStoreErrorCodes.InvalidInput, "attemptId must be 1-256 characters.");
+        if (string.IsNullOrWhiteSpace(actor) || actor.Length > 256)
+            return ClaimResult.Fail(PlanStoreErrorCodes.InvalidInput, "actor must be 1-256 characters.");
+        if (executorRef is not null && !PlanRules.IsValidExecutorRef(executorRef))
+            return ClaimResult.Fail(PlanErrorCodes.InvalidExecutorRef, "executorRef must be 1-256 printable ASCII characters (no spaces).");
+        var fingerprint = PlanRules.Fingerprint("claim", actor, attemptId, executorRef);
+
+        await using var conn = new NpgsqlConnection(connectionString);
+        await conn.OpenAsync();
+        await using var tx = await conn.BeginTransactionAsync();
+        await OpenFence(conn, tx);
+        var project = await ProjectOfRoot(conn, tx, rootId);
+        if (project is null) return await AbortClaim(tx, ClaimResult.Fail(PlanStoreErrorCodes.PlanNotFound, $"Plan {rootId} not found."));
+        await LockProject(conn, tx, project.Value);
+
+        // Replay: receipt first, before the graph is loaded or validated; never writes.
+        if (await ReadReceipt(conn, tx, rootId, claimKey) is { } existing)
+        {
+            if (existing.Fingerprint != fingerprint)
+                return await AbortClaim(tx, ClaimResult.Fail(PlanErrorCodes.OperationKeyReused, "This claim key was already used with a different request."));
+            var (still, current) = Correlate(await TryLoadSnapshot(conn, tx, rootId), existing.Receipt);
+            await tx.RollbackAsync();
+            return new ClaimResult(existing.Receipt, true, still, current, []);
+        }
+
+        PlanSnapshot snapshot;
+        try { snapshot = (await LoadSnapshot(conn, tx, rootId))!; }
+        catch (FormatException ex) { return await AbortClaim(tx, ClaimResult.Fail(PlanErrorCodes.InvalidGraph, $"The stored plan is unreadable: {ex.Message}")); }
+        if (snapshot.ContractVersion != PlanContract.Version)
+            return await AbortClaim(tx, ClaimResult.Fail(PlanStoreErrorCodes.UnsupportedContractVersion,
+                $"Plan uses '{snapshot.ContractVersion}'; this store implements '{PlanContract.Version}'."));
+        var g = snapshot.Graph;
+        var invalid = PlanRules.ValidateGraph(g);
+        if (invalid.Length > 0)
+            return await AbortClaim(tx, new ClaimResult(null, false, false, null,
+                invalid.Insert(0, new PlanError(PlanErrorCodes.InvalidGraph, "The stored plan is invalid; nothing was claimed."))));
+
+        var ready = PlanRules.Evaluate(g).ReadyWork.FirstOrDefault();
+        if (ready is null)
+        {
+            await InsertReceipt(conn, tx, rootId, claimKey, fingerprint, "no_ready_work", null, attemptId: null, attemptEpoch: null,
+                executorRef: null, contentRevision: null, contentDigest: null, contentJson: null, prereqDigest: null, prereqJson: null,
+                eventSeq: null, actor);
+            if (await TryProject(conn, tx, rootId, g) is { } noReadyProjection) return await AbortClaim(tx, ClaimResult.From(noReadyProjection));
+            var recorded = (await ReadReceipt(conn, tx, rootId, claimKey))!.Receipt;
+            await tx.CommitAsync();
+            return new ClaimResult(recorded, false, false, null, []);
+        }
+
+        var leaf = ready.NodeId;
+        var ctx = new OperationContext(ReservedClaimKeyPrefix + claimKey, g.StateOf(leaf).StateRevision, actor);
+        var result = PlanRules.Transition(g, leaf, WorkStatus.InProgress, ctx, attemptId, null, null, executorRef);
+        if (result.Outcome != OpOutcome.Applied)
+            return await AbortClaim(tx, new ClaimResult(null, false, false, null, result.Errors.IsEmpty
+                ? [new PlanError(PlanErrorCodes.OperationKeyReused, "The claim's internal operation key is already recorded on the node.", leaf)]
+                : result.Errors));
+        try { await PersistStates(conn, tx, rootId, g, result.Graph, actor); }
+        catch (ConcurrencyConflictException ex) { return await AbortClaim(tx, ClaimResult.Fail(PlanStoreErrorCodes.ConcurrentModification, ex.Message)); }
+
+        var events = PlanAuditEvents.Derive(result, g, leaf, AuditedOperation.Transition, ctx).Select(e => e with { ClaimKey = claimKey }).ToList();
+        var (overflow, seq) = await AppendEventsWithSeq(conn, tx, rootId, events);
+        if (overflow is not null) return await AbortClaim(tx, ClaimResult.From(overflow));
+
+        var started = result.Graph.StateOf(leaf);
+        var prereq = PlanRules.PrerequisiteSnapshot(result.Graph, leaf);
+        if (prereq.Digest != started.AttemptPrereqDigest)
+            throw new InvalidOperationException("Prerequisite snapshot does not match the attempt pin.");   // invariant
+        var content = snapshot.Contents[leaf];
+        var contentJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            value = content.Value,
+            attributes = content.Attributes is null ? null : new SortedDictionary<string, string>(content.Attributes.ToDictionary(), StringComparer.Ordinal),
+        });
+        await InsertReceipt(conn, tx, rootId, claimKey, fingerprint, "claimed", leaf, attemptId, started.AttemptEpoch, executorRef,
+            started.AttemptContentRevision, content.Digest(), contentJson, prereq.Digest,
+            System.Text.Json.JsonSerializer.Serialize(prereq, SnapshotJson), seq, actor);
+
+        if (await TryProject(conn, tx, rootId, result.Graph) is { } projectionError) return await AbortClaim(tx, ClaimResult.From(projectionError));
+        var receipt = (await ReadReceipt(conn, tx, rootId, claimKey))!.Receipt;
+        var (stillCurrent, now) = Correlate(snapshot with { Graph = result.Graph }, receipt);
+        await tx.CommitAsync();
+        return new ClaimResult(receipt, false, stillCurrent, now, []);
+    }
+
+    /// <summary>Read a receipt plus its factual, read-only correlation with current state. Never writes.</summary>
+    public async Task<ClaimResult> ReadClaimAsync(Guid rootId, string claimKey)
+    {
+        if (!IsValidClaimKey(claimKey))
+            return ClaimResult.Fail(PlanStoreErrorCodes.InvalidInput, "claimKey must be 1-128 characters of [A-Za-z0-9._~-] and not '.' or '..'.");
+        await using var conn = new NpgsqlConnection(connectionString);
+        await conn.OpenAsync();
+        await using var tx = await conn.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+        if (await ProjectOfRoot(conn, tx, rootId) is null)
+            return await AbortClaim(tx, ClaimResult.Fail(PlanStoreErrorCodes.PlanNotFound, $"Plan {rootId} not found."));
+        var existing = await ReadReceipt(conn, tx, rootId, claimKey);
+        if (existing is null)
+            return await AbortClaim(tx, ClaimResult.Fail(PlanStoreErrorCodes.ClaimNotFound, $"No claim '{claimKey}' on plan {rootId}."));
+        var (still, current) = Correlate(await TryLoadSnapshot(conn, tx, rootId), existing.Receipt);
+        await tx.RollbackAsync();
+        return new ClaimResult(existing.Receipt, true, still, current, []);
+    }
+
+    /// <summary>
+    /// stillCurrent: the receipt's attempt is the node's current InProgress attempt, the stored pins
+    /// equal the receipt's, the node's current content revision AND saved content digest equal the
+    /// receipt's, and the current prerequisite digest equals the receipt's. Fails closed (false) on
+    /// an unreadable, invalid or unsupported plan. Factual correlation only, never authority.
+    /// </summary>
+    internal static (bool StillCurrent, ClaimCurrent? Current) Correlate(PlanSnapshot? snap, ClaimReceipt rc)
+    {
+        if (rc.Outcome != "claimed" || rc.NodeId is not Guid node || snap is null || !snap.Graph.Nodes.ContainsKey(node)) return (false, null);
+        var g = snap.Graph;
+        var s = g.StateOf(node);
+        var current = new ClaimCurrent(s.Work, s.AttemptId, s.AttemptEpoch);
+        try
+        {
+            if (snap.ContractVersion != PlanContract.Version || PlanRules.ValidateGraph(g).Length > 0) return (false, current);
+            var still = s.Work == WorkStatus.InProgress && s.AttemptId == rc.AttemptId && s.AttemptEpoch == rc.AttemptEpoch
+                && s.AttemptContentRevision == rc.ContentRevision && s.AttemptPrereqDigest == rc.PrereqDigest
+                && g.Nodes[node].ContentRevision == rc.ContentRevision
+                && snap.Contents.TryGetValue(node, out var content) && content.Digest() == rc.ContentDigest
+                && PlanRules.PrerequisiteSnapshot(g, node).Digest == rc.PrereqDigest;
+            return (still, current);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException or ArgumentException or KeyNotFoundException)
+        {
+            return (false, current);
+        }
+    }
+
+    private static async Task<PlanSnapshot?> TryLoadSnapshot(NpgsqlConnection conn, NpgsqlTransaction tx, Guid rootId)
+    {
+        try { return await LoadSnapshot(conn, tx, rootId); }
+        catch (FormatException) { return null; }   // unknown stored enum: correlation fails closed
+    }
+
+    private sealed record StoredReceipt(ClaimReceipt Receipt, string Fingerprint);
+
+    private static async Task<StoredReceipt?> ReadReceipt(NpgsqlConnection conn, NpgsqlTransaction tx, Guid rootId, string claimKey)
+    {
+        await using var cmd = new NpgsqlCommand("""
+            SELECT request_fingerprint, outcome, node_id, attempt_id, attempt_epoch, executor_ref, content_revision, content_digest,
+                   content_snapshot::text, prereq_digest, prereq_snapshot::text, event_seq, actor, created_at
+            FROM public.plan_claim_receipts WHERE root_node_id = @r AND claim_key = @k
+            """, conn, tx);
+        cmd.Parameters.AddWithValue("r", rootId);
+        cmd.Parameters.AddWithValue("k", claimKey);
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync()) return null;
+        long? L(int i) => r.IsDBNull(i) ? null : r.GetInt64(i);
+        var receipt = new ClaimReceipt(rootId, claimKey, r.GetString(1), r.IsDBNull(2) ? null : r.GetGuid(2), NullableString(r, 3), L(4),
+            NullableString(r, 5), L(6), NullableString(r, 7), NullableString(r, 8), NullableString(r, 9), NullableString(r, 10), L(11),
+            r.GetString(12), r.GetDateTime(13));
+        return new StoredReceipt(receipt, r.GetString(0));
+    }
+
+    private static Task InsertReceipt(NpgsqlConnection conn, NpgsqlTransaction tx, Guid rootId, string claimKey, string fingerprint,
+        string outcome, Guid? nodeId, string? attemptId, long? attemptEpoch, string? executorRef, long? contentRevision,
+        string? contentDigest, string? contentJson, string? prereqDigest, string? prereqJson, long? eventSeq, string actor)
+    {
+        object N(object? v) => v ?? DBNull.Value;
+        return Execute(conn, tx, """
+            INSERT INTO public.plan_claim_receipts (root_node_id, claim_key, request_fingerprint, outcome, node_id, attempt_id, attempt_epoch,
+                executor_ref, content_revision, content_digest, content_snapshot, prereq_digest, prereq_snapshot, event_seq, actor)
+            VALUES (@r, @k, @f, @o, @n, @aid, @ae, @eref, @cr, @cd, @cs::jsonb, @pd, @ps::jsonb, @seq, @a)
+            """,
+            ("r", rootId), ("k", claimKey), ("f", fingerprint), ("o", outcome),
+            ("n", nodeId is Guid n ? n : DBNull.Value), ("aid", N(attemptId)), ("ae", N(attemptEpoch)), ("eref", N(executorRef)),
+            ("cr", N(contentRevision)), ("cd", N(contentDigest)), ("cs", N(contentJson)), ("pd", N(prereqDigest)), ("ps", N(prereqJson)),
+            ("seq", N(eventSeq)), ("a", actor));
+    }
+
+    private static async Task<ClaimResult> AbortClaim(NpgsqlTransaction tx, ClaimResult result)
+    {
+        await tx.RollbackAsync();
+        return result;
+    }
+
+    // -----------------------------------------------------------------------
     // Core transaction
     // -----------------------------------------------------------------------
 
@@ -229,7 +466,8 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
         Guid nodeId, Func<PlanGraph, OpResult> op, string actor,
         Func<NpgsqlConnection, NpgsqlTransaction, PlanGraph, PlanGraph, Task>? writeNodeRows = null,
         Func<NpgsqlConnection, NpgsqlTransaction, PlanGraph, Task<PlanStoreResult?>>? preCheck = null,
-        Func<OpResult, PlanGraph, IReadOnlyList<AuditEvent>>? audit = null)
+        Func<OpResult, PlanGraph, IReadOnlyList<AuditEvent>>? audit = null,
+        string? operationKey = null)
     {
         await using var conn = new NpgsqlConnection(connectionString);
         await conn.OpenAsync();
@@ -254,6 +492,12 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
             return await Abort(tx, PlanStoreResult.Fail(PlanStoreErrorCodes.UnsupportedContractVersion,
                 $"Plan uses '{snapshot.ContractVersion}'; this store implements '{PlanContract.Version}'.", root));
         var before = snapshot.Graph;
+        // Plan 019: the claim namespace is reserved. A NEW generic operation cannot use it; an exact
+        // latest-key replay (the node's last key is this key) still reaches the rules' replay check.
+        if (IsReservedOperationKey(operationKey)
+            && (!before.Nodes.ContainsKey(nodeId) || before.StateOf(nodeId).LastOperationKey != operationKey))
+            return await Abort(tx, PlanStoreResult.Fail(PlanErrorCodes.InvalidOperationKey,
+                $"Operation keys starting with '{ReservedClaimKeyPrefix}' are reserved for claims.", nodeId));
         var result = op(before);
         if (result.Outcome != OpOutcome.Applied)
         {
@@ -295,7 +539,12 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
     /// overflow it returns revision_exhausted and the caller rolls the whole transaction back, so
     /// no change of the operation is committed.
     /// </summary>
-    private static async Task<PlanStoreResult?> AppendEvents(NpgsqlConnection conn, NpgsqlTransaction tx, Guid rootId, IReadOnlyList<AuditEvent> events)
+    private static async Task<PlanStoreResult?> AppendEvents(NpgsqlConnection conn, NpgsqlTransaction tx, Guid rootId, IReadOnlyList<AuditEvent> events) =>
+        (await AppendEventsWithSeq(conn, tx, rootId, events)).Error;
+
+    /// <summary>AppendEvents that also returns the seq of the LAST event written.</summary>
+    private static async Task<(PlanStoreResult? Error, long LastSeq)> AppendEventsWithSeq(
+        NpgsqlConnection conn, NpgsqlTransaction tx, Guid rootId, IReadOnlyList<AuditEvent> events)
     {
         long current;
         await using (var cmd = new NpgsqlCommand("SELECT event_seq FROM public.managed_plans WHERE root_node_id = @r", conn, tx))
@@ -304,7 +553,7 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
             current = (long)(await cmd.ExecuteScalarAsync())!;
         }
         if (current > long.MaxValue - events.Count)
-            return PlanStoreResult.Fail(PlanErrorCodes.RevisionExhausted, "The plan's audit event sequence is exhausted.", rootId);
+            return (PlanStoreResult.Fail(PlanErrorCodes.RevisionExhausted, "The plan's audit event sequence is exhausted.", rootId), 0);
 
         await Execute(conn, tx, "UPDATE public.managed_plans SET event_seq = @s WHERE root_node_id = @r", ("s", current + events.Count), ("r", rootId));
         var seq = current;
@@ -315,16 +564,17 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
             await Execute(conn, tx, """
                 INSERT INTO public.plan_attempt_events (root_node_id, seq, node_id, node_state_revision, kind, work_from, work_to,
                     content_revision, attempt_id, attempt_epoch, executor_ref, artifact_ref, decision, reviewed_content_revision,
-                    evidence_ref, content_digest, actor, operation_key)
-                VALUES (@r, @seq, @n, @nsr, @k, @wf, @wt, @cr, @aid, @ae, @eref, @art, @d, @rcr, @ev, @dig, @a, @ok)
+                    evidence_ref, content_digest, actor, operation_key, attempt_content_revision, attempt_prereq_digest, claim_key)
+                VALUES (@r, @seq, @n, @nsr, @k, @wf, @wt, @cr, @aid, @ae, @eref, @art, @d, @rcr, @ev, @dig, @a, @ok, @pcr, @ppd, @ck)
                 """,
                 ("r", rootId), ("seq", seq), ("n", e.NodeId), ("nsr", e.NodeStateRevision), ("k", EventKindName(e.Kind)),
                 ("wf", WorkName(e.WorkFrom)), ("wt", WorkName(e.WorkTo)), ("cr", e.ContentRevision), ("aid", N(e.AttemptId)),
                 ("ae", e.AttemptEpoch), ("eref", N(e.ExecutorRef)), ("art", N(e.ArtifactRef)),
                 ("d", e.Decision is AcceptanceDecision d ? DecisionName(d) : DBNull.Value), ("rcr", N(e.ReviewedContentRevision)),
-                ("ev", N(e.EvidenceRef)), ("dig", N(e.ContentDigest)), ("a", e.Actor), ("ok", e.OperationKey));
+                ("ev", N(e.EvidenceRef)), ("dig", N(e.ContentDigest)), ("a", e.Actor), ("ok", e.OperationKey),
+                ("pcr", N(e.AttemptContentRevision)), ("ppd", N(e.AttemptPrereqDigest)), ("ck", N(e.ClaimKey)));
         }
-        return null;
+        return (null, seq);
     }
 
     public static string EventKindName(AuditEventKind k) => k switch
@@ -384,7 +634,7 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
         await using (var cmd = new NpgsqlCommand("""
             SELECT seq, node_id, node_state_revision, kind, work_from, work_to, content_revision, attempt_id, attempt_epoch,
                    executor_ref, artifact_ref, decision, reviewed_content_revision, evidence_ref, content_digest, actor,
-                   operation_key, recorded_at
+                   operation_key, recorded_at, attempt_content_revision, attempt_prereq_digest, claim_key
             FROM public.plan_attempt_events
             WHERE root_node_id = @r AND seq > @after AND (@n::uuid IS NULL OR node_id = @n)
             ORDER BY seq
@@ -402,7 +652,8 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
                     r.GetGuid(1), r.GetInt64(2), ParseEventKind(r.GetString(3)), ParseWork(r.GetString(4)), ParseWork(r.GetString(5)),
                     r.GetInt64(6), NullableString(r, 7), r.GetInt64(8), NullableString(r, 9), NullableString(r, 10),
                     r.IsDBNull(11) ? null : ParseDecision(r.GetString(11)), r.IsDBNull(12) ? null : r.GetInt64(12),
-                    NullableString(r, 13), NullableString(r, 14), r.GetString(15), r.GetString(16));
+                    NullableString(r, 13), NullableString(r, 14), r.GetString(15), r.GetString(16),
+                    r.IsDBNull(18) ? null : r.GetInt64(18), NullableString(r, 19), NullableString(r, 20));
                 rows.Add(new StoredEvent(r.GetInt64(0), e, r.GetDateTime(17)));
             }
         }
@@ -462,7 +713,8 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
             SELECT n.id, n.project_id, n.node_type, n.parent_id, n.sibling_order, n.name, n.value,
                    s.content_revision, s.state_revision, s.work_status, s.attempt_id, s.attempt_epoch, s.artifact_ref,
                    s.acc_decision, s.acc_content_revision, s.acc_artifact_ref, s.acc_attempt_id, s.acc_attempt_epoch,
-                   s.acc_decided_by, s.acc_evidence_ref, s.last_op_key, s.last_op_fingerprint, s.executor_ref
+                   s.acc_decided_by, s.acc_evidence_ref, s.last_op_key, s.last_op_fingerprint, s.executor_ref,
+                   s.attempt_content_revision, s.attempt_prereq_digest
             FROM public.plan_node_state s JOIN public.nodes n ON n.id = s.node_id
             WHERE s.root_node_id = @r
             """, conn, tx))
@@ -473,7 +725,8 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
             {
                 // Columns: 0 id, 1 project, 2 type, 3 parent, 4 order, 5 name, 6 value, 7 content_rev, 8 state_rev,
                 // 9 work, 10 attempt_id, 11 epoch, 12 artifact, 13 acc_decision, 14 acc_content_rev, 15 acc_artifact,
-                // 16 acc_attempt_id, 17 acc_epoch, 18 acc_decided_by, 19 acc_evidence, 20 last_key, 21 last_fp, 22 executor_ref.
+                // 16 acc_attempt_id, 17 acc_epoch, 18 acc_decided_by, 19 acc_evidence, 20 last_key, 21 last_fp, 22 executor_ref,
+                // 23 attempt_content_revision, 24 attempt_prereq_digest (partial pins load as-is and fail validation).
                 // The stored parent is kept as-is (no normalisation), so a corrupt root parent fails validation.
                 var id = r.GetGuid(0);
                 Guid? parent = r.IsDBNull(3) ? null : r.GetGuid(3);
@@ -487,7 +740,8 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
                     r.IsDBNull(17) ? 0 : r.GetInt64(17), NullableString(r, 18) ?? "", NullableString(r, 19));
                 states.Add(new(id, new NodeState(
                     ParseWork(r.GetString(9)), r.GetInt64(8), NullableString(r, 10), r.GetInt64(11), NullableString(r, 12),
-                    acceptance, NullableString(r, 20), NullableString(r, 21), NullableString(r, 22))));
+                    acceptance, NullableString(r, 20), NullableString(r, 21), NullableString(r, 22),
+                    r.IsDBNull(23) ? null : r.GetInt64(23), NullableString(r, 24))));
             }
         }
 
@@ -542,7 +796,8 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
                     content_revision = @cr, state_revision = @sr, work_status = @ws, attempt_id = @aid, attempt_epoch = @ae,
                     artifact_ref = @art, acc_decision = @ad, acc_content_revision = @acr, acc_artifact_ref = @aart,
                     acc_attempt_id = @aaid, acc_attempt_epoch = @aae, acc_decided_by = @adb, acc_evidence_ref = @aev,
-                    last_op_key = @lk, last_op_fingerprint = @lf, executor_ref = @eref, updated_at = now(), updated_by = @by
+                    last_op_key = @lk, last_op_fingerprint = @lf, executor_ref = @eref, attempt_content_revision = @pcr,
+                    attempt_prereq_digest = @ppd, updated_at = now(), updated_by = @by
                 WHERE node_id = @id AND state_revision = @expected
                 """, conn, tx);
             AddStateParameters(cmd, node.ContentRevision, next, actor);
@@ -558,8 +813,9 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO public.plan_node_state (node_id, root_node_id, content_revision, state_revision, work_status, attempt_id,
                 attempt_epoch, artifact_ref, acc_decision, acc_content_revision, acc_artifact_ref, acc_attempt_id, acc_attempt_epoch,
-                acc_decided_by, acc_evidence_ref, last_op_key, last_op_fingerprint, executor_ref, updated_by)
-            VALUES (@id, @root, @cr, @sr, @ws, @aid, @ae, @art, @ad, @acr, @aart, @aaid, @aae, @adb, @aev, @lk, @lf, @eref, @by)
+                acc_decided_by, acc_evidence_ref, last_op_key, last_op_fingerprint, executor_ref, attempt_content_revision,
+                attempt_prereq_digest, updated_by)
+            VALUES (@id, @root, @cr, @sr, @ws, @aid, @ae, @art, @ad, @acr, @aart, @aaid, @aae, @adb, @aev, @lk, @lf, @eref, @pcr, @ppd, @by)
             """, conn, tx);
         AddStateParameters(cmd, contentRevision, s, actor);
         cmd.Parameters.AddWithValue("id", id);
@@ -587,6 +843,8 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
         cmd.Parameters.AddWithValue("lk", N(s.LastOperationKey));
         cmd.Parameters.AddWithValue("lf", N(s.LastOperationFingerprint));
         cmd.Parameters.AddWithValue("eref", N(s.ExecutorRef));
+        cmd.Parameters.AddWithValue("pcr", N(s.AttemptContentRevision));
+        cmd.Parameters.AddWithValue("ppd", N(s.AttemptPrereqDigest));
         cmd.Parameters.AddWithValue("by", actor);
     }
 

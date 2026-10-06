@@ -108,6 +108,17 @@ public static class PlanContractEndpoints
                 req.ReviewedAttemptEpoch!.Value, req.EvidenceRef, Ctx(req.OperationKey, req.ExpectedStateRevision, req.Actor)));
         });
 
+        // Plan 019: durable claim receipts. A receipt is historical; stillCurrent is factual
+        // correlation only and grants no authority.
+        api.MapPost("/plans/{rootId:guid}/claims", async (Guid rootId, ClaimRequest req) =>
+        {
+            if (Missing(("claimKey", req.ClaimKey), ("attemptId", req.AttemptId), ("actor", req.Actor)) is { } missing) return missing;
+            return ClaimResponse(await store.ClaimAsync(rootId, req.ClaimKey!, req.AttemptId!, req.ExecutorRef, req.Actor!));
+        });
+
+        api.MapGet("/plans/{rootId:guid}/claims/{claimKey}", async (Guid rootId, string claimKey) =>
+            ClaimResponse(await store.ReadClaimAsync(rootId, claimKey)));
+
         api.MapPut("/nodes/{nodeId:guid}/content", async (Guid nodeId, ContentRequest req) =>
         {
             if (Missing(("operationKey", req.OperationKey), ("actor", req.Actor), ("expectedStateRevision", req.ExpectedStateRevision),
@@ -171,6 +182,9 @@ public static class PlanContractEndpoints
                 decision = s.Event.Decision is AcceptanceDecision d ? PlanStore.DecisionName(d) : null,
                 reviewedContentRevision = s.Event.ReviewedContentRevision, evidenceRef = s.Event.EvidenceRef,
                 contentDigest = s.Event.ContentDigest, actor = s.Event.Actor, operationKey = s.Event.OperationKey, recordedAt = s.RecordedAt,
+                // Plan 019: the attempt's pins (NULL before 3b1, never backfilled) and the claim key for claim starts.
+                attemptContentRevision = s.Event.AttemptContentRevision, attemptPrereqDigest = s.Event.AttemptPrereqDigest,
+                claimKey = s.Event.ClaimKey,
             }),
             nextAfterSeq = page.NextAfterSeq,
             // First RECORDED event only; earlier work history (before plan 016) is unknown, never backfilled.
@@ -205,9 +219,11 @@ public static class PlanContractEndpoints
     {
         PlanErrorCodes.InvalidEnum or PlanErrorCodes.InvalidOperationKey or PlanErrorCodes.ActorRequired
             or PlanErrorCodes.AttemptRequired or PlanStoreErrorCodes.InvalidContent or MissingField
-            or PlanErrorCodes.InvalidExecutorRef or InvalidQuery => 400,
-        PlanErrorCodes.NodeNotFound or PlanStoreErrorCodes.PlanNotFound or PlanStoreErrorCodes.ProjectNotFound => 404,
-        PlanErrorCodes.StaleRevision or PlanErrorCodes.StaleContent or PlanErrorCodes.OperationKeyReused or PlanErrorCodes.RevisionExhausted
+            or PlanErrorCodes.InvalidExecutorRef or InvalidQuery or PlanStoreErrorCodes.InvalidInput => 400,
+        PlanErrorCodes.NodeNotFound or PlanStoreErrorCodes.PlanNotFound or PlanStoreErrorCodes.ProjectNotFound
+            or PlanStoreErrorCodes.ClaimNotFound => 404,
+        PlanErrorCodes.StaleRevision or PlanErrorCodes.StaleContent or PlanErrorCodes.StalePrerequisites
+            or PlanErrorCodes.OperationKeyReused or PlanErrorCodes.RevisionExhausted
             or PlanStoreErrorCodes.PlanExists or PlanStoreErrorCodes.NodeExists or PlanStoreErrorCodes.ConcurrentModification
             or PlanStoreErrorCodes.ManagedPlanProtected => 409,
         PlanStoreErrorCodes.ProjectionFailed => 503,
@@ -226,6 +242,37 @@ public static class PlanContractEndpoints
         return snap is null
             ? Error(500, "plan_store_error", "The plan could not be read back.")
             : Results.Ok(View(snap, r.Outcome));
+    }
+
+    private static IResult ClaimResponse(ClaimResult r)
+    {
+        if (!r.Ok)
+        {
+            var primary = r.Errors[0];
+            return Error(StatusFor(primary.Code), primary.Code, primary.Message, null, r.Errors);
+        }
+        var rc = r.Receipt!;
+        static System.Text.Json.JsonElement? Json(string? s)
+        {
+            if (s is null) return null;
+            using var doc = System.Text.Json.JsonDocument.Parse(s);
+            return doc.RootElement.Clone();
+        }
+        return Results.Ok(new
+        {
+            contractVersion = PlanContract.Version,
+            replayed = r.Replayed,
+            stillCurrent = r.StillCurrent,
+            current = r.Current is { } c ? new { work = PlanStore.WorkName(c.Work), attemptId = c.AttemptId, attemptEpoch = c.AttemptEpoch } : null,
+            receipt = new
+            {
+                rootId = rc.RootId, claimKey = rc.ClaimKey, outcome = rc.Outcome, nodeId = rc.NodeId,
+                attemptId = rc.AttemptId, attemptEpoch = rc.AttemptEpoch, executorRef = rc.ExecutorRef,
+                contentRevision = rc.ContentRevision, contentDigest = rc.ContentDigest, contentSnapshot = Json(rc.ContentSnapshotJson),
+                prereqDigest = rc.PrereqDigest, prereqSnapshot = Json(rc.PrereqSnapshotJson),
+                eventSeq = rc.EventSeq, actor = rc.Actor, createdAt = rc.CreatedAt,
+            },
+        });
     }
 
     private static object BlockerDto(Blocker b) => new
@@ -286,6 +333,7 @@ public static class PlanContractEndpoints
                     siblingOrder = n.SiblingOrder, contentRevision = n.ContentRevision, stateRevision = s.StateRevision,
                     work = PlanStore.WorkName(s.Work), attemptId = s.AttemptId, attemptEpoch = s.AttemptEpoch, artifactRef = s.ArtifactRef,
                     executorRef = s.ExecutorRef,
+                    attemptContentRevision = s.AttemptContentRevision, attemptPrereqDigest = s.AttemptPrereqDigest,
                     acceptance = a is null ? null : new
                     {
                         decision = PlanStore.DecisionName(a.Decision), contentRevision = a.ContentRevision, artifactRef = a.ArtifactRef,
@@ -312,5 +360,6 @@ public record TransitionRequest(string? To, string? AttemptId, long? AttemptEpoc
     string? Actor, string? ExecutorRef = null);
 public record DecideRequest(string? Decision, long? ReviewedContentRevision, string? ReviewedArtifactRef, long? ReviewedAttemptEpoch, string? EvidenceRef,
     string? OperationKey, long? ExpectedStateRevision, string? Actor);
+public record ClaimRequest(string? ClaimKey, string? AttemptId, string? ExecutorRef, string? Actor);
 public record ContentRequest(string? Value, Dictionary<string, string>? Attributes, long? ExpectedContentRevision, string? OperationKey,
     long? ExpectedStateRevision, string? Actor);
