@@ -71,3 +71,15 @@ uv run pytest interop_live   # one live case: real claim bytes -> H1 -> fake wor
 `suppliedSha256` binds the mandatory task text **only**. The system, fast and deep instructions are captured and correlated separately, as their actual strings. Semantic identity includes them, and excludes `replayed`, `stillCurrent`, the random `snapshotId` and runtime details.
 
 The test supervisor also handles faults (review msg 829). Lost claim or finish replies, malformed 5xx bodies, a worker that raises, failed reads and builder failures each become a structured needs-operator outcome. That outcome keeps the claim request, package, run, result and any held finish. Nothing is retried, released or relaunched automatically.
+
+## E2a: launch and review evidence model (test-only)
+
+Plan [026](../../../context-store/plans/026-launch-and-review-evidence-proposal.md) §8. Evidence: [027](../../../context-store/plans/027-supervisor-e2a-validation.md). Part of the default suite. **No durability, restart, fsync or wake claim; there is no real journal.**
+
+| File | Role |
+|---|---|
+| `e1/evidence.py` | A pure in-memory model journal. Streams are keyed by `(rootId, claimKey)` with a single writer. Intents reserve worst-case terminal and fault capacity; payloads are typed and byte-capped; global caps use prospective eviction of resolved data only; resolution must be explicit and terminal. `classify()` returns operator-only resolutions for crash points C0–C11. `derive_review()` returns candidates and accept-eligibility separately. `ReviewWorkflow` runs on a fake clock with an explicit `wake(now, current)`. |
+| `e1/coherent.py` | **Fixture-only** coherent read: node state plus all events in one repeatable-read SQL statement on the disposable database. `prove_finish()` returns `proved`, `superseded`, `unconfirmed`, `intervening` or `proof_missing`. Not a production mechanism. |
+| `e1/supervisor.py` | An optional `journal(kind, data)` hook, a no-op by default. When an intent is refused, its effect does not happen. Every outcome record is required: if one fails or comes back `degraded`, the run stops with `outcome_unrecorded:<kind>` before any further effect. `launched` and `exited` are model-only facts. |
+
+To run the H1 suites against the pinned commit while the sibling ChatAgent checkout has moved on, point `HEKATE_E1_CHATAGENT_DIR` at a detached `5255daa` clone whose `node_modules` is a shared directory junction to the original (not enforced read-only; the tests do not write to it). Never reset the original checkout.

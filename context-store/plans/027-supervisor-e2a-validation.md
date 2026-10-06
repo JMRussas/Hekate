@@ -1,0 +1,85 @@
+# Plan 027 — E2a (launch and review evidence model): validation evidence
+
+**Status: E2a scope accepted by codex-chatagent as interim lead (msg 923), including final documentation and diff review.** codex-hekate was notified through coordination; **this document does not imply a review by codex-hekate**. Test-only. There is no real journal, persistence, schema, service, provider, worker, wake mechanism or bridge change, and **no durability, restart, fsync, atomicity or wake claim**.
+
+**Date:** 2026-10-06
+**Implementer:** claude-hekate. Execution model as reported by this session: **Claude Opus 5.5 (`claude-opus-5-5`)**.
+**GO:** codex-chatagent msg 881, relaying its E2a implementation GO msg 880 to codex-hekate, which was unread because its turn had ended. Ownership and cleanup were confirmed in msg 885. Review conditions and corrections come from msgs 888, 890, 892–895, 901, 905, 910, 911 and 916.
+**Design:** [026](026-launch-and-review-evidence-proposal.md) revision 5 (accepted design, `95ede86`) §8.
+
+## Source basis and environment
+
+| Item | Value |
+|---|---|
+| Hekate base | committed **`95ede86`**. Clean-source gate: `git archive 95ede86` into an isolated folder plus **only** the owned E2a overlay below; the Api is built from that clean archive |
+| Isolated gate folder | `C:\Users\jruss\AppData\Local\Temp\claude\d--Git-Hekate\ad845ee3-ddf5-4018-8f3b-f217b500bf47\scratchpad\hekate-95ede86-e2a` (temporary). From msg 907 onward the gate and the container were owned by codex-chatagent, which ran the final suites |
+| ChatAgent H1 | immutable **`5255daacfc670a4919f61439eb12adcb6a401920`**. A `git clone --shared --no-checkout` of `D:\Git\ChatAgent`, detached at that commit in `C:\Users\jruss\AppData\Local\Temp\claude\d--Git-Hekate\ad845ee3-ddf5-4018-8f3b-f217b500bf47\scratchpad\chatagent-5255daa`, with `node_modules` as a **shared directory junction** to `D:\Git\ChatAgent\node_modules`. The junction is **not enforced read-only**; the tests do not write to it. **`D:\Git\ChatAgent` was not reset or modified** (its HEAD was `c8923cd` when the clone was created; ChatAgent development continued independently) |
+| Runtimes | uv 0.11.19; CPython 3.13.13; Node v24.21.0 at `<H1 checkout>\node_modules\.cache\worker-diagnosis\new24\node.exe` (the pinned H1 runtime, validated against `.node-version`) |
+| Container | the owned `hekate-local`, label-verified via `HEKATE_E1_CONTAINER_WORKSPACE=D:\Git\Hekate`. It was stopped before each run and **stopped again afterwards** (msgs 885 and 923) |
+
+**Owned overlay (final, frozen at msg 920; SHA-256):**
+
+| File | SHA-256 |
+|---|---|
+| `scripts/local/supervisor_e1/e1/evidence.py` (new) | `be9cfb631bd58d37172a6120a056419381ff03154cd204325312cf3cd0466afd` |
+| `scripts/local/supervisor_e1/e1/coherent.py` (new) | `7fbc8fbc67f02db98f6c9753e8ad06fe2b7ba9ccab4200765f107c4e47500cfd` |
+| `scripts/local/supervisor_e1/e1/supervisor.py` (edited: optional journal hook) | `697b0bd31694431c26ba1b202717ed5b43f79351cf9d875e637d3eb4eda8e5f0` |
+| `scripts/local/supervisor_e1/tests/test_e2a_model.py` (new) | `36d218323ce9af66207d16c633eab4004f6d0bbffa566e7a9d5d9cc1aa10412c` |
+| `scripts/local/supervisor_e1/tests/test_e2a_live.py` (new) | `6285847fedb786861c7d5c5e5394a5246deafa1de23dab5c96e6006414ac7c02` |
+
+Docs (not part of the tested overlay): this file, a `README.md` section and a status line in 026. [028](028-e2b-durable-journal-proposal.md) is a separate, untracked design draft and is not part of E2a.
+
+## Results
+
+| Suite (all `uv run --locked`) | Overlay | Result | Run by |
+|---|---|---|---|
+| Default `pytest -q` on the clean-source gate: 113 E1 + 116 E2a model + 22 E2a live | **final** (msg 920) | **251 / 251** | codex-chatagent (msg 923) |
+| `pytest interop` (pinned H1, pure) | earlier checkpoints (msgs 896 and 907) | **31 / 31** | claude-hekate (896); codex-chatagent (907 hashes, msg 916) |
+| `pytest interop_live` (H1 plus the real Api) | earlier checkpoints (msgs 896 and 907) | **1 / 1** | claude-hekate (896); codex-chatagent (907 hashes, msg 916) |
+
+**Timing:**
+- The interop and interop_live suites were **not re-run** on the final overlay.
+- The changes after msg 907 were model-only (`evidence.py`, `test_e2a_model.py`) plus a type annotation in `supervisor.py`, and the H1 and Api paths those suites exercise were unchanged (msgs 921 and 923).
+- The offline model plus fixture suites gave 173/173 on the final overlay in the workspace.
+
+**Cleanup:**
+- After the final run, a database query found 0 `hekate_plan_e1_*` databases (root's earlier `hekate_plan_review_20261006` was not touched). The container was stopped again (msg 923).
+- No commits were made by the implementer. The unknown dirty work (`Program.cs`, `CodeService.cs`, `.gitignore`, `SemanticEdgeResolver.cs`, `Odin/langgraph_engine/`, `LOCAL-PLANNING-HANDOFF.md`, `.review_tmp/`) is untouched.
+
+## Acceptance criteria and evidence
+
+| 026 §8 check / review condition | Evidence |
+|---|---|
+| 1. **Ordering**: every intent precedes its effect, `claim_intent` before the claim POST | live `test_every_intent_is_recorded_before_its_effect` (timeline of hook calls vs claim POST, dispatch and transition); records `claim_intent → claimed → launch_intent → launched → exited → result_captured → finish_intent → finish_outcome`; `launched`/`exited` carry `modelOnly: true` |
+| **Hook refusal before an intent prevents the effect** (msg 885), on the real integration path | live `test_a_refused_intent_prevents_its_effect[claim_intent / launch_intent / finish_intent]` (no claim POST at all, no dispatch, no transition respectively); `test_real_model_cap_refuses_launch_before_dispatch_and_still_records_outcomes` (a real `ModelJournal` cap); `test_an_unrecordable_outcome_stops_the_run_before_any_further_effect` |
+| **Every outcome record is required** (msg 901): a failed or **degraded** (`invalidPayload` fallback) outcome stops before any further effect | live `test_any_failed_outcome_record_stops_before_the_finish_transition[launched / exited / result_captured]` (reason `outcome_unrecorded:<kind>`, no transition); `test_degraded_outcome_evidence_stops_before_the_finish_transition` (an over-cap artifact reference is stored as bounded fallback evidence, the hook returns the record's `degraded` flag, and the supervisor stops) |
+| 2. **Classification**: operator-only resolutions, never automatic | offline `test_every_crash_prefix_classifies_to_operator_only_resolutions` ×21 (C0–C8; `automatic == ()` and no `auto`/`retry`/`relaunch`/`reassign` actions); live C1, C2, C3, C6 prefixes against real states with database snapshots unchanged |
+| C1 404 means "not observed", never a fresh key; a found receipt must match the held request (msg 890 §1) | `test_404_never_recommends_a_fresh_key`; live `test_c1_a_404_is_only_not_observed`, `test_c1_lost_claim_reply_with_a_committed_matching_receipt_is_a_replay`; `C1:foreign_receipt` on a mismatch |
+| C7 via a **coherent fixture-DB repeatable-read snapshot** (msgs 871 and 890 §7) | `e1/coherent.py` reads node state, **all** events and their count in one `REPEATABLE READ READ ONLY` statement (fixture-only, not a production mechanism). Live: `proved`, and still proved after a same-key `unchanged` replay; `superseded` by a decision; `superseded` by a **structural revision bump with no later event**; `unconfirmed` (not proof of absence); `intervening` after another actor's finish; `proof_missing` on a partial fact match or incomplete events |
+| The E1 heuristic is conservative, not proof | live `test_c7_unconfirmed_then_intervening_and_the_e1_heuristic_is_only_conservative`: the heuristic says "ours" after another actor's same-artifact finish, the server refuses the resend (`409 stale_revision`), the database is unchanged, and the proof says `intervening` |
+| 3. **Candidates vs accept-eligibility**, separately (msgs 853 and 890) | offline derivation table ×9 (none = candidate; rejected = terminal; stale = operator classification; a null artifact is a candidate but never eligible; gates, content drift and unpinned attempts are ineligible). The public view lacks the current prerequisite digest, so a passing candidate is `unverified:prerequisites`, never claimed eligible. Live `test_candidates_and_eligibility_follow_real_planstore_states` (finish, upstream drift, rejected, accepted, accepted then revise = stale, reopen, cancel) |
+| The global PlanStore review fact is kept separate from this stream's handoff (msg 890 §2) | `Classification.planstore_review`; `test_global_planstore_review_fact_is_reported_separately_from_this_streams_handoff` (globally a candidate while this stream is not confirmed Done: no review request) |
+| 4. **Workflow** (msgs 890 and 893) | Escalation goes to the same lead and then the operator queue, bounded and never reassigned. A repeated acknowledgment is idempotent; a wrong-lead acknowledgment is refused. Progress requires the acknowledged lead and a new checkpoint **and** new evidence content (`evidence_digest(content)`: same content under a new reference does not reset). Review identity includes root, node, attempt, epoch and artifact, so a reused attempt with a new epoch is a separate review. `wake(now, current)` takes authoritative current facts and drops moot reviews, routing stale ones to operator classification, and removes a stopped review from **both** the review set and the operator queue (msg 910: `test_an_already_queued_review_leaves_the_queue_when_it_stops` ×4, `test_a_queued_old_epoch_leaves_the_queue_when_a_new_epoch_replaces_it`). Classification of C9–C11 uses current facts. Live `test_a_review_request_goes_moot_after_a_matching_decision_or_reopen` |
+| Every `notify_intent` counts against K, whatever its outcome; rehydration keeps the original anchors (msg 890 §5) | `test_every_notify_intent_counts_against_k_even_with_unknown_outcome`; `test_rehydration_uses_the_original_deadline_anchors` |
+| 5. **Bounds** (msgs 868, 890 and 892) | Exact per-record encoded size (`RECORD_MAX_BYTES` 2048, all metadata included). Typed payloads checked recursively (depth, items, no floats, Int64, per-field byte caps; lists included). Reserved slots are budgeted at the **true worst case**. An outcome that does not fit becomes bounded `invalidPayload` evidence under its reservation and is never refused. Workflow records never consume reservations. Global count and byte caps cover active, resolved-uncompacted and summary data. **Eviction is planned prospectively and applied only on admission: a refusal leaves the whole model unchanged.** Bounds values are validated. **Metadata headroom** (msg 911): an intent is refused (`metadata_headroom`) before any mutation or effect unless the worst reserved record, meaning the longest reserved kind, the maximal fallback code, `MAX_SEQ` and the **longest clock serialization** (`AT_REPR_MAX` = 23 characters, msg 916), fits `RECORD_MAX_BYTES`. **Clock** (msgs 911 and 916): validated on assignment (finite, 0 to `MAX_AT`, numeric), so a reserved outcome never meets an invalid clock. **Sequence capacity** (msg 916): an intent is admitted only if the sequence numbers for itself and all its reserved slots remain, counting slots already reserved by every stream. Only a valid `applied` or `unchanged` finish outcome confirms Done (msg 905). Tests: `test_payloads_are_typed_and_bounded` ×10, `test_largest_legal_record_fits_and_size_is_exact`, `test_an_outcome_that_cannot_fit_becomes_bounded_fault_evidence_under_its_reservation`, `test_global_byte_cap_holds_with_worst_case_reservations_near_full`, `test_a_refusal_after_eviction_planning_leaves_the_model_unchanged`, `test_bounds_reject_bad_values` ×7, `test_metadata_near_the_record_cap_refuses_the_intent_before_any_effect_and_leaves_the_model_unchanged`, `test_the_fallback_always_fits_for_any_admitted_intent_at_the_metadata_limit` ×4 clocks, `test_the_longest_clock_serializations_fit_the_declared_width`, `test_the_model_clock_must_be_finite_and_bounded` ×6, `test_intent_admission_reserves_sequence_capacity_for_its_terminal_and_fault_slots`, `test_only_a_valid_applied_or_unchanged_outcome_confirms_done` ×4, and the reservation and cap tests |
+| Resolution is explicit and terminal (msgs 892 and 895) | `resolve()` needs a positive, valid finish outcome **plus** an authoritative PlanStore decision, or a terminal operator resolution (`confirmed_released`, `confirmed_finished` or `abandoned_no_effects`) with a `reconciliationRef`. These never resolve: rejected, unknown or invalid outcomes; a release with an unknown reply; `retry_permitted_once`; `new_claim_permitted`. A non-terminal resolution classifies as `<prior>+permission:<decision>`, never `resolved`. Tests: `test_resolve_by_finish_needs_a_positive_valid_outcome_and_a_decision` ×6, `test_only_terminal_operator_resolutions_resolve` ×7, `test_resolve_needs_explicit_evidence_and_never_releases_outstanding_reservations_silently` |
+| 6. **Foreign streams** | `test_foreign_writer_prefix_is_refused_and_cannot_be_appended_to` |
+| 7. **Restart replay** (conceptual only) | `test_restart_replay_rebuilds_the_same_classification_from_the_prefix_alone` (no durability claim) |
+
+## Explicit choices (msg 890: "report choices explicitly")
+
+- **Stream key:** `(rootId, claimKey)` with single-writer provenance (026 open question 1, as proposed).
+- **Clock:** an injected fake clock and an explicit `wake(now, current)` call. **No scheduler or wake mechanism is implemented or claimed** (026 open questions 2 and 5).
+- **Accept-eligibility:** reported as `unverified:prerequisites` when everything the public view can show passes, because the current prerequisite digest is not exposed (related to 026 open question 6).
+- **Defaults** (N, M, S, B, D, R, K, record size): model values for tests only (026 open question 4), not recommendations.
+- **Coherent read:** direct SQL on the disposable fixture database only.
+
+## Not claimed
+
+- Durability, restart, fsync, atomicity or ordering on disk.
+- Any wake or scheduler.
+- Production coherent reads.
+- Process launch, owned-group cleanup and cancellation (E3).
+- Leases and heartbeats (3b2).
+- Auth.
+- Provider or worker activation.

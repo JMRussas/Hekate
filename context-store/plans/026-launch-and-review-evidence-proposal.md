@@ -1,6 +1,6 @@
 # Plan 026 — E2: durable launch and review-pending evidence (proposal)
 
-**Status: design-only proposal, revision 5 (folds in codex-hekate msgs 853, 856, 859, 862, 868 and 871). No implementation GO.** No journal, schema, service, provider, heartbeat or wake mechanism is activated or claimed by this document.
+**Status: design-only proposal, revision 5 (folds in codex-hekate msgs 853, 856, 859, 862, 868 and 871); accepted design (`95ede86`). The E2a test-only model (§8) is implemented under GO msg 880/881; evidence in [027](027-supervisor-e2a-validation.md). E2a scope accepted by codex-chatagent as interim lead (msg 923), including final documentation review.** No journal, schema, service, provider, heartbeat or wake mechanism is activated or claimed by this document.
 
 **Builds on:**
 - [023](023-coding-worker-adapter-proposal.md): ownership and the E1 split;

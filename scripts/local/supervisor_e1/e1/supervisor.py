@@ -13,6 +13,11 @@ nothing else. Rules (plan 023 §3.1, review msgs 789 and 829):
 - every fault (lost reply, malformed 5xx, worker exception, failed read) becomes a structured
   needs_operator that RETAINS the evidence (claim request, package, run, result, held finish);
   nothing is retried, released or relaunched automatically. No journal: no durability claim.
+- E2a (plan 026): an OPTIONAL journal hook (default None = no-op) is called at each evidence
+  point. An intent record (claim_intent, launch_intent, finish_intent) is written BEFORE its
+  effect; if the hook refuses or fails, the effect does not happen. Outcome/fault records rely on
+  capacity the intent reserved; if one still cannot be recorded the run stops (no further
+  effects) and says so. launched/exited are MODEL-ONLY facts here (nothing is launched).
 """
 
 from __future__ import annotations
@@ -95,6 +100,13 @@ def echo(pkg: Any, run: RunEnvelope, **outcome: Any) -> WorkResult:
 
 Script = Callable[[Any, RunEnvelope], WorkResult]
 PackageBuilder = Callable[[Envelope], Any]
+# (kind, data) -> optional result. Raising refuses an intent; a returned object whose `degraded`
+# is true means the outcome was stored only as bounded fallback evidence (required content missing).
+Journal = Callable[[str, dict[str, Any]], Any]
+
+
+class _JournalRefused(Exception):
+    pass
 
 
 class FakeWorker:
@@ -128,6 +140,7 @@ class SupervisedRun:
     claim_request: dict[str, Any] | None = None  # the original claim request, retained as evidence
     error: str | None = None                     # exception type for uncertain faults (never content)
     notes: list[str] = field(default_factory=list)
+    journal_errors: list[str] = field(default_factory=list)   # outcome/fault records that could not be written
 
 
 def _is_int(v: Any) -> bool:
@@ -212,28 +225,77 @@ def _fault(out: SupervisedRun, phase: str, e: BaseException) -> SupervisedRun:
 
 class Supervisor:
     def __init__(self, client: SupervisorClient, worker: FakeWorker, *, operator_state: dict[str, str] | None = None,
-                 package_builder: PackageBuilder = opaque_package):
+                 package_builder: PackageBuilder = opaque_package, journal: Journal | None = None):
         self._client = client
         self._worker = worker
         self._build = package_builder
+        self._journal = journal
         self.operator_state = dict(operator_state or {})
         self.before_finish: Callable[[], None] | None = None   # test hook (race case only)
 
+    # --- journal hook (E2a) ------------------------------------------------------
+    def _intent(self, out: SupervisedRun, kind: str, data: dict[str, Any]) -> bool:
+        """Record an intent BEFORE its effect. False (and a needs_operator reason) when refused."""
+        if self._journal is None:
+            return True
+        try:
+            self._journal(kind, data)
+            return True
+        except Exception as e:  # noqa: BLE001
+            out.outcome, out.reason, out.error = Outcome.NEEDS_OPERATOR, f"journal_refused:{kind}", type(e).__name__
+            return False
+
+    def _record(self, out: SupervisedRun, kind: str, data: dict[str, Any]) -> bool:
+        """Record an outcome/fault (uses capacity reserved by its intent). False when it could not be
+        written OR was only written DEGRADED (the hook returned something with `degraded` true, e.g.
+        the model's bounded invalidPayload fallback): required evidence is missing, so the caller
+        stops before any further effect."""
+        if self._journal is None:
+            return True
+        try:
+            ret = self._journal(kind, data)
+        except Exception as e:  # noqa: BLE001
+            out.journal_errors.append(f"{kind}:{type(e).__name__}")
+            return False
+        if getattr(ret, "degraded", False):
+            out.journal_errors.append(f"{kind}:degraded")
+            return False
+        return True
+
     def run(self, root: str, claim_key: str, attempt_id: str, executor_ref: str | None) -> SupervisedRun:
+        out = self._run(root, claim_key, attempt_id, executor_ref)
+        if out.journal_errors and out.outcome is not Outcome.NEEDS_OPERATOR:
+            out.outcome = Outcome.NEEDS_OPERATOR
+        if out.journal_errors:
+            out.reason = (out.reason + "|" if out.reason else "") + "journal_outcome_unrecorded"
+        return out
+
+    def _run(self, root: str, claim_key: str, attempt_id: str, executor_ref: str | None) -> SupervisedRun:
         out = SupervisedRun(Outcome.NEEDS_OPERATOR, "")
         out.claim_request = {"root": root, "claimKey": claim_key, "attemptId": attempt_id, "executorRef": executor_ref, "actor": ACTOR}
+        if not self._intent(out, "claim_intent", dict(out.claim_request)):
+            return out                                   # refused BEFORE the claim: no POST
         try:
             resp = self._client.claim(root, claim_key, attempt_id, executor_ref, ACTOR)
         except Exception as e:  # noqa: BLE001  lost reply / malformed body: the claim may have committed
+            self._record(out, "fault", {"phase": "claim_reply", "error": type(e).__name__})
             return _fault(out, "claim_reply", e)
         if resp.status != 200:
+            self._record(out, "fault", {"phase": "claim_reply", "status": resp.status, "code": resp.code})
             out.reason = f"claim_failed:{resp.status}:{resp.code}"
             return out
         try:
             env = parse_claim_envelope(resp.raw, expected_root=root, expected_key=claim_key)
         except WireError as e:
+            self._record(out, "fault", {"phase": "claim_reply", "error": type(e).__name__})
             return _fault(out, "claim_reply", e)
         out.envelope = env
+        r0 = env.receipt
+        if not self._record(out, "claimed", {"outcome": r0.outcome, "nodeId": r0.node_id, "attemptId": r0.attempt_id,
+                                             "attemptEpoch": r0.attempt_epoch, "replayed": env.replayed,
+                                             "stillCurrent": env.still_current}):
+            out.reason = "claimed_unrecorded"
+            return out
         if env.receipt.outcome == "no_ready_work":
             out.outcome, out.reason = Outcome.NO_READY_WORK, "no_ready_work"
             return out
@@ -261,11 +323,26 @@ class Supervisor:
         out.package = pkg
         run = RunEnvelope(f"run-{uuid.uuid4()}", pkg.token)
         out.run = run
+        if not self._intent(out, "launch_intent", {"launchKey": f"launch:{claim_key}:{pkg.attempt_epoch}", "runId": run.run_id,
+                                                   "packageToken": pkg.token, "modelOnly": True}):
+            return out                                   # refused BEFORE dispatch: nothing handed off
         try:
             res = self._worker(pkg, run)
         except Exception as e:  # noqa: BLE001  the worker's effects are unknown
+            self._record(out, "fault", {"phase": "worker_raised", "error": type(e).__name__})
             return _fault(out, "worker_raised", e)
         out.result = res
+        # Model-only process facts (no process exists in E2a), then the captured candidate result.
+        # EVERY outcome record is required: any that fails or is degraded stops the run before finish.
+        for kind, data in (
+            ("launched", {"runId": run.run_id, "modelOnly": True}),
+            ("exited", {"runId": run.run_id, "modelOnly": True, "exitCode": getattr(res, "exit_code", None),
+                        "timedOut": getattr(res, "timed_out", None), "killed": getattr(res, "killed", None)}),
+            ("result_captured", {"runId": run.run_id, "artifactRef": getattr(res, "artifact_ref", None), "candidate": True}),
+        ):
+            if not self._record(out, kind, data):
+                out.reason = f"outcome_unrecorded:{kind}"
+                return out
         if malformed := malformed_fields(res):
             out.reason = "malformed_result:" + ",".join(malformed)
             return out
@@ -306,15 +383,20 @@ class Supervisor:
         if pkg.executor_ref is not None:
             payload["executorRef"] = pkg.executor_ref
         out.held_finish = dict(payload)   # retained before the call, so a lost reply keeps it
+        if not self._intent(out, "finish_intent", {"held": dict(payload)}):
+            return out                                   # refused BEFORE the transition: nothing sent
         try:
             fin = self._client.transition(pkg.node_id, payload)
         except Exception as e:  # noqa: BLE001  the finish may have committed
+            self._record(out, "fault", {"phase": "finish_reply", "error": type(e).__name__})
             return _fault(out, "finish_reply", e)
         out.finish = fin
         if fin.status == 200 and isinstance(fin.body, dict) and fin.body.get("outcome") == "applied":
             out.outcome, out.reason = Outcome.FINISHED, "finished"
+            self._record(out, "finish_outcome", {"outcome": "applied"})
         else:
             out.reason = f"finish_rejected:{fin.status}:{fin.code}"   # PlanStore is final; no retry
+            self._record(out, "finish_outcome", {"outcome": f"rejected:{fin.code}"})
         return out
 
     def replay_held_finish(self, run: SupervisedRun) -> tuple[Response | None, str]:
