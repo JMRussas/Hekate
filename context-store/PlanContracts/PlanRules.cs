@@ -224,6 +224,37 @@ public static class PlanRules
     }
 
     /// <summary>
+    /// Add a new structural child under child.ParentId. The operation belongs to the parent
+    /// (ctx is checked against the parent's state). <paramref name="payloadDigest"/> covers
+    /// the child's stored content (name, value, attributes) so a reused key with a different
+    /// payload is operation_key_reused. Never overwrites: the id must be new and non-empty.
+    /// A pristine leaf may become a container; a leaf that holds work state may not (the
+    /// candidate graph fails validation with invalid_state).
+    /// </summary>
+    public static OpResult AddChild(PlanGraph g, PlanNode child, OperationContext ctx, string payloadDigest)
+    {
+        var parentId = child.ParentId ?? Guid.Empty;
+        var fingerprint = Fingerprint("add_child", ctx.Actor, child.Id, child.ProjectId, child.NodeType, child.SiblingOrder, child.ParentId, child.ContentRevision, payloadDigest);
+        if (Prologue(g, parentId, ctx, fingerprint) is { } early) return early;
+
+        if (child.Id == Guid.Empty || g.Nodes.ContainsKey(child.Id))
+            return Rejected(g, new PlanError(InvalidChild, "A child needs a new, non-empty id.", parentId, child.Id));
+        if (child.ProjectId != g.ProjectId)
+            return Rejected(g, new PlanError(CrossProject, $"Child belongs to project {child.ProjectId}, not {g.ProjectId}.", parentId, child.Id));
+        if (!PlanNodeTypes.Structural.Contains(child.NodeType))
+            return Rejected(g, new PlanError(InvalidNodeType, $"'{child.NodeType}' is not a plan structure type.", parentId, child.Id));
+        if (child.NodeType == NodeTypes.Plan)
+            return Rejected(g, new PlanError(InvalidChild, "A 'plan' node can only be a plan root.", parentId, child.Id));
+        if (child.ContentRevision != 1)
+            return Rejected(g, new PlanError(InvalidChild, "A new child starts at content revision 1.", parentId, child.Id));
+
+        var candidate = g with { Nodes = g.Nodes.Add(child.Id, child) };
+        var errors = ValidateGraph(candidate);
+        if (errors.Length > 0) return Rejected(g, errors);
+        return Applied(Commit(candidate, parentId, ctx, fingerprint, s => s));
+    }
+
+    /// <summary>
     /// Leaf work transitions. Starting (or reopening) needs an attempt id and satisfied
     /// gates, and issues a new attempt epoch. Finishing or releasing must present the
     /// current attempt id AND epoch. Cancelling clears the attempt, fencing late results.
@@ -320,10 +351,23 @@ public static class PlanRules
     /// ContentRevision, which makes any earlier acceptance Stale. Containers are refused
     /// until container-level review semantics exist (their acceptance is derived only).
     /// </summary>
-    public static OpResult ReviseContent(PlanGraph g, Guid nodeId, OperationContext ctx)
+    public static OpResult ReviseContent(PlanGraph g, Guid nodeId, OperationContext ctx) =>
+        ReviseContentCore(g, nodeId, ctx, Fingerprint("revise_content", ctx.Actor), expectedContentRevision: null);
+
+    /// <summary>
+    /// ReviseContent bound to the actual new content: <paramref name="contentDigest"/> (see
+    /// PlanContentDigest) is part of the operation fingerprint, so reusing a key with
+    /// different content is operation_key_reused. Replay is recognised before the content
+    /// revision check, so an exact retry is Unchanged rather than stale_content.
+    /// </summary>
+    public static OpResult ReviseContent(PlanGraph g, Guid nodeId, OperationContext ctx, string contentDigest, long expectedContentRevision) =>
+        ReviseContentCore(g, nodeId, ctx, Fingerprint("revise_content", ctx.Actor, contentDigest, expectedContentRevision), expectedContentRevision);
+
+    private static OpResult ReviseContentCore(PlanGraph g, Guid nodeId, OperationContext ctx, string fingerprint, long? expectedContentRevision)
     {
-        var fingerprint = Fingerprint("revise_content", ctx.Actor);
         if (Prologue(g, nodeId, ctx, fingerprint) is { } early) return early;
+        if (expectedContentRevision is long expected && g.Nodes[nodeId].ContentRevision != expected)
+            return Rejected(g, new PlanError(StaleContent, $"Expected content revision {expected}; current is {g.Nodes[nodeId].ContentRevision}.", nodeId));
         if (new Index(g).IsContainer(nodeId))
             return Rejected(g, new PlanError(ContainerRevisionUnsupported, "Revising a container's requirements is not supported in v1.", nodeId));
 

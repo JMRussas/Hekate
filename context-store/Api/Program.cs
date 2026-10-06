@@ -23,8 +23,33 @@ var connStr = Environment.GetEnvironmentVariable("CODESTORAGE_CONNSTR")
 if (Environment.GetEnvironmentVariable("CODESTORAGE_CONNSTR") == null)
     Console.WriteLine("[WARN] CODESTORAGE_CONNSTR not set — using POC default credentials");
 
+// --- Plan contract v1: opt-in local profile only. HEKATE_PLAN_CONTRACT=1 with an unsafe
+// (non-loopback / dispatcher-on) configuration throws here, before any managed DDL. ---
+CodeStoragePoc.PlanContracts.PlanContractGateResult planContract;
+try
+{
+    planContract = CodeStoragePoc.PlanContracts.PlanContractGate.Evaluate(Environment.GetEnvironmentVariable);
+}
+catch (CodeStoragePoc.PlanContracts.PlanContractConfigurationException ex)
+{
+    Console.Error.WriteLine($"[FATAL] {ex.Message}");
+    Environment.Exit(78);   // EX_CONFIG
+    return;
+}
+Console.WriteLine($"[INFO] Plan contract: {planContract.Mode} ({planContract.Reason})");
+
 // --- Schema migration (idempotent — safe to run on every startup) ---
 await CodeStoragePoc.DbLayer.Schema.Initialize(connStr);
+if (planContract.Mode == CodeStoragePoc.PlanContracts.PlanContractMode.Enabled)
+{
+    try { await CodeStoragePoc.PlanContracts.PlanStoreSchema.Ensure(connStr); }
+    catch (CodeStoragePoc.PlanContracts.PlanContractConfigurationException ex)
+    {
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
+        Environment.Exit(78);
+        return;
+    }
+}
 
 // --- DI Registration ---
 var repo = new NodeRepository(connStr);
@@ -79,6 +104,10 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 app.UseCors();
+// Fence violations on managed plan nodes (from any endpoint) become 409 managed_plan_protected.
+CodeStoragePoc.Api.PlanContractEndpoints.UseManagedPlanFenceErrors(app);
+if (planContract.Mode == CodeStoragePoc.PlanContracts.PlanContractMode.Enabled)
+    CodeStoragePoc.Api.PlanContractEndpoints.MapPlanContractEndpoints(app, new CodeStoragePoc.PlanContracts.PlanStore(connStr));
 
 // --- Health check (real: Postgres + AGE + Ollama + outbox) ---
 app.MapGet("/api/health", async (CodeStoragePoc.GraphLayer.AgeLayer ageLayer) =>

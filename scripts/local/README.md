@@ -42,6 +42,31 @@ started. The context-store **agent dispatcher is disabled**
 (`HEKATE_DISABLE_DISPATCHER=1`), so editing a node never spawns a claude or
 gemini run.
 
+## Optional: plan contracts
+
+Set `HEKATE_LOCAL_PLAN_CONTRACT=1` before `start` to pass `HEKATE_PLAN_CONTRACT=1`
+to the Api. Managed plans are then available at `/api/plan-contract/v1`, with
+their write fence. The Api re-verifies a loopback URL and DSN and a disabled
+dispatcher before creating any plan-contract schema, and refuses to start
+otherwise. This adds tables and fence triggers to the local `code_storage`
+database. See
+[context-store/plans/012-plan-node-contracts-v1.md](../../context-store/plans/012-plan-node-contracts-v1.md).
+
+Process-level API check (needs the local profile's container running):
+
+```powershell
+pwsh scripts/local/PlanContractApi.Tests.ps1
+```
+
+The script runs against a new disposable database and its own Api processes, and
+cleans up only those. It checks three cases:
+
+- flag off: endpoints absent;
+- unsafe flag: exits 78 before any DDL;
+- enabled: HTTP lifecycle, readiness, error codes, and the 409 legacy-write fence.
+
+It exits non-zero on any failure and never skips.
+
 ## Isolation from the Sisyphus deployment
 
 | | Local profile | NSSM / `docker-compose.yml` |

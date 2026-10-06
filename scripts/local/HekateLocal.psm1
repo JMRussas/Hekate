@@ -68,6 +68,8 @@ function Get-HLConfig {
         PgPassword         = Get-HLEnvValue 'HEKATE_LOCAL_PG_PASSWORD' 'postgres'
         ApiPort            = $apiPort
         ApiUrl             = "http://127.0.0.1:$apiPort"
+        # Opt-in: also enable the plan-contract store (managed plans + write fence) in the Api.
+        PlanContract       = (Get-HLEnvValue 'HEKATE_LOCAL_PLAN_CONTRACT' '0') -eq '1'
         HealthTimeoutSec   = ConvertTo-HLInt 'HEKATE_LOCAL_TIMEOUT_SEC' (Get-HLEnvValue 'HEKATE_LOCAL_TIMEOUT_SEC' '180')
         ShutdownTimeoutSec = 20
         PollIntervalSec    = 2
@@ -104,7 +106,7 @@ function Assert-HLLoopbackConnectionString([string]$ConnectionString) {
 }
 
 function Get-HLApiEnvironment($Config, [string]$ShutdownToken) {
-    @{
+    $envVars = @{
         CODESTORAGE_CONNSTR         = Get-HLConnectionString $Config
         HEKATE_API_URLS             = $Config.ApiUrl
         # Plan-only profile: node edits must not spawn claude/gemini CLI runs.
@@ -112,6 +114,11 @@ function Get-HLApiEnvironment($Config, [string]$ShutdownToken) {
         # Enables the loopback-only graceful shutdown endpoint for this process.
         HEKATE_LOCAL_SHUTDOWN_TOKEN = $ShutdownToken
     }
+    # Always explicit: Start-Process -Environment inherits unspecified variables, so an
+    # ambient HEKATE_PLAN_CONTRACT=1 in the caller must not enable the feature implicitly.
+    # The Api re-verifies loopback URL/DSN + dispatcher off before any plan-contract DDL.
+    $envVars.HEKATE_PLAN_CONTRACT = if ($Config.PlanContract) { '1' } else { '0' }
+    return $envVars
 }
 
 function New-HLToken {

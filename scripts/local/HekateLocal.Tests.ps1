@@ -261,6 +261,17 @@ Describe 'HekateLocal launcher' {
             $global:HL.Procs.ContainsKey('4242') | Should Be $false
         }
 
+        It 'always sets HEKATE_PLAN_CONTRACT explicitly so an ambient flag cannot leak into the Api' {
+            $cfg = New-TestConfig
+            $off = & (Get-Module HekateLocal) { param($c) Get-HLApiEnvironment $c 'tok' } $cfg
+            $off.HEKATE_PLAN_CONTRACT | Should Be '0'
+            $cfg.PlanContract = $true
+            $on = & (Get-Module HekateLocal) { param($c) Get-HLApiEnvironment $c 'tok' } $cfg
+            $on.HEKATE_PLAN_CONTRACT | Should Be '1'
+            $on.HEKATE_DISABLE_DISPATCHER | Should Be '1'
+            $on.HEKATE_API_URLS | Should Be 'http://127.0.0.1:5103'
+        }
+
         It 'is idempotent when already running and ready' {
             $cfg = New-TestConfig; Reset-World $cfg
             $global:HL.Inspect['cid1'] = $global:HL.AfterUp

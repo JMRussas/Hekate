@@ -1,6 +1,10 @@
 # Plan 012 — Plan node contracts v1 (`plan-contract/v1`)
 
-**Status: increment 2a implemented (pure rules + tests only). Not wired to any store, API or UI.**
+**Status:**
+- **Increment 2a:** pure rules, implemented.
+- **Increment 2b1:** PostgreSQL store plus an opt-in loopback API, implemented and live-tested on a disposable database.
+
+Not wired to execution, UI, auth, or legacy-plan enrollment. See *Increment 2b1* below.
 **Goal: one engine-neutral definition of how plan nodes, dependencies, work state and acceptance behave, before any storage or execution integration.**
 
 Code: [`PlanContracts/PlanModel.cs`](../PlanContracts/PlanModel.cs), [`PlanContracts/PlanRules.cs`](../PlanContracts/PlanRules.cs).
@@ -215,30 +219,125 @@ These codes are part of the contract surface. `ErrorCodeCoverageTests` proves th
 
 Blocker reasons are listed in reporting precedence: `predecessor_cancelled`, `predecessor_rejected`, `predecessor_not_completed`, `predecessor_upstream_changed`, `predecessor_acceptance_stale`, `predecessor_not_accepted`.
 
-## Integration requirements (not done; need review and a live database)
+## Increment 2b1: PostgreSQL store and opt-in local API
 
-1. **Storage.** The existing Postgres is the authority. AGE is only a projection: today `AgeLayer.CreateEdge` writes to `graph_sync_outbox`, and the worker supports only `sync_vertex` and `create_edge`. Proposed tables:
-   - `plan_dependencies`
-   - `plan_node_state`
-   - a content-revision column on `nodes`
+**Code:**
+- [`PlanContracts/PlanStore.cs`](../PlanContracts/PlanStore.cs)
+- [`PlanStoreSchema.cs`](../PlanContracts/PlanStoreSchema.cs)
+- [`PlanContractGate.cs`](../PlanContracts/PlanContractGate.cs)
+- [`PlanContentDigest.cs`](../PlanContracts/PlanContentDigest.cs)
+- [`Api/PlanContractEndpoints.cs`](../Api/PlanContractEndpoints.cs)
 
-   Each mutation would run in one transaction:
-   1. take a per-project advisory lock
-   2. load the snapshot
-   3. run PlanRules
-   4. compare-and-set the state revision
-   5. write the changes plus an outbox row
-   6. commit
+**Live tests:** [`PlanStore.LiveTests/`](../PlanStore.LiveTests/). Run with
+`HEKATE_PLAN_LIVE_CONNSTR="Host=127.0.0.1;Port=5434;Database=postgres;Username=postgres;Password=postgres" dotnet test context-store/PlanStore.LiveTests`.
+Each run creates and drops its own `hekate_plan_live_*` database. Without the variable the suite fails rather than skipping.
 
-   Removing a dependency needs a new `delete_edge` outbox operation. All of this must be verified against a real database.
-2. **Every legacy writer must be inventoried before integration.** That means more than `NodeService.UpdateNodeFull` and `UpdateAttributes`: it includes `NodeRepository` updates and attribute writes, seeders, the decomposer, and Python syncs (`plan_sync.py`, `context_bridge.py`). For each one, decide whether it changes content (increment ContentRevision), changes state, or is presentational. Bumping two methods is not enough.
+### Opt-in
+
+Nothing is created unless `HEKATE_PLAN_CONTRACT=1`. With the flag set, all of the following must hold, or startup **fails before any managed DDL**:
+
+- `HEKATE_API_URLS` is exactly one loopback URL (no wildcard, `0.0.0.0` or multiple hosts);
+- `CODESTORAGE_CONNSTR` names exactly one loopback `Host` and a `Database`;
+- `HEKATE_DISABLE_DISPATCHER=1`.
+
+The schema also requires the AGE graph `code_graph`. The local launcher passes the flag only when `HEKATE_LOCAL_PLAN_CONTRACT=1`. Production/NSSM never sets it.
+
+### Schema
+
+The schema is additive and leaves `nodes` unchanged.
+
+- `managed_plans`: root, project, default gate (`accepted`), contract version.
+- `plan_node_state`: one row per managed node, holding the content revision, state revision, work, attempt id/epoch, artifact, the acceptance stamp, and the latest operation key and fingerprint. The row exists if and only if the node is managed.
+- `plan_dependencies`: predecessor, successor, gate.
+
+### Operations
+
+The operations are: create a **new** managed plan (idempotent on root id + key + payload), add a child, add or remove a dependency, transition, decide, and revise content. Each runs in **one transaction**:
+
+1. `SET LOCAL hekate.plan_contract='on'`
+2. per-project advisory lock
+3. whole-plan snapshot load
+4. contract-version check
+5. the PlanRules operation, including whole-graph validation
+6. compare-and-set row updates
+7. dependency diff
+8. AGE reconcile in the same transaction
+9. commit
+
+Any failure rolls the whole operation back.
+
+### Projection
+
+The plan's dependencies are projected as `DEPENDS_ON {plan_root}` edges between `CodeNode {node_id}` vertices. The projection is identity only: no names or content.
+
+- A convergent reconcile merges vertices, deletes stray or duplicate tagged edges, creates missing ones, and verifies the result.
+- If AGE is broken, plan writes fail with `projection_failed`. That availability coupling is deliberate: the projection never drifts.
+- `POST plans/{root}/project` repairs the projection.
+- Legacy untagged edges and the legacy outbox are untouched.
+
+### Write fence
+
+Triggers raise SQLSTATE `HP409` (`managed_plan_protected`), which the API returns as HTTP 409 on every endpoint. A write is blocked when it:
+
+- changes `value`, `node_type`, `project_id`, `parent_id` or `file_id` on a managed node, or deletes one;
+- creates a structural node anywhere under a managed node, including via an unmanaged intermediary;
+- turns an unmanaged node inside a managed tree into a structural type;
+- moves any node into or out of a managed tree;
+- writes any attribute on a managed node except the presentation keys `priority`, `target_date`, `display_color` and `notes` (including moving an attribute between nodes);
+- writes the contract tables directly;
+- truncates while managed plans exist.
+
+This covers the HTTP endpoints, repositories, MCP raw SQL and seeders.
+
+**Trust boundary:** any holder of full database credentials can `SET` the flag or disable triggers. This is an integrity fence, not authentication.
+
+### API
+
+`/api/plan-contract/v1`, loopback callers only:
+
+- `POST plans`
+- `GET plans/{root}` (nodes with content, dependencies, readiness)
+- `GET plans/{root}/readiness`
+- `POST plans/{root}/project`
+- `POST nodes/{parent}/children`
+- `POST nodes/{id}/dependencies`
+- `DELETE nodes/{id}/dependencies/{pred}`
+- `POST nodes/{id}/transition`
+- `POST nodes/{id}/decide`
+- `PUT nodes/{id}/content`
+
+Every precondition is **required**; an omitted field is 400 `missing_field`. Status codes:
+
+| Status | Codes |
+|---|---|
+| 400 | invalid input or enum |
+| 404 | not found |
+| 409 | `stale_revision`, `stale_content`, `operation_key_reused`, `revision_exhausted`, `plan_exists`, `node_exists`, `concurrent_modification`, `managed_plan_protected` |
+| 422 | other rule codes, with blockers |
+| 503 | `projection_failed` |
+
+Enum values are snake_case names.
+
+`attemptId` is an opaque attempt correlation, not an identity or auth principal.
+
+### Deferred
+
+- adopting or enrolling legacy plans (would lose their historical meaning)
+- execution integration and the authoritative execution ledger
+- UI
+- auth
+
+## Integration requirements (remaining)
+
+1. **Storage.** Done in 2b1 (above). The AGE projection is reconciled in the same transaction instead of through the legacy outbox.
+2. **Legacy writers.** All of them are inventoried in [013](013-plan-writer-inventory.md). Since 2b1 the database fence blocks every one of them from changing managed plans. **Migrating** legacy clients (`plan_sync.py`, `context_bridge.py`, the UI's generic node editor and MCP tools) to the contract API, or retiring them, is deferred.
 3. **Execution link.** Execution records link to plan nodes by stable node id, never by title.
    - The authoritative execution ledger is **not** decided.
    - `Odin/run_hekate.py` and `gods/engine.py` use Postgres when a DSN is set and fall back to SQLite otherwise.
-   - The engine import is currently broken on this branch.
+   - The engine import was restored by recovery commit `a1f8237`, which brought back `athena_complete`, `sessions` and `conversation`. Imports and targeted tests are verified; pipeline **activation** is not.
    - Which ledger is authoritative, and how its states map to `WorkStatus`, needs an explicit adapter decision.
-4. **Snapshot loading** must map database rows into `PlanGraph.Create` and reject duplicate ids, which `Create` already does.
-5. **Durability, concurrency and AGE projection** claims need live tests: concurrent compare-and-set, the advisory lock preventing concurrent cycles, outbox draining, and the cascade on node delete.
+4. **Snapshot loading:** implemented in 2b1 (`PlanStore.LoadSnapshot`). It loads atomically under the project lock, keeps the stored root parent without normalising it, and loads incomplete stored decisions as values that validation rejects.
+5. **Durability, concurrency and AGE projection:** live-tested in 2b1. Covered: concurrent compare-and-set (exactly one applies), opposing concurrent dependencies (exactly one gets `dependency_cycle`), AGE failure rollback, idempotent reconcile, the fence, and global id conflicts. Node deletion of managed nodes is fenced; no contract delete operation exists yet.
 
 ## Known limitations (v1)
 
@@ -246,4 +345,4 @@ Blocker reasons are listed in reporting precedence: `predecessor_cancelled`, `pr
 - There is no explicit descope operation, so cancelling a child keeps its container incomplete.
 - Each node remembers only one operation key for replay.
 - Adding a child to a leaf that already has work state makes the snapshot invalid (`invalid_state`). Restructuring started work needs an explicit future operation.
-- Reparenting and node creation or deletion are not operations in this slice. Snapshots containing them are validated as a whole.
+- Nodes are created only through `CreatePlan` (new roots) and `AddChild`. **Reparenting and deletion are not supported**: the fence blocks them for managed nodes, and no contract operation exists yet.

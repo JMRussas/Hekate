@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Live PostgreSQL/AGE tests for the plan-contract store. Each run creates its own NEW
+       disposable database (hekate_plan_live_*) on the server named by HEKATE_PLAN_LIVE_CONNSTR
+       (loopback admin connection to the 'postgres' database) and drops it afterwards
+       (keep it with HEKATE_PLAN_LIVE_KEEP=1). Fails, rather than skips, when unset.
+       Excluded from CodeStoragePoc.csproj's glob via DefaultItemExcludes. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>CodeStoragePoc.PlanStore.LiveTests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodeStoragePoc.csproj" />
+    <ProjectReference Include="..\Api\Api.csproj" />
+  </ItemGroup>
+</Project>

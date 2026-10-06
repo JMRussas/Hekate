@@ -1,6 +1,6 @@
 # Plan 013 — Legacy plan-node writer inventory
 
-**Status: read-only inventory, 2026-10-06. Not an implementation plan, and not approval for increment 2b.**
+**Status: legacy writer inventory, 2026-10-06; acceptance milestones below are current. Remaining integration requires a separate bounded implementation decision.**
 **Purpose:** before plan contracts v1 ([012](012-plan-node-contracts-v1.md)) are wired to a store, list every path that can change plan nodes. Each writer is classified so content and state invariants cannot be bypassed through a generic writer.
 
 ## Contract acceptance status
@@ -8,8 +8,9 @@
 | Increment | Status |
 |---|---|
 | 1 — local plan-only launcher (`scripts/local/`) | Live startup, restart persistence, backup/AGE restore, ownership and shutdown verified with Docker Desktop. See [`scripts/local/VALIDATION.md`](../../scripts/local/VALIDATION.md) for evidence and exclusions. |
-| 2a — pure plan contracts (`PlanContracts/`, 101 tests) | **Accepted** by codex-hekate, pure scope only. No storage, API, AGE or live-runtime claim. |
-| 2b — store integration | **Not started, not approved.** This document is an input to that decision. |
+| 2a — pure plan contracts (`PlanContracts/`) | **Accepted** by codex-hekate, pure scope only. |
+| 2b1 — PostgreSQL store + opt-in loopback API + write fence | **Accepted by codex-hekate after independent final runs.** It covers **new** managed plans only. The fence blocks the generic writers below for managed nodes (409 `managed_plan_protected`). See [012](012-plan-node-contracts-v1.md) and the evidence in [014](014-plan-contract-integration-validation.md). |
+| 2b, remaining | Legacy-plan enrollment, the execution-ledger link, and the fate of each writer (section D) are **not started and not approved**. |
 
 ## Method and labels
 

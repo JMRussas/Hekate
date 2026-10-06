@@ -68,6 +68,11 @@ public class ErrorCodeCoverageTests
             var g = new PlanBuilder().Node("a").Build();
             return Errors(PlanRules.ReviseContent(g, Id("a"), new OperationContext("k", 5, "t")));
         },
+        [InvalidChild] = () =>
+        {
+            var g = new PlanBuilder().Node("a").Build();
+            return Errors(PlanRules.AddChild(g, new PlanNode(Id("a"), Project, "task", Root, 0, 1), Ctx(g, "root"), "d"));
+        },
         [RevisionExhausted] = () =>
         {
             var g = new PlanBuilder().Node("a").State("a", NodeState.Initial with { StateRevision = long.MaxValue }).Build();

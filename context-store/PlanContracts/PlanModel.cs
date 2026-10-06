@@ -197,6 +197,7 @@ public static class PlanErrorCodes
     public const string ArtifactRequired = "artifact_required";
     public const string EvidenceRequired = "evidence_required";
     public const string GatesNotSatisfied = "gates_not_satisfied";
+    public const string InvalidChild = "invalid_child";
 }
 
 /// <summary>Stable blocker reasons, in the precedence order they are reported.</summary>
