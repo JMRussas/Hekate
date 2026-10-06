@@ -385,7 +385,7 @@ class TestDualAthenaCollision:
         from gods.handlers.athena_leveled import athena_plan_leveled
 
         db = FakeDB()
-        db._rows[("SELECT name, requirements, status, config_json FROM projects WHERE id = $1", ("proj1",))] = {
+        db._rows[("SELECT name, requirements, status, config_json, repo_path, additional_repos FROM projects WHERE id = $1", ("proj1",))] = {
             "name": "Test", "requirements": "reqs",
             "status": "draft",
             "config_json": json.dumps({
