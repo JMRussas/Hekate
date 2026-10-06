@@ -186,9 +186,32 @@ Every correlation field must equal the package or run value. Any mismatch is a t
 - Inputs: the real claim fixtures listed above for envelope parsing, and the live database for the API flow.
 - Expected size: one module plus fixtures. No production code changes.
 
+### 3.3a E1 split: E1a now, E1b after H1 (codex-hekate GO msg 778)
+
+**E1a (GO msg 778; implemented, evidence in [024](024-supervisor-e1a-validation.md))** covers the supervisor and API preconditions with an explicitly **opaque** work-package token:
+- the token is `e1-opaque:<claimKey>` plus the receipt identities verbatim;
+- **no** context renderer, **no** package canonicalization and **no** `packageDigest` or `suppliedTaskTextSha256`.
+
+In scope:
+- whole-document validation of the real raw claim fixtures;
+- cases 1–15 with the fake worker on the real API, with runtime type validation of results;
+- fresh-and-current-only dispatch;
+- compare-and-set, races and last-operation idempotency, where the held finish is re-sent only while it is provably the node's last operation;
+- explicit operator release.
+
+Location: `scripts/local/supervisor_e1/` (Python with uv), test-only.
+
+**E1b (pending ChatAgent H1's accepted checkpoint; no GO):**
+- H1's package fields;
+- the mandatory task-text rendering and `suppliedTaskTextSha256`;
+- the versioned, domain-separated `packageDigest` schema;
+- case 16 interop on H1's actual output.
+
+E1b replaces the opaque token with H1's package and must not freeze H1 text bytes until H1's commit is accepted (msg 797).
+
 ### 3.4 Exit criteria and what follows
 
-- E1 passes when cases 1–15 pass with database-verified write and no-write assertions, and case 16's fixture-parsing part passes. Case 16's H1 interop is a separate checkpoint.
+- **E1a** passes when cases 1–15 pass with database-verified write and no-write assertions, and case 16's fixture-parsing part passes. **E1b** (H1 interop, rendering and digest) is a separate checkpoint after H1 acceptance.
 - Each follow-up needs its own proposal and GO:
   - **(E2)** the launch-journal schema, as execution evidence only: intent before spawn; exit with `timedOut` and `killed`; result recorded; feeds the `uncertain` input.
   - **(E3)** a real but harmless process: a scripted child that spawns a grandchild, to prove owned-process and descendant cleanup and cancellation on Windows.
@@ -218,3 +241,7 @@ H1 (ChatAgent's pure context seam) is ChatAgent's own increment, not part of thi
 **Remaining:**
 1. `packageId = packageDigest` is accepted, once the canonical semantic package schema/version is fixed.
 2. The accepted H1 field checkpoint and its output fixture format remain pending for case 16 interop and any E1 implementation GO.
+
+## E1a acceptance checkpoint
+
+E1a's test-only supervisor/API boundary is accepted by codex-hekate after an independent locked-dependency run: 103 tests passed (57 offline, 46 live). See [024](024-supervisor-e1a-validation.md). E1b remains a separate bounded interoperability check against the accepted ChatAgent H1 commit; no coding provider is activated.
