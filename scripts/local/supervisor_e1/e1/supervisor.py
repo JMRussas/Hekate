@@ -1,15 +1,18 @@
-"""Test-only supervisor and scripted fake worker (plan 023 E1a). Not production code.
+"""Test-only supervisor and scripted fake worker (plan 023 E1a/E1b). Not production code.
 
 The supervisor is the ONLY writer of claim, finish and release, and its client exposes
-nothing else. Rules (plan 023 §3.1):
-- dispatch only on a FRESH claim (replayed == false) in this session; a replayed receipt or an
-  explicit "uncertain" operator state is never permission to dispatch, whatever stillCurrent says;
-- success is judged from typed outcome fields only (never prose) plus full correlation;
+nothing else. Rules (plan 023 §3.1, review msgs 789 and 829):
+- dispatch only on a FRESH claim (replayed == false) that is current at hand-off; a replayed
+  receipt or an explicit "uncertain" operator state is never permission to dispatch;
+- the work package comes from a package builder: the E1a opaque token by default, or ChatAgent
+  H1's actual package (E1b). A builder refusal stops the run BEFORE dispatch;
+- success is judged from typed outcome fields only (never prose) plus full strict correlation;
 - before finishing: stillCurrent, receipt unchanged, and the node's CURRENT stateRevision read
   only for compare-and-set (content/context come only from the receipt);
 - PlanStore is the final authority; any rejection becomes needs_operator with no retry;
-- transition idempotency is last-operation only: the supervisor holds the original finish
-  payload for an immediate replay and never re-sends after an intervening mutation.
+- every fault (lost reply, malformed 5xx, worker exception, failed read) becomes a structured
+  needs_operator that RETAINS the evidence (claim request, package, run, result, held finish);
+  nothing is retried, released or relaunched automatically. No journal: no durability claim.
 """
 
 from __future__ import annotations
@@ -24,6 +27,16 @@ from .seam import Envelope, OpaqueWorkPackage, opaque_package, parse_claim_envel
 from .wire import Response, SupervisorClient
 
 ACTOR = "supervisor-e1"
+SHA256_HEX = frozenset("0123456789abcdef")
+
+
+class PackageRefused(Exception):
+    """A package builder refused this receipt (budget overflow or invalid input). Never dispatch."""
+
+    def __init__(self, code: str, *, overflow: bool):
+        super().__init__(code)
+        self.code = code
+        self.overflow = overflow
 
 
 @dataclass(frozen=True)
@@ -53,24 +66,35 @@ class WorkResult:
     structured_result: dict[str, Any] | None
     artifact_ref: str | None
     prose: str = ""
+    # E1b (None for the E1a opaque package): H1's suppliedSha256 binds the mandatory task text
+    # ONLY; the separately supplied instructions are echoed as their actual strings.
+    supplied_sha256: str | None = None
+    system_instruction: str | None = None
+    role_fast: str | None = None
+    role_deep: str | None = None
 
 
 CORRELATION = ("run_id", "package_token", "root_id", "node_id", "claim_key", "attempt_id", "attempt_epoch",
-               "executor_ref", "content_digest", "prereq_digest")
+               "executor_ref", "content_digest", "prereq_digest", "supplied_sha256",
+               "system_instruction", "role_fast", "role_deep")
 
 
-def echo(pkg: OpaqueWorkPackage, run: RunEnvelope, **outcome: Any) -> WorkResult:
+def echo(pkg: Any, run: RunEnvelope, **outcome: Any) -> WorkResult:
     """A WorkResult that correlates exactly; tests override single fields to break it."""
     base: dict[str, Any] = dict(run_id=run.run_id, package_token=pkg.token, root_id=pkg.root_id, node_id=pkg.node_id,
                                 claim_key=pkg.claim_key, attempt_id=pkg.attempt_id, attempt_epoch=pkg.attempt_epoch,
                                 executor_ref=pkg.executor_ref, content_digest=pkg.content_digest, prereq_digest=pkg.prereq_digest,
+                                supplied_sha256=getattr(pkg, "supplied_sha256", None),
+                                system_instruction=getattr(pkg, "system_instruction", None),
+                                role_fast=getattr(pkg, "role_fast", None), role_deep=getattr(pkg, "role_deep", None),
                                 exit_code=0, timed_out=False, killed=False, structured_result={"status": "ok"},
                                 artifact_ref="sha-e1", prose="")
     base.update(outcome)
     return WorkResult(**base)
 
 
-Script = Callable[[OpaqueWorkPackage, RunEnvelope], WorkResult]
+Script = Callable[[Any, RunEnvelope], WorkResult]
+PackageBuilder = Callable[[Envelope], Any]
 
 
 class FakeWorker:
@@ -80,7 +104,7 @@ class FakeWorker:
         self._script = script
         self.dispatches: list[RunEnvelope] = []
 
-    def __call__(self, pkg: OpaqueWorkPackage, run: RunEnvelope) -> WorkResult:
+    def __call__(self, pkg: Any, run: RunEnvelope) -> WorkResult:
         self.dispatches.append(run)
         return self._script(pkg, run)
 
@@ -96,11 +120,13 @@ class SupervisedRun:
     outcome: Outcome
     reason: str
     envelope: Envelope | None = None
-    package: OpaqueWorkPackage | None = None
+    package: Any = None
     run: RunEnvelope | None = None
     result: WorkResult | None = None
     finish: Response | None = None
     held_finish: dict[str, Any] | None = None   # original payload, for an immediate replay only
+    claim_request: dict[str, Any] | None = None  # the original claim request, retained as evidence
+    error: str | None = None                     # exception type for uncertain faults (never content)
     notes: list[str] = field(default_factory=list)
 
 
@@ -108,8 +134,10 @@ def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def malformed_fields(res: WorkResult) -> list[str]:
+def malformed_fields(res: Any) -> list[str]:
     """Runtime type validation (dataclass hints are not enforced). Any entry means: never finish."""
+    if not isinstance(res, WorkResult):
+        return ["work_result"]
     bad: list[str] = []
     for f in ("run_id", "package_token", "root_id", "node_id", "claim_key", "attempt_id", "content_digest", "prereq_digest"):
         v = getattr(res, f)
@@ -130,10 +158,16 @@ def malformed_fields(res: WorkResult) -> list[str]:
         bad.append("artifact_ref")
     if not isinstance(res.prose, str):
         bad.append("prose")
+    s = res.supplied_sha256
+    if s is not None and (not isinstance(s, str) or len(s) != 64 or not set(s) <= SHA256_HEX):
+        bad.append("supplied_sha256")
+    for f in ("system_instruction", "role_fast", "role_deep"):
+        if getattr(res, f) is not None and not isinstance(getattr(res, f), str):
+            bad.append(f)
     return bad
 
 
-def correlation_mismatches(pkg: OpaqueWorkPackage, run: RunEnvelope, res: WorkResult) -> list[str]:
+def correlation_mismatches(pkg: Any, run: RunEnvelope, res: WorkResult) -> list[str]:
     """Strict: equal value AND equal type (so True never matches epoch 1)."""
     expected = echo(pkg, run)
     out = []
@@ -171,36 +205,66 @@ def current_node_state(plan: Response, root: str, node: str) -> dict[str, Any]:
     raise WireError("unexpected_shape", f"node {node} not in plan {root}")
 
 
+def _fault(out: SupervisedRun, phase: str, e: BaseException) -> SupervisedRun:
+    out.outcome, out.reason, out.error = Outcome.NEEDS_OPERATOR, f"uncertain:{phase}", type(e).__name__
+    return out
+
+
 class Supervisor:
-    def __init__(self, client: SupervisorClient, worker: FakeWorker, *, operator_state: dict[str, str] | None = None):
+    def __init__(self, client: SupervisorClient, worker: FakeWorker, *, operator_state: dict[str, str] | None = None,
+                 package_builder: PackageBuilder = opaque_package):
         self._client = client
         self._worker = worker
+        self._build = package_builder
         self.operator_state = dict(operator_state or {})
         self.before_finish: Callable[[], None] | None = None   # test hook (race case only)
 
     def run(self, root: str, claim_key: str, attempt_id: str, executor_ref: str | None) -> SupervisedRun:
-        resp = self._client.claim(root, claim_key, attempt_id, executor_ref, ACTOR)
+        out = SupervisedRun(Outcome.NEEDS_OPERATOR, "")
+        out.claim_request = {"root": root, "claimKey": claim_key, "attemptId": attempt_id, "executorRef": executor_ref, "actor": ACTOR}
+        try:
+            resp = self._client.claim(root, claim_key, attempt_id, executor_ref, ACTOR)
+        except Exception as e:  # noqa: BLE001  lost reply / malformed body: the claim may have committed
+            return _fault(out, "claim_reply", e)
         if resp.status != 200:
-            return SupervisedRun(Outcome.NEEDS_OPERATOR, f"claim_failed:{resp.status}:{resp.code}")
-        env = parse_claim_envelope(resp.raw, expected_root=root, expected_key=claim_key)
+            out.reason = f"claim_failed:{resp.status}:{resp.code}"
+            return out
+        try:
+            env = parse_claim_envelope(resp.raw, expected_root=root, expected_key=claim_key)
+        except WireError as e:
+            return _fault(out, "claim_reply", e)
+        out.envelope = env
         if env.receipt.outcome == "no_ready_work":
-            return SupervisedRun(Outcome.NO_READY_WORK, "no_ready_work", env)
+            out.outcome, out.reason = Outcome.NO_READY_WORK, "no_ready_work"
+            return out
         if self.operator_state.get(claim_key) == "uncertain":
-            return SupervisedRun(Outcome.NEEDS_OPERATOR, "uncertain", env)
+            out.reason = "uncertain"
+            return out
         if env.replayed:
-            return SupervisedRun(Outcome.NEEDS_OPERATOR, "replayed_claim", env)
+            out.reason = "replayed_claim"
+            return out
         if env.receipt.attempt_id != attempt_id or env.receipt.executor_ref != executor_ref:
-            return SupervisedRun(Outcome.NEEDS_OPERATOR, "receipt_request_mismatch", env)
-        # Even a fresh claim must be current at hand-off (parse_claim_envelope already proved the
-        # current attempt equals the receipt whenever stillCurrent is true). Not a launch authority:
-        # it only refuses; it never makes a replay dispatchable.
+            out.reason = "receipt_request_mismatch"
+            return out
+        # Even a fresh claim must be current at hand-off. Not a launch authority: it only refuses.
         if not env.still_current or env.current is None or env.current.work != "in_progress":
-            return SupervisedRun(Outcome.NEEDS_OPERATOR, "not_current_at_dispatch", env)
+            out.reason = "not_current_at_dispatch"
+            return out
 
-        pkg = opaque_package(env)
+        try:
+            pkg = self._build(env)
+        except PackageRefused as e:
+            out.reason = f"{'package_overflow' if e.overflow else 'package_refused'}:{e.code}"
+            return out
+        except Exception as e:  # noqa: BLE001  builder unavailable or broken: never dispatch
+            return _fault(out, "package_build", e)
+        out.package = pkg
         run = RunEnvelope(f"run-{uuid.uuid4()}", pkg.token)
-        out = SupervisedRun(Outcome.NEEDS_OPERATOR, "", env, pkg, run)
-        res = self._worker(pkg, run)
+        out.run = run
+        try:
+            res = self._worker(pkg, run)
+        except Exception as e:  # noqa: BLE001  the worker's effects are unknown
+            return _fault(out, "worker_raised", e)
         out.result = res
         if malformed := malformed_fields(res):
             out.reason = "malformed_result:" + ",".join(malformed)
@@ -213,18 +277,22 @@ class Supervisor:
             return out
 
         # Preconditions: re-read the receipt (a READ) and the node's current revision (CAS only).
-        again = self._client.get_claim(root, claim_key)
-        if again.status != 200:
-            out.reason = f"claim_read_failed:{again.status}:{again.code}"
+        try:
+            again = self._client.get_claim(root, claim_key)
+            if again.status != 200:
+                out.reason = f"claim_read_failed:{again.status}:{again.code}"
+                return out
+            env2 = parse_claim_envelope(again.raw, expected_root=root, expected_key=claim_key)
+            if env2.receipt != env.receipt:
+                out.reason = "receipt_changed"
+                return out
+            if not env2.still_current:
+                out.reason = "not_still_current"
+                return out
+            node = current_node_state(self._client.get_plan(root), root, pkg.node_id)
+        except Exception as e:  # noqa: BLE001
+            out.outcome, out.reason, out.error = Outcome.NEEDS_OPERATOR, "read_failed", type(e).__name__
             return out
-        env2 = parse_claim_envelope(again.raw, expected_root=root, expected_key=claim_key)
-        if env2.receipt != env.receipt:
-            out.reason = "receipt_changed"
-            return out
-        if not env2.still_current:
-            out.reason = "not_still_current"
-            return out
-        node = current_node_state(self._client.get_plan(root), root, pkg.node_id)
         if node.get("work") != "in_progress" or node.get("attemptId") != pkg.attempt_id or node.get("attemptEpoch") != pkg.attempt_epoch:
             out.reason = "attempt_not_current"
             return out
@@ -237,8 +305,11 @@ class Supervisor:
         }
         if pkg.executor_ref is not None:
             payload["executorRef"] = pkg.executor_ref
-        out.held_finish = dict(payload)
-        fin = self._client.transition(pkg.node_id, payload)
+        out.held_finish = dict(payload)   # retained before the call, so a lost reply keeps it
+        try:
+            fin = self._client.transition(pkg.node_id, payload)
+        except Exception as e:  # noqa: BLE001  the finish may have committed
+            return _fault(out, "finish_reply", e)
         out.finish = fin
         if fin.status == 200 and isinstance(fin.body, dict) and fin.body.get("outcome") == "applied":
             out.outcome, out.reason = Outcome.FINISHED, "finished"
@@ -248,8 +319,11 @@ class Supervisor:
 
     def replay_held_finish(self, run: SupervisedRun) -> tuple[Response | None, str]:
         """Immediate replay of the ORIGINAL finish payload, sent ONLY while current state proves our
-        finish is still the node's last operation (Done, same attempt/epoch/artifact/executor, and
-        stateRevision == held expectedStateRevision + 1). Otherwise nothing is sent: reconcile."""
+        finish is the node's last operation (Done, same attempt/epoch/artifact/executor, and
+        stateRevision == held expectedStateRevision + 1). Otherwise nothing is sent:
+        - reconcile:finish_unconfirmed — still InProgress at the held revision (the finish did not
+          visibly commit; a resend is a NEW write the operator must decide on);
+        - reconcile:intervening_mutation — anything else."""
         if run.held_finish is None or run.package is None:
             raise ValueError("no held finish")
         pkg, held = run.package, run.held_finish
@@ -258,9 +332,12 @@ class Supervisor:
                 and node.get("attemptEpoch") == held["attemptEpoch"] and node.get("artifactRef") == held["artifactRef"]
                 and node.get("executorRef") == held.get("executorRef")
                 and node.get("stateRevision") == held["expectedStateRevision"] + 1)
-        if not ours:
-            return None, "reconcile:intervening_mutation"
-        return self._client.transition(pkg.node_id, dict(held)), "replayed"
+        if ours:
+            return self._client.transition(pkg.node_id, dict(held)), "replayed"
+        unconfirmed = (node.get("work") == "in_progress" and node.get("attemptId") == held["attemptId"]
+                       and node.get("attemptEpoch") == held["attemptEpoch"]
+                       and node.get("stateRevision") == held["expectedStateRevision"])
+        return None, "reconcile:finish_unconfirmed" if unconfirmed else "reconcile:intervening_mutation"
 
     def release(self, run: SupervisedRun, *, operator: str, reason: str) -> Response:
         """Explicit operator instruction only. Reads the current revision for CAS; never automatic."""

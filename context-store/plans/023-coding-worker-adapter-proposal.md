@@ -201,13 +201,14 @@ In scope:
 
 Location: `scripts/local/supervisor_e1/` (Python with uv), test-only.
 
-**E1b (pending ChatAgent H1's accepted checkpoint; no GO):**
-- H1's package fields;
-- the mandatory task-text rendering and `suppliedTaskTextSha256`;
-- the versioned, domain-separated `packageDigest` schema;
-- case 16 interop on H1's actual output.
-
-E1b replaces the opaque token with H1's package and must not freeze H1 text bytes until H1's commit is accepted (msg 797).
+**E1b (test-only GO msg 820 on ChatAgent H1 commit `5255daa`; implemented, evidence in [025](025-supervisor-e1b-validation.md)):**
+- Opt-in interop suites drive ChatAgent's **actual** `buildPlanTaskContext`. The pinned checkout is fail-closed (HEAD, tracked and clean sources and manifests, Node v24.21.0 per `.node-version`).
+- H1's package replaces the opaque token through a test-only `package_builder`.
+- **As built, H1's actual fields replace this proposal's earlier placeholders:**
+  - H1's `suppliedSha256` (the SHA-256 of the exact mandatory task text, lowercase) takes the place of "`suppliedTaskTextSha256`". It does **not** cover the system or role instructions, which are captured and correlated separately as their actual strings.
+  - **No `packageDigest`** was introduced (msgs 815 and 820). Semantic identity is H1's source identities plus `suppliedSha256`, `supplied.*`, the text and the three instructions. It excludes `replayed`, `stillCurrent`, the random `snapshotId` and runtime.
+- H1's `CONTEXT_TOO_LARGE` and `PACKAGE_TOO_LARGE` map to `package_overflow`; its other refusals map to `package_refused`. Both happen before dispatch.
+- Case 16 interop on the real raw fixtures, plus one opt-in live case (real claim bytes → H1 → finish).
 
 ### 3.4 Exit criteria and what follows
 
@@ -245,3 +246,7 @@ H1 (ChatAgent's pure context seam) is ChatAgent's own increment, not part of thi
 ## E1a acceptance checkpoint
 
 E1a's test-only supervisor/API boundary is accepted by codex-hekate after an independent locked-dependency run: 103 tests passed (57 offline, 46 live). See [024](024-supervisor-e1a-validation.md). E1b remains a separate bounded interoperability check against the accepted ChatAgent H1 commit; no coding provider is activated.
+
+## E1b acceptance checkpoint
+
+E1b is accepted by codex-hekate after independent locked-dependency validation against accepted ChatAgent H1 `5255daa`: 113 standalone supervisor tests, 31 pure interoperability tests and one disposable real-Api/H1/fake-worker completion case passed. See [025](025-supervisor-e1b-validation.md). Task text, system instructions and role instructions are captured and correlated separately; no new package digest is claimed. Durable launch/review-handoff evidence and real-process cleanup remain design follow-ups.

@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 
 import pytest
 
-from conftest import key, ok
+from helpers import key, ok
 from e1 import supervisor as sup
 from e1.seam import opaque_package, parse_claim_envelope
 from e1.supervisor import CORRELATION, FakeWorker, Outcome, Supervisor, echo
@@ -159,7 +159,10 @@ def test_each_correlation_field_mismatch_is_rejected_before_any_write(harness, s
     def wrong(pkg, run):
         good = echo(pkg, run)
         value = getattr(good, field)
-        bad = value + 1 if isinstance(value, int) else (value or "") + "-x"
+        if field == "supplied_sha256":   # a well-formed but different hash (None for the E1a package)
+            bad = "a" * 64 if value != "a" * 64 else "b" * 64
+        else:
+            bad = value + 1 if isinstance(value, int) else (value or "") + "-x"
         return replace(good, **{field: bad})
     s = Supervisor(client, FakeWorker(wrong))
     ck = key()
@@ -191,8 +194,11 @@ def test_replayed_claim_never_dispatches_and_only_an_explicit_operator_release_w
 
     def crash(pkg, run):
         raise RuntimeError("supervisor crashed after hand-off")
-    with pytest.raises(RuntimeError):
-        Supervisor(client, FakeWorker(crash)).run(p.root, ck, "att", "e1:ref")
+    first = Supervisor(client, FakeWorker(crash)).run(p.root, ck, "att", "e1:ref")
+    # The worker fault is captured, not raised: evidence retained, nothing finished or released.
+    assert (first.outcome, first.reason, first.error) == (Outcome.NEEDS_OPERATOR, "uncertain:worker_raised", "RuntimeError")
+    assert first.package is not None and first.run is not None and first.claim_request["claimKey"] == ck
+    assert node_state(setup, p.root, p.target)["work"] == "in_progress"
     before = db_snapshot(harness, p.root)
 
     # A new supervisor (no journal in E1a: this is POLICY, not restart durability).

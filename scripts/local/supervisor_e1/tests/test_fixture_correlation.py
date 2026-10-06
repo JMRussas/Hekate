@@ -187,5 +187,6 @@ def test_a_fresh_claim_that_is_not_current_is_never_dispatched():
 def test_work_result_carries_every_correlation_field():
     assert correlation_fields() == CORRELATION
     assert set(CORRELATION) == {"run_id", "package_token", "root_id", "node_id", "claim_key", "attempt_id", "attempt_epoch",
-                                "executor_ref", "content_digest", "prereq_digest"}
+                                "executor_ref", "content_digest", "prereq_digest", "supplied_sha256",
+                                "system_instruction", "role_fast", "role_deep"}
     assert {f for f in WorkResult.__dataclass_fields__} >= set(CORRELATION)

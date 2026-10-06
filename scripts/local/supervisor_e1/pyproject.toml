@@ -10,7 +10,7 @@ dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "tests"]
 addopts = "-ra"
 
 [tool.uv]

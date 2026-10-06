@@ -50,3 +50,24 @@ Cleanup kills the Api, drops the database and verifies the drop. Each step is in
 - Transition idempotency is last-operation only. The held finish is re-sent only while current state proves it is still the node's last operation; otherwise nothing is sent and the case goes to reconciliation.
 - Release only on explicit operator instruction, with key `supervisor:<claimKey>:release`. The supervisor never calls `decide`.
 - There is no launch journal in E1a, so restart durability is **not** claimed; the replay cases test policy only.
+
+## E1b: ChatAgent H1 interop (opt-in)
+
+Plan 023 §3.3a E1b. Evidence: [025](../../../context-store/plans/025-supervisor-e1b-validation.md). These suites are **not** part of the default run. Selecting them requires the pinned sibling ChatAgent checkout. When it is missing, dirty or at the wrong commit, they **error**; they never skip.
+
+```powershell
+uv run pytest interop        # pure: H1 over the real raw fixtures and derived inputs; no HTTP, no container
+uv run pytest interop_live   # one live case: real claim bytes -> H1 -> fake worker -> finish (needs the container too)
+```
+
+| File | Role |
+|---|---|
+| `e1/h1_bridge.mjs` | Runs ChatAgent's **actual** `buildPlanTaskContext` (`node --import tsx`, with cwd set to the ChatAgent checkout). Options go in on stdin and one JSON line comes out. Refusals are typed and never echo content. Also runs frozen/copy probes. It renders nothing itself. |
+| `e1/h1_bridge.py` | Before every call, checks the pin: HEAD is `5255daa…`; the H1 module, `src/app`, `src/domain`, `package.json`, `package-lock.json`, `tsconfig.json` and `.node-version` are tracked and clean; tsx is already installed (never installs); and the Node executable's `--version` equals `.node-version` exactly. The executable is `HEKATE_E1_NODE` or the known `node_modules/.cache/worker-diagnosis/new24/node.exe` (v24.21.0, recipe 812), never PATH. Output is parsed with `loads_exact`. |
+| `e1/h1_package.py` | Turns the H1 result into the supervisor's work package using **only H1's actual fields** (there is no `packageDigest`). It checks typed provenance against the supervisor's own parse of the same raw bytes and recomputes `suppliedSha256` independently. `CONTEXT_TOO_LARGE` and `PACKAGE_TOO_LARGE` become `package_overflow`; other codes become `package_refused`. Both happen before dispatch. |
+
+`ChatAgent dir`: `HEKATE_E1_CHATAGENT_DIR` (default `D:\Git\ChatAgent`).
+
+`suppliedSha256` binds the mandatory task text **only**. The system, fast and deep instructions are captured and correlated separately, as their actual strings. Semantic identity includes them, and excludes `replayed`, `stillCurrent`, the random `snapshotId` and runtime details.
+
+The test supervisor also handles faults (review msg 829). Lost claim or finish replies, malformed 5xx bodies, a worker that raises, failed reads and builder failures each become a structured needs-operator outcome. That outcome keeps the claim request, package, run, result and any held finish. Nothing is retried, released or relaunched automatically.
