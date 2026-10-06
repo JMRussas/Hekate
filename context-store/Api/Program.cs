@@ -119,6 +119,58 @@ app.MapGet("/api/health", async (CodeStoragePoc.GraphLayer.AgeLayer ageLayer) =>
     return Results.Ok(health);
 });
 
+// --- Readiness (used by scripts/local/hekate-local.ps1): Postgres + required
+// extensions + a real AGE Cypher query + core tables. Optional inference (Ollama)
+// is deliberately excluded. 200 when ready, 503 otherwise. Schema.Initialize runs
+// before the app serves, so a 200 means it completed, not that it was atomic.
+app.MapGet("/api/health/ready", async () =>
+{
+    var checks = new Dictionary<string, object>
+    {
+        ["postgres"] = false, ["extensions"] = false, ["age_graph"] = false, ["schema"] = false,
+        ["dispatcher_disabled"] = Environment.GetEnvironmentVariable("HEKATE_DISABLE_DISPATCHER") == "1",
+    };
+    var step = "postgres";
+    try
+    {
+        await using var rconn = new NpgsqlConnection(connStr);
+        await rconn.OpenAsync();
+        checks["postgres"] = true;
+
+        step = "extensions";
+        await using (var ext = new NpgsqlCommand("SELECT count(*) FROM pg_extension WHERE extname IN ('age', 'vector')", rconn))
+            checks["extensions"] = Convert.ToInt64(await ext.ExecuteScalarAsync()) == 2;
+
+        step = "age_graph";
+        await using (var load = new NpgsqlCommand("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;", rconn))
+            await load.ExecuteNonQueryAsync();
+        // agtype has no Npgsql mapping; cast to text so the probe reads a plain value.
+        await using (var cypher = new NpgsqlCommand("SELECT v::text FROM cypher('code_graph', $$ MATCH (n) RETURN count(n) $$) as (v agtype);", rconn))
+        {
+            await cypher.ExecuteScalarAsync();
+            checks["age_graph"] = true;
+        }
+
+        step = "schema";
+        await using (var tables = new NpgsqlCommand(
+            "SELECT to_regclass('public.nodes') IS NOT NULL AND to_regclass('public.node_attributes') IS NOT NULL", rconn))
+            checks["schema"] = (bool)(await tables.ExecuteScalarAsync())!;
+    }
+    catch (Exception ex)
+    {
+        // Stable category only: this route is reachable on the unauthenticated
+        // production bind, so raw driver messages stay in the local console.
+        var sqlState = (ex as PostgresException)?.SqlState;
+        checks["failed_step"] = step;
+        checks["failure"] = sqlState == "28P01" ? "auth_failed" : $"{step}_unavailable";
+        Console.WriteLine($"[WARN] Readiness failed at {step}: {ex.GetType().Name}{(sqlState is null ? "" : $" (SQLSTATE {sqlState})")}");
+    }
+
+    var ready = (bool)checks["postgres"] && (bool)checks["extensions"] && (bool)checks["age_graph"] && (bool)checks["schema"];
+    checks["ready"] = ready;
+    return ready ? Results.Ok(checks) : Results.Json(checks, statusCode: 503);
+});
+
 // --- Graph sync outbox background worker (drains every 3s) ---
 var outboxTimer = new System.Threading.Timer(async _ =>
 {
@@ -523,24 +575,54 @@ app.MapPost("/api/system-message", async (HttpContext http, SystemMessageBus bus
 });
 
 // --- Agent Dispatcher (event-driven agent spawning) ---
+// HEKATE_DISABLE_DISPATCHER=1 (set by the local plan-only profile) keeps node
+// edits from spawning claude/gemini CLI runs. Unset: behaviour unchanged.
 var bus = app.Services.GetRequiredService<SystemMessageBus>();
-var dispatcher = new AgentDispatcher(connStr, repo, (level, text) => bus.Publish(new SystemMessage(level, text)));
-try
+AgentDispatcher? dispatcher = null;
+if (Environment.GetEnvironmentVariable("HEKATE_DISABLE_DISPATCHER") == "1")
 {
-    await dispatcher.StartAsync();
+    Console.WriteLine("[INFO] Agent dispatcher disabled (HEKATE_DISABLE_DISPATCHER=1)");
 }
-catch (Exception ex)
+else
 {
-    Console.WriteLine($"[WARN] Agent dispatcher failed to start: {ex.Message}");
+    dispatcher = new AgentDispatcher(connStr, repo, (level, text) => bus.Publish(new SystemMessage(level, text)));
+    try
+    {
+        await dispatcher.StartAsync();
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[WARN] Agent dispatcher failed to start: {ex.Message}");
+    }
 }
 
 app.Lifetime.ApplicationStopping.Register(() =>
 {
     outboxTimer.Dispose();
-    dispatcher.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    dispatcher?.DisposeAsync().AsTask().GetAwaiter().GetResult();
 });
 
-app.Run($"http://0.0.0.0:5102");
+// --- Local-profile graceful shutdown (scripts/local/hekate-local.ps1) ---
+// Mapped only when the launcher sets HEKATE_LOCAL_SHUTDOWN_TOKEN; loopback callers
+// with the matching token only. Runs the normal ApplicationStopping path above.
+var localShutdownToken = Environment.GetEnvironmentVariable("HEKATE_LOCAL_SHUTDOWN_TOKEN");
+if (!string.IsNullOrEmpty(localShutdownToken))
+{
+    app.MapPost("/api/local/shutdown", (HttpContext http, IHostApplicationLifetime lifetime) =>
+    {
+        if (http.Connection.RemoteIpAddress is not { } remote || !System.Net.IPAddress.IsLoopback(remote))
+            return Results.StatusCode(403);
+        var supplied = System.Text.Encoding.UTF8.GetBytes(http.Request.Headers["X-Hekate-Local-Token"].ToString());
+        var expected = System.Text.Encoding.UTF8.GetBytes(localShutdownToken);
+        if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(supplied, expected))
+            return Results.StatusCode(403);
+        lifetime.StopApplication();
+        return Results.Accepted();
+    });
+}
+
+// HEKATE_API_URLS lets the local profile bind loopback on its own port. Unset: unchanged.
+app.Run(Environment.GetEnvironmentVariable("HEKATE_API_URLS") ?? "http://0.0.0.0:5102");
 
 // --- Request DTOs ---
 record ChatRequest(string Message, Guid? ConversationId);

@@ -35,3 +35,6 @@ __pycache__/
 
 # Odin runtime data
 Odin/gods/odin/data/
+
+# Local plan-only profile state (scripts/local/hekate-local.ps1)
+.hekate-local/

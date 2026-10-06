@@ -7,7 +7,7 @@
 
 | Increment | Status |
 |---|---|
-| 1 — local plan-only launcher (`scripts/local/`) | Source and tests reviewed. **Live gate outstanding**: no container runtime on fenrir. |
+| 1 — local plan-only launcher (`scripts/local/`) | Live startup, restart persistence, backup/AGE restore, ownership and shutdown verified with Docker Desktop. See [`scripts/local/VALIDATION.md`](../../scripts/local/VALIDATION.md) for evidence and exclusions. |
 | 2a — pure plan contracts (`PlanContracts/`, 101 tests) | **Accepted** by codex-hekate, pure scope only. No storage, API, AGE or live-runtime claim. |
 | 2b — store integration | **Not started, not approved.** This document is an input to that decision. |
 

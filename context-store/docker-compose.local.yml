@@ -1,0 +1,38 @@
+# On-demand local Hekate profile (plan browsing/editing only).
+#
+# Driven by scripts/local/hekate-local.ps1 — do not run directly. The launcher
+# always passes `-p hekate-local -f docker-compose.local.yml --env-file ...`, so
+# this never collides with the NSSM/production stack in docker-compose.yml:
+#   - no container_name (compose names it hekate-local-postgres-1)
+#   - published on loopback only, on a separate port (default 5434)
+#   - its own named volume (hekate-local_pgdata)
+#   - labelled with the owning workspace so stop can verify ownership
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    environment:
+      POSTGRES_DB: code_storage
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${HEKATE_LOCAL_PG_PASSWORD:-postgres}
+    ports:
+      - "127.0.0.1:${HEKATE_LOCAL_DB_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    labels:
+      com.hekate.local: "1"
+      com.hekate.local.workspace: ${HEKATE_LOCAL_WORKSPACE:?set by hekate-local.ps1}
+    healthcheck:
+      # TCP, not the socket: during first-time init the entrypoint runs a
+      # socket-only temporary server that would otherwise report healthy early.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d code_storage"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      # First init (AGE + pgvector + init.sql) can take a while; failures inside
+      # this window don't count against retries.
+      start_period: 120s
+
+volumes:
+  pgdata:
