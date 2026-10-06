@@ -27,7 +27,7 @@
 | `scripts/local/supervisor_e1/tests/test_e2a_model.py` (new) | `36d218323ce9af66207d16c633eab4004f6d0bbffa566e7a9d5d9cc1aa10412c` |
 | `scripts/local/supervisor_e1/tests/test_e2a_live.py` (new) | `6285847fedb786861c7d5c5e5394a5246deafa1de23dab5c96e6006414ac7c02` |
 
-Docs (not part of the tested overlay): this file, a `README.md` section and a status line in 026. [028](028-e2b-durable-journal-proposal.md) is a separate, untracked design draft and is not part of E2a.
+Docs (not part of the tested overlay): this file, a `README.md` section and a status line in 026. [028](028-e2b-durable-journal-proposal.md) is a separate design and is not part of E2a.
 
 ## Results
 
