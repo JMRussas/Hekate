@@ -35,12 +35,13 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-004 | F2 (036) | `attemptId` length counted differently by Python and C# | interop-risk | deferred | PlanStore + journal / unassigned | open |
 | HK-ISSUE-005 | — | A fix round cannot be dispatched after a reopen | implementation-gap | unattended-blocker | PlanStore + journal / unassigned (dry-run workaround in use) | open |
 | HK-ISSUE-006 | B1/B2 dry run | Pilot driver (B1) and dry run of B2 | implementation-gap | pilot-blocker | Hekate / claude-hekate | closed (bounded dry-run scope only; root acceptance msg 1479) |
-| HK-ISSUE-007 | B2 | Real worker launch adapter (B2) | implementation-gap | pilot-blocker | Hekate / claude-hekate | implemented (adapter + fake-CLI tests; the real model run is a separate reviewed step) |
+| HK-ISSUE-007 | B2 | Real worker launch adapter (B2) | implementation-gap | pilot-blocker | Hekate / claude-hekate | closed (test-scoped supervised local toy run only; root acceptance msg 1585) |
 | HK-ISSUE-008 | D-7 | Whether a real worker's ACK/progress is worker-attested or supervisor-observed | decision | pilot-blocker | root lead | provisionally decided for the pilot only (msg 1484) |
 | HK-ISSUE-009 | D-1, 028 OQ1 | Journal storage beyond disposable test databases (028 OQ1) | decision | unattended-blocker | root lead / user | open |
 | HK-ISSUE-010 | D-2, 028 OQ2 | Operator acts and authorization before auth exists (028 OQ2) | decision | unattended-blocker | root lead / user | open |
 | HK-ISSUE-011 | D-3..D-6, 028 OQ3–6 | Remaining production questions (028 OQ3–OQ6) | decision | deferred | root lead | open |
 | HK-ISSUE-012 | — | A prior-attempt decision blocks the fix round's review | implementation-gap | pilot-blocker | journal derivations / claude-hekate | closed (plan 038 rev 2; root acceptance msg 1479) |
+| HK-ISSUE-013 | — | A real run's run.json says `dryRun: true` | defect | deferred | Hekate / claude-hekate (export producer slice) | open |
 
 ## Entries
 
@@ -146,7 +147,16 @@ No nodes are created and no separate database is used until that migration is de
   - It is **not** the same guarantee when the parent has **already exited** while descendants survive (for example, a worker that backgrounds a process and exits 0). Windows cannot walk a tree from a dead parent; `tree_kill` returns True for an already-exited parent.
   - Such survivors are **UNOBSERVABLE in the current scope**. The adapter neither detects nor contains them, and nothing makes that case automatically `unknown` (correction, msg 1501).
   - Containment (for example, a Windows Job Object over the whole tree, or a process-group check on POSIX) does not exist. This residual risk is accepted for the pilot only and must be reviewed before any unattended use.
-- **Open:** the real model run, which needs root review of concrete parameters. On Windows, `claude` from npm is a `.cmd` shim, so the real executable/argument quoting path must be checked before that run.
+- **CLOSED (root acceptance, msg 1585), for a test-scoped, supervised, local toy run only.** One authorized real run (root GO msg 1575, report msg 1580):
+  - Source: commit `2fc9a1256617510958a064d4b5b8f2d4ee63acb9`, run from the clean detached worktree `D:\Git\Hekate\.worktrees\hk007-2fc9a125`.
+  - Executable: `claude.exe` 2.1.285, sha256 `121fc815…697e`.
+  - The run: requested model `sonnet`; CLI-reported `claude-sonnet-5-5` (not authenticated). Exit 0, exactly one `success` result, drained, no kill.
+  - Acts: worker_ack and worker_progress, actSeq 1/2, same exec `956a97a8…`, worker-authored and accepted via intake.
+  - Artifact `5774382537b03a02835ae324435698685d013fa8`, parent = base `934c45c144bccc31b2d0730c9a8b6a112eb86e11` (the task repo's main HEAD), retained ref `refs/hekate-pilot/4bf4cbb5022f/r1`. The diff is exactly `calc.py` 100644→100644, `raise NotImplementedError` → `return a + b`.
+  - Independent verifier (verify-r1): 2 tests pass, tree clean; the root independently re-ran both tests there (PASS).
+  - Evidence (retained): evidence.json `a00e8d3e…3e1a`, run.json `7ec8872e…87ac`, console log `5043f519…8f5f`.
+  - **Not claimed:** a real-model fix round; authenticated ACKs; cost (not captured). The dead-parent descendant limitation stands. The run.json label defect is HK-ISSUE-013.
+- **Was open:** the real model run, which needs root review of concrete parameters. On Windows, `claude` from npm is a `.cmd` shim, so the real executable/argument quoting path must be checked before that run.
   - **Checked:** the shim only invokes a native `claude.exe`, which the adapter can run directly with no `.cmd` and no shell. The shim is at `D:\scoop\apps\nodejs-lts\current\bin\claude.cmd`; the executable is at `D:\scoop\apps\nodejs-lts\24.15.0\bin\node_modules\@anthropic-ai\claude-code\bin\claude.exe`, version 2.1.285, sha256 `121fc8151ed40bd9c144d68aa1cea23427803628ffab65e23da1cceda155697e`.
   - A parse-only probe with an EMPTY prompt (no API call) accepted the adapter's exact argv. `--max-turns` is hidden from `--help` but accepted, while an unknown flag is rejected.
 
@@ -208,6 +218,13 @@ No nodes are created and no separate database is used until that migration is de
   - The root independently ran the 52 offline tests (pass), on top of its earlier full run of 665 and both replays; my final run of 667 passed and both replays passed.
   - Scope: the review-candidacy rule of 038 only. HK-ISSUE-005, 007, 008 and the production gates stay open.
   - Root final full run (msg 1484): 667 passed in 120.37 s, log `.run/hk012-root-final.log`.
+
+### HK-ISSUE-013 — A real run's run.json says `dryRun: true`
+- **Observed (fact):** `e1/pilot.py` `write_log` (line 480 at `2fc9a12`) hardcodes `"dryRun": True`. The HK-ISSUE-007 real trial's run.json (sha256 `7ec8872e817a4feea471bb52966f529470e0e07601a33b16319a478850fd87ac`) therefore says `dryRun: true` for a REAL `claude.exe` run. evidence.json in the same run is correct (params.executable, the adapter evidence and the journal).
+- **Impact:** a reader of run.json alone would mistake a real-model run for a simulated one.
+- **Historical evidence is NOT rewritten:** the trial's run.json and evidence.json stay byte-identical (root, msg 1585).
+- **Next action (in the export producer slice, branch `feat/handoff-export-v0`):** label FUTURE runs with an explicit HOST-DECLARED `executionKind`: `simulated` (in-process dry worker), `fake-cli` (the adapter driving tests/fake_cli.py) or `claude-cli` (the real executable). It is never inferred from `report.attested`, which is also true for the fake CLI. Define `dryRun = (executionKind != "claude-cli")`; it makes no authentication claim.
+- **Closure (V&V):** tests show the actual mode gives `executionKind: claude-cli, dryRun: false`; the default simulated mode gives `simulated, true`; the fake CLI gives `fake-cli, true`. The trial's historical files are unchanged. Cost capture stays optional/deferred.
 
 ## External references (owned elsewhere; not HK issues)
 
