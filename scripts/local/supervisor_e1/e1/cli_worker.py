@@ -40,7 +40,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from e1 import pilot as P
 
@@ -88,6 +88,10 @@ class CliConfig:
     kill_wait_s: int = 20
     committer: str = "hekate-pilot"
     restricted: bool = True            # --restricted (see build_command)
+    # Optional host hook (operator task runner, msg 1632): prepare(worktree) runs AFTER `worktree add` and the
+    # HEAD check and BEFORE launch_intent, e.g. to install the worker's own dependencies. Any exception is a
+    # typed `prepare_failed`: nothing is journaled and nothing is spawned. None (the default) = unchanged.
+    prepare: Callable[[Path], None] | None = None
 
 
 def _int(v: Any, lo: int, hi: int) -> bool:
@@ -123,6 +127,8 @@ def validate(cfg: CliConfig) -> None:
     for name in ("stdout_line_max", "stdout_lines_max", "stdout_bytes_max", "stderr_keep", "kill_wait_s"):
         if not _int(getattr(cfg, name), 1, 1 << 30):
             raise CliRefused("config_bounds", name)
+    if cfg.prepare is not None and not callable(cfg.prepare):
+        raise CliRefused("config_prepare")
     if not isinstance(cfg.restricted, bool):
         raise CliRefused("config_restricted")
     if not RUN_ID.fullmatch(cfg.committer.replace("-", "")):
@@ -348,6 +354,11 @@ class CliWorker:
         ev.worktree = str(wt)
         if _git("rev-parse", "HEAD", cwd=wt).stdout.strip() != cfg.base_sha:
             return P.WorkReport("unknown", reason="worktree_head_mismatch")
+        if cfg.prepare is not None:
+            try:
+                cfg.prepare(wt)
+            except Exception:  # noqa: BLE001 -- the host hook failed: no launch_intent, no spawn
+                return P.WorkReport("failed", reason="prepare_failed")
 
         cmd = build_command(cfg)
         # The intent is durable BEFORE the process can exist.

@@ -88,6 +88,25 @@ elif scenario.startswith("calc_"):
         subprocess.run(words, capture_output=True, timeout=120)
     say(act({"kind": "worker_progress", "seq": 2, "checkpointId": 1, "evidence": f"edited calc.py round {rnd}"}))
     result()
+elif scenario.startswith("value_"):
+    # The operator task runner fixture: set src/value.txt to 42. value_ok | value_bad | value_bad_then_ok |
+    # value_touch_oracle | value_touch_lock. The worktree has its OWN node_modules (the prepare hook).
+    rnd = next((int(ln.split(":", 1)[1]) for ln in prompt.splitlines() if ln.startswith("Round:")), 1)
+    init()
+    say(act({"kind": "worker_ack", "seq": 1}))
+    if not os.path.isfile("node_modules/vitest/vitest.mjs"):
+        sys.exit(5)                               # the prepare hook did not run before the launch
+    good = scenario in ("value_ok", "value_touch_oracle", "value_touch_lock") or (scenario == "value_bad_then_ok" and rnd >= 2)
+    edit("src/value.txt", "42\n" if good else "41\n")
+    if scenario == "value_touch_oracle":
+        edit("tests/unit/value.test.ts", '{"cases": [{"name": "value is 42", "expect": "*"}]}\n')
+    if scenario == "value_touch_lock":
+        edit("package-lock.json", '{"lockfileVersion": 3, "touched": true}\n')
+    bash = next((a[len("Bash("):-1] for a in argv if a.startswith("Bash(") and a.endswith(")")), None)
+    if bash:
+        subprocess.run(bash.split(), capture_output=True, timeout=120)
+    say(act({"kind": "worker_progress", "seq": 2, "checkpointId": 1, "evidence": f"edited src/value.txt round {rnd}"}))
+    result()
 elif scenario == "no_result":
     init()
     say(act({"kind": "worker_ack", "seq": 1}))

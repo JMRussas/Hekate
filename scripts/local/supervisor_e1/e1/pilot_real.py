@@ -175,40 +175,60 @@ class Bounded:
     head: bytes
     total: int
     sha256: str
+    # merge=False only: stderr, bounded and digested on its own (head/total/sha256 are then stdout alone)
+    err_head: bytes = b""
+    err_total: int = 0
+    err_sha256: str = ""
 
 
-def run_bounded(argv: list[str], *, cwd: Path, timeout_s: int, keep: int, env: dict[str, str]) -> Bounded:
+def run_bounded(argv: list[str], *, cwd: Path, timeout_s: int, keep: int, env: dict[str, str], merge: bool = True,
+                err_keep: int = 4096) -> Bounded:
     """stdout+stderr merged and STREAMED: a kept prefix of `keep` bytes plus a digest and count of all of
-    it. On timeout the process tree is killed and the reader joined."""
+    it. On timeout the process tree is killed and the reader joined. merge=False keeps stdout clean for a
+    structured report: stderr gets its own reader (prefix of `err_keep`, digest, count); `drained` then
+    means BOTH readers finished."""
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-    proc = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    proc = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT if merge else subprocess.PIPE,
                             env=env, creationflags=flags, start_new_session=(sys.platform != "win32"))
-    head, digest, total = bytearray(), hashlib.sha256(), [0]
 
-    def read() -> None:
-        try:
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                digest.update(chunk)
-                total[0] += len(chunk)
-                room = keep - len(head)
-                if room > 0:
-                    head.extend(chunk[:room])
-        except (OSError, ValueError):
-            pass
+    def reader(stream, cap: int):
+        head, digest, total = bytearray(), hashlib.sha256(), [0]
 
-    t = threading.Thread(target=read, daemon=True)
-    t.start()
+        def read() -> None:
+            try:
+                while True:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    total[0] += len(chunk)
+                    room = cap - len(head)
+                    if room > 0:
+                        head.extend(chunk[:room])
+            except (OSError, ValueError):
+                pass
+
+        t = threading.Thread(target=read, daemon=True)
+        t.start()
+        return t, head, digest, total
+
+    out = reader(proc.stdout, keep)
+    err = None if merge else reader(proc.stderr, err_keep)
     timed_out, verified = False, True
     try:
         proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         verified = W.tree_kill(proc, 20)
-    t.join(timeout=20)
-    return Bounded(proc.returncode, timed_out, verified, not t.is_alive(), bytes(head), total[0], digest.hexdigest())
+    threads = [out[0]] + ([err[0]] if err else [])
+    for t in threads:
+        t.join(timeout=20)
+    b = Bounded(proc.returncode, timed_out, verified, not any(t.is_alive() for t in threads), bytes(out[1]), out[3][0],
+                out[2].hexdigest())
+    if err:
+        b.err_head, b.err_total, b.err_sha256 = bytes(err[1]), err[3][0], err[2].hexdigest()
+    return b
 
 
 # --- the independent verifier ------------------------------------------------------------------------------

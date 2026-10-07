@@ -357,6 +357,40 @@ def test_an_existing_worktree_path_is_never_reused(tmp_path, repo):
     assert (rep.status, rep.reason) == ("failed", "worktree_exists")
 
 
+# ------------------------------------------------------------------------ the optional prepare hook (msg 1632)
+
+def test_prepare_runs_in_the_added_worktree_at_base_before_the_intent_and_the_spawn(tmp_path, repo):
+    seen = []
+    sink = Sink()
+
+    def prepare(wt):
+        seen.append((wt, git(wt, "rev-parse", "HEAD"), list(sink.kinds())))
+        (wt / "prepared.txt").write_text("x", encoding="utf-8")         # visible to the worker, so part of the diff
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cfg = make_cfg(repo, run_dir, prepare=prepare)
+    rep = W.CliWorker(cfg)(order("happy", sink))
+    assert seen == [(run_dir / "wt-r1", cfg.base_sha, [])]                    # nothing journaled before it
+    assert rep.status == "ok" and sink.kinds()[0] == "launch_intent"
+    assert set(git(repo, "show", "--name-only", "--format=", rep.artifact_sha).split()) == {"hello.txt", "prepared.txt"}
+
+
+def test_a_failing_prepare_journals_nothing_and_spawns_nothing(tmp_path, repo, monkeypatch):
+    def prepare(wt):
+        raise RuntimeError("deps failed")
+    spawned = []
+    real = subprocess.Popen
+    monkeypatch.setattr(W.subprocess, "Popen", lambda *a, **kw: (a[0][0] != "git" and spawned.append(a)) or real(*a, **kw))
+    w, sink, rep, _ = run(tmp_path, repo, "happy", prepare=prepare)
+    assert (rep.status, rep.reason) == ("failed", "prepare_failed") and sink.records == [] and sink.acts == [] and spawned == []
+
+
+def test_prepare_must_be_callable_and_defaults_to_none(tmp_path, repo):
+    with pytest.raises(W.CliRefused) as e:
+        W.validate(make_cfg(repo, tmp_path, prepare="npm ci"))
+    assert e.value.code == "config_prepare" and make_cfg(repo, tmp_path).prepare is None
+
+
 # ------------------------------------------------------------------------ explicit operator cleanup
 
 def test_cleanup_is_explicit_refuses_dirty_or_unknown_and_keeps_the_ref_unless_asked(tmp_path, repo):

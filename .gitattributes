@@ -2,3 +2,5 @@
 # Accepted raw fixture trees: exact bytes, never line-ending normalized (msg 1536)
 scripts/local/supervisor_e1/fixtures/e2e-consumer-v0/** -text
 scripts/local/supervisor_e1/fixtures/e2e-byte-compat-v0/** -text
+# Operator task runner fixtures: the frozen CA012 spec and its baseline report, exact bytes (msg 1663)
+scripts/local/supervisor_e1/tests/fixtures/ca012-*.json -text

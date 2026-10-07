@@ -42,6 +42,7 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-011 | D-3..D-6, 028 OQ3–6 | Remaining production questions (028 OQ3–OQ6) | decision | deferred | root lead | open |
 | HK-ISSUE-012 | — | A prior-attempt decision blocks the fix round's review | implementation-gap | pilot-blocker | journal derivations / claude-hekate | closed (plan 038 rev 2; root acceptance msg 1479) |
 | HK-ISSUE-013 | — | A real run's run.json says `dryRun: true` | defect | deferred | Hekate / claude-hekate (export producer slice) | closed (future runs: host-declared executionKind; root acceptance msg 1602) |
+| HK-ISSUE-014 | — | Operator task runner v0 for a real task spec (CA012 first) | implementation-gap | pilot-blocker | Hekate / claude-hekate (plan 040) | implemented, pending independent review |
 
 ## Entries
 
@@ -231,6 +232,19 @@ No nodes are created and no separate database is used until that migration is de
   - `e1/pilot_real.py`: `run()` requires `execution_kind`; `main` declares `fake-cli` when `--exe-arg` is given, else `claude-cli`.
   - Verified unit cases: the default gives simulated/true; the fake CLI gives fake-cli/true; the parametrized derivation gives claude-cli/false; an invalid kind is refused. Producer freeze 2: independent review msg 1600, root's 40 focused tests msg 1602.
   - The historical HK-ISSUE-007 trial bytes (run.json `7ec8872e…`, evidence.json `a00e8d3e…`) are preserved unchanged.
+
+### HK-ISSUE-014 — Operator task runner v0 for a real task spec (CA012 first)
+- **Gap:** the supervised pilot ran only a disposable toy task. A real task needs a closed spec, an owned clone, pinned dependencies, a proven baseline and a spec-driven verifier (GO msg 1632; spec frozen at `b919504a…`, msgs 1636/1650).
+- **Implemented (not yet accepted):** plan 040.
+  - Code: `e1/task_spec.py`, `e1/task_runner.py`, the optional `prepare` hook in `e1/cli_worker.py`, and `run_bounded(merge=False)` in `e1/pilot_real.py`.
+  - Branch: `feat/operator-task-runner`.
+  - Pre-freeze review fixes F1–F5 (msgs 1659/1660) and the 1653 requirements are in.
+- **Not claimed:** OS isolation; any real npm, preflight or model run.
+- **Closure (V&V):**
+  1. Independent review of the frozen source.
+  2. Root acceptance.
+  3. A root-GO'd real CA012 preflight with recorded evidence.
+  - The real worker run is a separate GO and is not part of this closure.
 
 ## External references (owned elsewhere; not HK issues)
 
