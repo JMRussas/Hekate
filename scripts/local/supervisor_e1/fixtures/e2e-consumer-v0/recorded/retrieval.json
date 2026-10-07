@@ -1,0 +1,94 @@
+[
+  {
+    "request": {
+      "checkpointId": 1,
+      "claimKey": "94061211f44946a291e8dfcef0d497bc",
+      "evidenceDigest": "0000000000000000000000000000000000000000000000000000000000000001",
+      "kind": "review_progress",
+      "root": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+      "seq": 7
+    },
+    "result": {
+      "basis": {
+        "snapshot": "100654:100654:"
+      },
+      "bytes": "{\"at\":1200.0,\"data\":{\"actDigest\":\"d4f8791f1e07413180d95c994a594b0c03d0027890dc26cc35e086c6f258e4fe\",\"actId\":\"bb0f9554193141be1227e903c4579e38ecf9bad03d7c6c3a946cbed9c26f55be\",\"actSeq\":2,\"checkpointId\":1,\"evidenceDigest\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"facts\":{\"attemptEpoch\":1,\"attemptId\":\"att-1\",\"prerequisites\":\"unverified\",\"route\":\"A\",\"stateRevision\":3,\"work\":\"done\"},\"kind\":\"review_progress\",\"lead\":\"lead-1\",\"reviewId\":\"5362f46f5e85565fe5462e013cecb4d3693d5e16c271e776cdb558205201c64e\",\"session\":\"hkw1:lead-1:aabf976a-6732-4f61-83aa-ea24bd394f71\",\"streamKey\":\"5362f46f5e85565fe5462e013cecb4d3693d5e16c271e776cdb558205201c64e\"},\"kind\":\"review_progress\"}",
+      "pointer": {
+        "checkpointId": 1,
+        "claimKey": "94061211f44946a291e8dfcef0d497bc",
+        "evidenceDigest": "0000000000000000000000000000000000000000000000000000000000000001",
+        "kind": "review_progress",
+        "root": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+        "seq": 7
+      }
+    }
+  },
+  {
+    "request": {
+      "claimKey": "94061211f44946a291e8dfcef0d497bc",
+      "kind": "binding",
+      "linkId": "d1e4bb35-f319-4f70-b4ea-922e403c8c56",
+      "root": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+      "seq": 5
+    },
+    "result": {
+      "basis": {
+        "snapshot": "100654:100654:"
+      },
+      "bytes": "{\"at\":1000.0,\"data\":{\"lead\":\"lead-1\",\"leadSession\":\"hkw1:lead-1:aabf976a-6732-4f61-83aa-ea24bd394f71\",\"linkId\":\"d1e4bb35-f319-4f70-b4ea-922e403c8c56\",\"reviewId\":\"5362f46f5e85565fe5462e013cecb4d3693d5e16c271e776cdb558205201c64e\",\"reviewKey\":{\"artifactRef\":\"sha-art\",\"attemptEpoch\":1,\"attemptId\":\"att-1\",\"nodeId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"rootId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}},\"kind\":\"review_requested\"}",
+      "pointer": {
+        "claimKey": "94061211f44946a291e8dfcef0d497bc",
+        "kind": "binding",
+        "linkId": "d1e4bb35-f319-4f70-b4ea-922e403c8c56",
+        "root": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+        "seq": 5
+      }
+    }
+  },
+  {
+    "request": {
+      "checkpointId": 1,
+      "claimKey": "94061211f44946a291e8dfcef0d497bc",
+      "evidenceDigest": "0000000000000000000000000000000000000000000000000000000000000001",
+      "kind": "review_progress",
+      "root": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+      "seq": 7
+    },
+    "result": {
+      "basis": {
+        "snapshot": "100654:100654:"
+      },
+      "bytes": "{\"at\":1200.0,\"data\":{\"actDigest\":\"d4f8791f1e07413180d95c994a594b0c03d0027890dc26cc35e086c6f258e4fe\",\"actId\":\"bb0f9554193141be1227e903c4579e38ecf9bad03d7c6c3a946cbed9c26f55be\",\"actSeq\":2,\"checkpointId\":1,\"evidenceDigest\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"facts\":{\"attemptEpoch\":1,\"attemptId\":\"att-1\",\"prerequisites\":\"unverified\",\"route\":\"A\",\"stateRevision\":3,\"work\":\"done\"},\"kind\":\"review_progress\",\"lead\":\"lead-1\",\"reviewId\":\"5362f46f5e85565fe5462e013cecb4d3693d5e16c271e776cdb558205201c64e\",\"session\":\"hkw1:lead-1:aabf976a-6732-4f61-83aa-ea24bd394f71\",\"streamKey\":\"5362f46f5e85565fe5462e013cecb4d3693d5e16c271e776cdb558205201c64e\"},\"kind\":\"review_progress\"}",
+      "pointer": {
+        "checkpointId": 1,
+        "claimKey": "94061211f44946a291e8dfcef0d497bc",
+        "evidenceDigest": "0000000000000000000000000000000000000000000000000000000000000001",
+        "kind": "review_progress",
+        "root": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+        "seq": 7
+      }
+    }
+  },
+  {
+    "request": {
+      "claimKey": "94061211f44946a291e8dfcef0d497bc",
+      "kind": "binding",
+      "linkId": "d1e4bb35-f319-4f70-b4ea-922e403c8c56",
+      "root": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+      "seq": 5
+    },
+    "result": {
+      "basis": {
+        "snapshot": "100654:100654:"
+      },
+      "bytes": "{\"at\":1000.0,\"data\":{\"lead\":\"lead-1\",\"leadSession\":\"hkw1:lead-1:aabf976a-6732-4f61-83aa-ea24bd394f71\",\"linkId\":\"d1e4bb35-f319-4f70-b4ea-922e403c8c56\",\"reviewId\":\"5362f46f5e85565fe5462e013cecb4d3693d5e16c271e776cdb558205201c64e\",\"reviewKey\":{\"artifactRef\":\"sha-art\",\"attemptEpoch\":1,\"attemptId\":\"att-1\",\"nodeId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"rootId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}},\"kind\":\"review_requested\"}",
+      "pointer": {
+        "claimKey": "94061211f44946a291e8dfcef0d497bc",
+        "kind": "binding",
+        "linkId": "d1e4bb35-f319-4f70-b4ea-922e403c8c56",
+        "root": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+        "seq": 5
+      }
+    }
+  }
+]

@@ -1,0 +1,24 @@
+ChatAgent plan task (plan-contract/v1)
+Root: b84e7403-5fcc-4f37-99e6-ac855af5ffa7
+Node: 3dd9d766-cdae-47b3-8b79-6f551ed92f1e
+Claim key: 94061211f44946a291e8dfcef0d497bc
+Attempt epoch: 1
+Content revision: 1
+Attempt id (5 bytes):
+att-1
+Requirement (11 bytes):
+target spec
+Attributes: 1
+Attribute key (19 bytes):
+acceptance_criteria
+Attribute value (10 bytes):
+tests pass
+Prerequisites (1048 bytes):
+{"chain":[{"id":"3dd9d766-cdae-47b3-8b79-6f551ed92f1e","nodeType":"task","parentId":"b84e7403-5fcc-4f37-99e6-ac855af5ffa7"},{"id":"b84e7403-5fcc-4f37-99e6-ac855af5ffa7","nodeType":"plan","parentId":null},{"id":"3525db92-3b97-4fc2-b3bc-8399aa60cf37","nodeType":"task","parentId":"b84e7403-5fcc-4f37-99e6-ac855af5ffa7"}],"nodes":[{"id":"3525db92-3b97-4fc2-b3bc-8399aa60cf37","kind":"leaf","work":"done","children":[],"nodeType":"task","parentId":"b84e7403-5fcc-4f37-99e6-ac855af5ffa7","attemptId":"p1","acceptance":{"decision":"accepted","attemptId":"p1","decidedBy":"e1-verifier","artifactRef":"sha-p","evidenceRef":"ev-p","attemptEpoch":1,"contentRevision":1},"artifactRef":"sha-p","attemptEpoch":1,"contentRevision":1,"pinnedPrereqDigest":"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070","pinnedContentRevision":1}],"digest":"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d","declared":[{"gate":"accepted","ownerId":"3dd9d766-cdae-47b3-8b79-6f551ed92f1e","predecessorId":"3525db92-3b97-4fc2-b3bc-8399aa60cf37"}]}
+Rules: 1
+Rule path (9 bytes):
+AGENTS.md
+Rule revision (10 bytes):
+golden-rev
+Rule text (33 bytes):
+Golden rule: verify, then report.

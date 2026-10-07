@@ -1,0 +1,280 @@
+[
+  {
+    "name": "unicode-rich",
+    "delivery": "unicode-rich",
+    "expect": {
+      "outcome": "composed",
+      "expected": "deliveries/unicode-rich/expected"
+    }
+  },
+  {
+    "name": "clock-negative-zero-and-small-exponent",
+    "delivery": "clock-negative-zero-and-small-exponent",
+    "expect": {
+      "outcome": "composed",
+      "expected": "deliveries/clock-negative-zero-and-small-exponent/expected"
+    }
+  },
+  {
+    "name": "clock-subnormal",
+    "delivery": "clock-subnormal",
+    "expect": {
+      "outcome": "composed",
+      "expected": "deliveries/clock-subnormal/expected"
+    }
+  },
+  {
+    "name": "clock-large-fraction",
+    "delivery": "clock-large-fraction",
+    "expect": {
+      "outcome": "composed",
+      "expected": "deliveries/clock-large-fraction/expected"
+    }
+  },
+  {
+    "name": "eventseq-beyond-2^53",
+    "delivery": "eventseq-beyond-2^53",
+    "expect": {
+      "outcome": "composed",
+      "expected": "deliveries/eventseq-beyond-2^53/expected"
+    }
+  },
+  {
+    "name": "eventseq-max-window-budget",
+    "delivery": "eventseq-beyond-2^53",
+    "mutations": [
+      {
+        "op": "file",
+        "target": "h1Input",
+        "path": "deliveries/eventseq-beyond-2^53/expected-max-window/h1-input.json"
+      }
+    ],
+    "expect": {
+      "outcome": "composed",
+      "expected": "deliveries/eventseq-beyond-2^53/expected-max-window"
+    }
+  },
+  {
+    "name": "js-reencode-negative-zero",
+    "delivery": "clock-negative-zero-and-small-exponent",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "-0.0",
+        "with": "0"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "digest_mismatch"
+    },
+    "class": "value-change"
+  },
+  {
+    "name": "js-reencode-negative-zero-redigested",
+    "delivery": "clock-negative-zero-and-small-exponent",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "-0.0",
+        "with": "0"
+      },
+      {
+        "op": "redigest"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    },
+    "class": "value-change"
+  },
+  {
+    "name": "js-reencode-small-exponent",
+    "delivery": "clock-negative-zero-and-small-exponent",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "1e-05",
+        "with": "0.00001"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "digest_mismatch"
+    },
+    "class": "lexical"
+  },
+  {
+    "name": "js-reencode-small-exponent-redigested",
+    "delivery": "clock-negative-zero-and-small-exponent",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "1e-05",
+        "with": "0.00001"
+      },
+      {
+        "op": "redigest"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    },
+    "class": "lexical"
+  },
+  {
+    "name": "js-reencode-dot-zero-redigested",
+    "delivery": "clock-subnormal",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "\"at\":1.0",
+        "with": "\"at\":1"
+      },
+      {
+        "op": "redigest"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    },
+    "class": "value-change"
+  },
+  {
+    "name": "noncanonical-trailing-zero-redigested",
+    "delivery": "clock-large-fraction",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "999999999999.5",
+        "with": "999999999999.50"
+      },
+      {
+        "op": "redigest"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    },
+    "class": "lexical"
+  },
+  {
+    "name": "js-number-rounded-eventseq",
+    "delivery": "eventseq-beyond-2^53",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "9007199254740993",
+        "with": "9007199254740992"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "digest_mismatch"
+    },
+    "class": "value-change"
+  },
+  {
+    "name": "js-number-rounded-eventseq-redigested",
+    "delivery": "eventseq-beyond-2^53",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "9007199254740993",
+        "with": "9007199254740992"
+      },
+      {
+        "op": "redigest"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    },
+    "class": "value-change"
+  },
+  {
+    "name": "nfc-to-nfd-in-task-text",
+    "delivery": "unicode-rich",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "task",
+        "find": "résumé",
+        "with": "résumé"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    },
+    "class": "value-change"
+  },
+  {
+    "name": "escaped-nonascii-in-envelope",
+    "delivery": "unicode-rich",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "envelope",
+        "find": "请",
+        "with": "\\u8bf7"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    },
+    "class": "lexical"
+  },
+  {
+    "name": "astral-note-corrupted",
+    "delivery": "unicode-rich",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "envelope",
+        "find": "🤝",
+        "with": "😀"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    },
+    "class": "value-change"
+  },
+  {
+    "name": "escaped-slash-in-manifest-redigested",
+    "delivery": "unicode-rich",
+    "class": "lexical",
+    "description": "a real '/' in a manifest string (gateRef) written as '\\/': the decoded value is identical, the bytes are not canonical; digest recomputed",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "recon/compat-slash",
+        "with": "recon\\/compat-slash"
+      },
+      {
+        "op": "redigest"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    }
+  }
+]

@@ -1,0 +1,92 @@
+# Plan 035 — E2e (offline handoff consumer): validation evidence
+
+**Status: accepted by codex-hekate (lead) for the bounded offline E2e fixture scope after independent validation of the frozen msg 1322 overlay.** Test-only, offline, in a disposable database. Nothing is added to `PlanStoreSchema` or any production migration. There is no ChatAgent, ChatRuntime, bridge, production source store, auth, identity or default change, and **no invocation, launch, wake or write by the consumer**. The import/retrieval policy is an explicit default-deny **stub**.
+
+**Date:** 2026-10-07
+**Implementer:** claude-hekate. Execution model as reported by this session: **Claude Opus 5.5 (`claude-opus-5-5`)**.
+**GO:** codex-hekate msg 1303. In-flight reviews: msgs 1311, 1312, 1314, 1319.
+**Design:** [034](034-offline-handoff-consumer-contract.md) revision 3, sha256 `17273a5194ccec681a7b9eca7089db84cf20fe3489e64f3729130059cd2ab9db` (frozen; unchanged). Builds on the accepted E2d ([033](033-supervisor-e2d-validation.md)) and E2c ([031](031-supervisor-e2c-validation.md)) fixtures, whose files are **unchanged**.
+
+## Source basis and environment
+
+| Item | Value |
+|---|---|
+| Hekate base | committed **`d0ed671`**. Clean-source gate: `git archive d0ed671` plus **only** the E2c + E2d + E2e overlay below (`C:\Users\jruss\AppData\Local\Temp\claude\d--Git-Hekate\5b729025-a9d6-45d8-8b19-71e630ed7337\scratchpad\hekate-d0ed671-e2e`, temporary); `diff -rq` against the workspace showed the overlay identical; the Api was built from the archive |
+| Pinned H1 (opt-in) | ChatAgent **`5255daacfc670a4919f61439eb12adcb6a401920`**, Node **`24.21.0`**, through the existing `e1/h1_bridge.py`. Checkout used: the **existing detached clone** `C:\Users\jruss\AppData\Local\Temp\claude\d--Git-Hekate\ad845ee3-ddf5-4018-8f3b-f217b500bf47\scratchpad\chatagent-5255daa` (HEAD `5255daa`, clean; `node_modules` is a directory junction to `D:\Git\ChatAgent\node_modules`), selected with `HEKATE_E1_CHATAGENT_DIR`. The pinned Node is `D:\Git\ChatAgent\node_modules\.cache\worker-diagnosis\new24\node.exe` (through the junction). **Nothing was installed; the active `D:\Git\ChatAgent` checkout (`dc7d412`) was not touched** |
+| Runtimes | uv 0.11.19; CPython 3.13.13; psycopg 3.3.6 (no dependency change); PostgreSQL in the owned `hekate-local` container |
+| Limitations | the **default** suite composes with an **H1-shaped stub** (`consumer.h1_stub`: the pinned budget arithmetic with an approximate system rendering); the real H1 runs only in the opt-in `interop_live` suite. The policy is a stub. The consumer stops at `{h1Context, viewPart}`: nothing is invoked |
+
+**Overlay (SHA-256).** E2e files are new; E2c/E2d files are listed with their accepted hashes (unchanged).
+
+| File | SHA-256 |
+|---|---|
+| `scripts/local/supervisor_e1/e1/consumer.py` (new) | `30ca084a4712560aec2975b79e5d71d0febb107bc4868a154b0cbcc2c0e61a6e` |
+| `scripts/local/supervisor_e1/e1/consumer_durable.py` (new) | `d21fa3d15c1938646ff21240ee8bd0a52743b0253cae0b583404bfcdae60993e` |
+| `scripts/local/supervisor_e1/e1/sha_check.mjs` (new) | `b48abe93c2d05d1517cb66ca8ab33e05c5e2adaff4416ec1075f32cee2e3f72e` |
+| `scripts/local/supervisor_e1/tests/test_e2e_model.py` (new) | `f07a48b083561e2a9d8cbcb84b00cafc883c1d322f2d635bf82abfdc58d20ede` |
+| `scripts/local/supervisor_e1/tests/test_e2e_live.py` (new) | `3627947e2c0893d30934cd53f8dbcdef6f3f750f9ba206166d55009bf079fd8c` |
+| `scripts/local/supervisor_e1/interop/test_e2e_node_sha.py` (new, opt-in) | `acba6d74444b90eaef6350eda441b0372c838339db891dd949a5b4595c9789c4` |
+| `scripts/local/supervisor_e1/interop_live/test_e2e_h1.py` (new, opt-in) | `d7bfad184bf9e81bccc7dc13e4654637ab4f9772a1b27dc8de2457d95174f69c` |
+| `scripts/local/supervisor_e1/README.md` (edited: E2e section appended) | `ad4c7f3a91c7ea3403cf9e6e250a6ae5325d56f975996f65da2100f0f4b31d61` |
+| E2d (033): `handoff.py`, `handoff_durable.py`, `handoff_schema.sql`, `test_e2d_model.py`, `test_e2d_live.py` | unchanged: `1e9036f6…`, `b6c1d9c3…`, `affc5320…`, `4186c77b…`, `11d9b46d…` |
+| E2c (031): `acts.py`, `acts_durable.py`, `acts_schema.sql`, `evidence.py`, `test_e2c_model.py`, `test_e2c_live.py` | unchanged (`acts.py` `1d44e39c…`) |
+
+## Results
+
+| Suite | Workspace | Clean-source gate (`d0ed671` + overlay, `uv run --locked`) |
+|---|---|---|
+| Accepted baseline before E2e (033) | 534 passed | 534 passed |
+| `tests/test_e2e_model.py` | **50 passed** in 0.18s | included below |
+| `tests/test_e2e_live.py` | **9 passed** in 10.41s | included below |
+| **Default** `pytest -q` (Python + Postgres only) | **593 passed** in 90.42s | **593 passed** in 97.26s |
+| Opt-in `pytest interop` (pinned clone above) | **33 passed** in 8.62s (31 existing + 2 E2e) | **33 passed** in 8.82s |
+| Opt-in `pytest interop_live` (pinned clone above) | **4 passed** in 8.77s (1 existing + 3 E2e) | **4 passed** in 8.53s |
+| `interop_live/test_e2e_h1.py` with `HEKATE_E1_CHATAGENT_DIR` pointing nowhere | **3 errors**, no skips | — |
+
+593 = 534 (unchanged, all passing) + 50 + 9.
+
+### Independent lead validation
+
+The lead extracted `git archive d0ed671` into `.review_tmp/e2e-final-review-1322`, overlaid only the accepted E2c/E2d files and the exact E2e files listed above, and verified their SHA-256 values against msg 1322. The API built from that clean base excludes unrelated workspace changes. With `HEKATE_E1_CONTAINER_WORKSPACE=D:/Git/Hekate`, the default suite plus four independently authored probes passed: **597 passed in 91.65s**. The probes remain only in the review checkout at `scripts/local/supervisor_e1/tests/test_e2e_lead_probes.py`.
+
+The probes confirm a typed refusal for an array-shaped receipt, optional source outages represented as unavailable without exception text, refusal of fresh evidence for a different candidate before calling H1, and a real rebind between the PlanStore and journal reads. During that rebind, the first read retained one coherent old snapshot; the next read saw the superseded receipt and composition refused it. This verifies snapshot consistency, not an invocation fence.
+
+Using the exact detached H1 checkout and pinned Node listed above, the lead also independently ran both complete opt-in suites from the same isolated snapshot: **33 passed in 11.80s** (`interop`) and **4 passed in 9.43s** (`interop_live`). Acceptance is limited to the offline fixture and the documented stub/host limitations; it does not authorize production integration or activation.
+
+### Reviewed consumer fixture bundle
+
+The separately generated bundle at `scripts/local/supervisor_e1/fixtures/e2e-consumer-v0/` captures a real pinned-H1 prepare/commit/compose run plus explicitly synthetic prior-conversation sources. Its immutable file index, `INDEX.sha256`, has SHA-256 **`6093034b04c0762daf55eace33ba6ea226966591016a4fd56a780b50458daf0b`**. The candidate digest is **`21305a74e6c904c436ac9aeae58c6e43f4f963a0573a7d3ea19660c23eab776e`**.
+
+The lead copied that exact bundle into the isolated accepted-code review checkout and ran its offline replay: **17/17 cases passed**, with the imported consumer's hash verified against the accepted implementation. Separate lead assertions confirmed both `user-stated` and `assistant-claimed` import provenance; allowed imports include their text, denied and wrong-destination imports do not, and the predecessor note remains a `claim`. The bundle supplies exact bytes and expected outputs for host compatibility testing. Its captured Fresh proof is historical fixture input, not current authority, and its policy remains a stub.
+
+## The 034 requirements and where each is proved
+
+| Requirement (034 rev 3) | Tests |
+|---|---|
+| §2 ingress caps on raw bytes before parsing; wrapper/codec fixed; exact-byte digest; any tamper refuses the whole delivery; delivered-content caps incl. optional refs | `test_ingress_caps_refuse_unread`, `test_wrong_wrapper_or_codec_is_unsupported[2]`, `test_any_tamper_refuses_the_whole_delivery[3]`, `test_optional_reference_cap_is_checked_on_delivery`; live `test_a_tampered_stored_candidate_refuses_the_delivery` |
+| Strict decoding before any effect; closed typed shapes | `test_strict_decoding_gives_a_typed_refusal[7]` (duplicate keys, NaN, `1e999`, `\ud800`, Infinity, invalid UTF-8, a surrogate key), `test_strict_decoding_refuses_before_any_effect`, `test_malformed_receipt_shapes_are_typed_refusals[5]`, `test_malformed_h1_inputs_are_typed_refusals[6]` |
+| Exact v0 bytes; Unicode/astral/floats verified as bytes, never re-encoded; Node SHA over the same bytes | `test_unicode_floats_and_astral_text_survive_exact_bytes`; opt-in `test_node_sha_equals_python_over_exact_bytes`, `test_node_sha_over_a_real_e2d_delivery` (Node SHA == `candidateDigest`); live `test_exact_stored_bytes_compose_and_nothing_is_written` |
+| §3 consumer view: candidate never altered; `viewDigest` new and outside its preimage; binds principal, destination, rule set (same version), decisions, content and budget; no cache | `test_happy_composition_binds_h1_and_never_alters_the_candidate`, `test_view_identity_binds_…`, `test_no_cache_between_compositions`, `test_reservation_fixed_point_and_every_emitted_byte_charged` |
+| §4 H1 unchanged and bound; real H1 as the task at prepare; reduced window; typed `CONTEXT_TOO_LARGE`; attributed data never instructions; omission order | `test_h1_must_be_the_committed_task`, `test_h1_refusals_other_than_budget_refuse`, `test_underflow_is_a_typed_context_too_large_before_h1`, `test_optional_items_are_omitted_for_budget_in_fixed_order`, `test_notes_and_imports_never_become_instructions`, `test_required_task_source_failure_refuses_typed`; opt-in `test_real_h1_is_the_task_at_prepare_and_binds_at_the_consumer` (exactly one message, `optionalCounts` all 0, pinned runtime), `test_reduced_window_reaches_the_real_h1_boundary` (edge composes, edge − 1 → `CONTEXT_TOO_LARGE`), `test_an_h1_shaped_candidate_is_refused_by_the_real_h1` (`task_mismatch`) |
+| §5 policy stub default deny, both sides; imports keep provenance + destination; bounded retrieval of manifest pointers only; authorization before callbacks; request bounded/deduped first; full-pointer + validated-chain retrieval bound to the verified stream; optional outages `unavailable` without leaks | `test_default_deny_and_both_sides`, `test_retrieval_is_whitelisted_authorized_first_and_cannot_be_broadened`, `test_retrieval_caps_and_unavailable_wrappers_are_counted`, `test_retrieval_request_is_bounded_and_deduped_before_callbacks`, `test_optional_source_outage_is_unavailable_without_leaking`; live `test_retrieved_evidence_must_match_the_full_pointer_in_a_validated_chain` (other identity, other stream, altered content → none), `test_default_deny_policy_still_composes_with_mandatory_content` |
+| §6 one combined snapshot bound to the exact candidate; refusals; uncertainty re-listed and capped; no writes | `test_revalidation_refusals[4]`, `test_fresh_proof_for_another_candidate_never_validates[4]`, `test_new_uncertainty_is_relisted_and_bounded`; live `test_receipt_and_facts_come_from_one_snapshot_and_refuse_when_stale`, `test_a_decided_review_refuses`, `test_revised_content_refuses`, `test_new_uncertainty_after_commit_is_relisted`, `test_a_corrupt_stream_is_not_current` (`uncertainty_unlistable`), `test_exact_stored_bytes_compose_and_nothing_is_written` (journal, E2c/E2d and plan-state digests unchanged) |
+
+## Contract choices
+
+1. **New modules only.** No E2c/E2d module was edited; the consumer reuses `handoff.verify_stored`, `receipt_status`, `pending_effects`, `pins_of`/`pins_problem`, `acts.review_state` and the E2b-a stream reader.
+2. **Delivery is in-process bytes.** `handoff-delivery.v0` is a Python object whose payload fields are the exact stored bytes; ingress caps apply to those bytes before parsing (manifest/envelope/task ≤ 1 MiB each, receipt ≤ 4 KiB, H1 options at the pinned limits, whole ≤ 4.5 MiB).
+3. **Revalidation is one snapshot for one exact candidate.** `consumer_durable.fresh(dsn, Verified)` derives root, claim, review key, receipt and `packageRef` from the verified delivery and evaluates the receipt status inside the same snapshot. `compose` refuses a proof made for another candidate, key or package (`fresh_mismatch`). A corrupt stream refuses (`uncertainty_unlistable`).
+4. **Retrieval** is bounded twice: the request (≤ 64, deduped, typed) before any policy check or callback, and the work (≤ 16 calls, ≤ 64 items, ≤ 32 KiB). The callback receives the full manifest pointer plus its source stream. The durable retriever is bound to the verified stream, validates the whole chain in its own snapshot and returns only a record matching the full pointer.
+5. **Budget** uses the pinned estimator (UTF-8 bytes; 32/16 overheads): the view part (framing + view + digest line) + 16 is reserved from `windowTokens`; the reservation is a fixed-width 10-digit field. The real-H1 test measures the view at the edge's own digit count, because the view carries the budget.
+
+## Findings for the lead
+
+- **H1-shaped vs real H1:** only the opt-in suite proves real-H1 binding; existing E2d candidates prepared from H1-shaped data are refused by an H1-bound consumer, by design.
+- **Retriever cost:** each retrieval call reads and validates the whole stream (bounded by `per_stream`) in its own snapshot; at most 16 calls per composition.
+- **No fence:** the final read is as-of; nothing is invoked.
+
+## Not claimed
+
+- Any invocation, launch, wake, real authorization, production source store, identity or default; any ChatAgent or ChatRuntime change; a cross-language codec (034 §8).
+- Lifetime uniqueness of ids beyond retained rows; an activation or invocation fence.
+- No commits were made.

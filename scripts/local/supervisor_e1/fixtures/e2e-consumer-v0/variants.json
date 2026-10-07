@@ -1,0 +1,273 @@
+[
+  {
+    "name": "valid",
+    "description": "allow-all policy, every evidence pointer requested; must reproduce expected/valid byte for byte",
+    "expect": {
+      "outcome": "composed",
+      "expected": "valid"
+    }
+  },
+  {
+    "name": "denied",
+    "description": "default-deny policy: every retrieval is denied before any callback; mandatory content still composed",
+    "mutations": [
+      {
+        "op": "policyFile",
+        "file": "inputs/policy-deny.json"
+      }
+    ],
+    "expect": {
+      "outcome": "composed",
+      "expected": "denied"
+    }
+  },
+  {
+    "name": "wrong-destination",
+    "description": "the same delivery composed for another destination conversation: every import is denied destination_mismatch (no text), the note stays a claim",
+    "mutations": [
+      {
+        "op": "requestFile",
+        "file": "inputs/request-wrong-destination.json"
+      }
+    ],
+    "expect": {
+      "outcome": "composed",
+      "expected": "wrong-destination"
+    }
+  },
+  {
+    "name": "corrupt-manifest-byte",
+    "description": "one manifest byte changed: the digest over the exact bytes fails",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "manifest",
+        "find": "\"handoff.v0\"",
+        "with": "\"handoff.vX\""
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "digest_mismatch"
+    }
+  },
+  {
+    "name": "corrupt-envelope-unbound-field",
+    "description": "an unbound payload field added to the envelope",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "envelope",
+        "find": "\"payload\":{",
+        "with": "\"payload\":{\"unbound\":\"x\","
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    }
+  },
+  {
+    "name": "corrupt-task-extra-field",
+    "description": "an extra field added to the retained task bytes",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "task",
+        "find": "{\"instructions\"",
+        "with": "{\"extra\":\"x\",\"instructions\""
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    }
+  },
+  {
+    "name": "corrupt-import-text",
+    "description": "one imported text byte changed inside the envelope payload (its manifest textSha256 no longer matches)",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "envelope",
+        "find": "public API unchanged",
+        "with": "public API changed"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    }
+  },
+  {
+    "name": "corrupt-note-text",
+    "description": "the predecessor note text changed inside the envelope payload",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "envelope",
+        "find": "review pending",
+        "with": "review complete"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "delivery_mismatch"
+    }
+  },
+  {
+    "name": "receipt-not-an-object",
+    "description": "a malformed receipt",
+    "mutations": [
+      {
+        "op": "raw",
+        "target": "receipt",
+        "with": "[]"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "receipt_shape"
+    }
+  },
+  {
+    "name": "h1-input-duplicate-key",
+    "description": "duplicate key in the H1 options bytes",
+    "mutations": [
+      {
+        "op": "replace",
+        "target": "h1Input",
+        "find": "{\"response\"",
+        "with": "{\"response\": \"dup\", \"response\""
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "strict_json"
+    }
+  },
+  {
+    "name": "stale-receipt-superseded",
+    "description": "the as-of proof says the receipt was superseded",
+    "mutations": [
+      {
+        "op": "set",
+        "target": "fresh",
+        "path": [
+          "receipt_status"
+        ],
+        "value": "superseded"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "receipt_not_current"
+    }
+  },
+  {
+    "name": "stale-binding-moved",
+    "description": "the current binding is not the receipt's",
+    "mutations": [
+      {
+        "op": "set",
+        "target": "fresh",
+        "path": [
+          "current_binding"
+        ],
+        "value": "00000000-0000-4000-8000-000000000000"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "binding_moved"
+    }
+  },
+  {
+    "name": "stale-content-revised",
+    "description": "the task pins are no longer current",
+    "mutations": [
+      {
+        "op": "set",
+        "target": "fresh",
+        "path": [
+          "pins_problem"
+        ],
+        "value": "content_revised"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "stale_content"
+    }
+  },
+  {
+    "name": "review-decided",
+    "description": "the review is no longer a PlanStore candidate",
+    "mutations": [
+      {
+        "op": "set",
+        "target": "fresh",
+        "path": [
+          "review_class"
+        ],
+        "value": "decided"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "review_not_candidate"
+    }
+  },
+  {
+    "name": "fresh-proof-for-another-candidate",
+    "description": "a revalidation proof made for a different candidate",
+    "mutations": [
+      {
+        "op": "set",
+        "target": "fresh",
+        "path": [
+          "candidate_digest"
+        ],
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "fresh_mismatch"
+    }
+  },
+  {
+    "name": "over-budget",
+    "description": "a window too small for the view part: typed CONTEXT_TOO_LARGE before any H1 call",
+    "mutations": [
+      {
+        "op": "set",
+        "target": "h1Input",
+        "path": [
+          "budget",
+          "windowTokens"
+        ],
+        "value": 3000
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "CONTEXT_TOO_LARGE"
+    }
+  },
+  {
+    "name": "wrong-codec",
+    "description": "a delivery naming another codec",
+    "mutations": [
+      {
+        "op": "field",
+        "target": "codec",
+        "with": "hk-canon.v1"
+      }
+    ],
+    "expect": {
+      "outcome": "refused",
+      "code": "codec_unsupported"
+    }
+  }
+]

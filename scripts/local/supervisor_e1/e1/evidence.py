@@ -21,11 +21,16 @@ INTENTS = {
     "launch_intent": ("launched", "exited", "result_captured"),   # launched/exited are MODEL-ONLY in E2a
     "finish_intent": ("finish_outcome",),
     "notify_intent": ("notify_outcome",),
+    "dispatch_intent": ("dispatch_outcome",),                      # E2c (plan 030 C-D): send to an agent session
 }
 TERMINALS = {t for ts in INTENTS.values() for t in ts}
 RESERVE_KINDS = {"fault", "operator_resolution"}       # use the stream's fault/operator reserve
 ORDINARY = {"review_requested", "review_acknowledged", "review_progress"}
-KINDS = set(INTENTS) | TERMINALS | RESERVE_KINDS | ORDINARY
+# E2c evidence (plan 030 C-D; e1/acts.py). Ordinary, refusable records in the same streams; the E2a
+# classifier does not interpret them (a stream carrying them may classify "unclassified").
+E2C_ORDINARY = {"package_ref", "worker_ack", "worker_progress", "review_assigned", "review_rebind", "act_observation",
+                "superseded_as_of_read", "finished", "superseded", "transport_observed", "consumed_observed"}
+KINDS = set(INTENTS) | TERMINALS | RESERVE_KINDS | ORDINARY | E2C_ORDINARY
 FAULT_RESERVE = 2
 # Operator decisions that CONFIRM a terminal outcome (may resolve a stream). Anything else -- e.g.
 # "release" whose reply is unknown, "retry_permitted_once", "new_claim_permitted" -- is permission
@@ -521,11 +526,28 @@ class ReviewDerivation:
     accept_eligible: str         # eligible | ineligible:<why> | unverified:prerequisites | n/a
 
 
+DECISIONS = ("accepted", "rejected")
+
+
+def older_attempt_decision(decision: Any, decision_epoch: Any, current_epoch: Any) -> bool:
+    """HK-ISSUE-012 (plan 038): True only when a VALID recorded decision provably belongs to an attempt
+    epoch STRICTLY OLDER than the current one. PlanStore issues epoch+1 on every start or reopen, never
+    resets it, and refuses a decision epoch above the current one (PlanRules.ValidateState), so an older
+    epoch is a different attempt whatever its attempt id. The record stays history (plan 012); it is
+    neither current nor revived. Anything malformed (missing, bool, non-int, < 1, same or future
+    epoch, unknown decision) is False, which keeps the caller's fail-closed classification."""
+    def epoch(v: Any) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+    return decision in DECISIONS and epoch(decision_epoch) and epoch(current_epoch) and decision_epoch < current_epoch
+
+
 def derive_review(node: dict[str, Any], leaf: dict[str, Any] | None) -> ReviewDerivation:
     """From one plan-view node and its readiness leaf. Stores nothing.
 
     The public view exposes gates and content/attempt facts but not the CURRENT prerequisite
-    digest, so a passing candidate is 'unverified:prerequisites' rather than claimed eligible."""
+    digest, so a passing candidate is 'unverified:prerequisites' rather than claimed eligible.
+    A `stale` acceptance that provably belongs to an older attempt epoch (plan 038) leaves this
+    attempt unreviewed: it is a candidate, never `accepted`; any other `stale` stays operator work."""
     if node.get("work") != "done":
         return ReviewDerivation("not_done", "n/a")
     eff = node.get("effectiveAcceptance")
@@ -534,8 +556,10 @@ def derive_review(node: dict[str, Any], leaf: dict[str, Any] | None) -> ReviewDe
     if eff == "rejected":
         return ReviewDerivation("terminal_rejected", "n/a")
     if eff == "stale":
-        return ReviewDerivation("operator_classification", "n/a")
-    if eff != "none":
+        acc = node.get("acceptance")
+        if not (isinstance(acc, dict) and older_attempt_decision(acc.get("decision"), acc.get("attemptEpoch"), node.get("attemptEpoch"))):
+            return ReviewDerivation("operator_classification", "n/a")
+    elif eff != "none":
         return ReviewDerivation("not_done", "n/a")
     if leaf is None or leaf.get("gatesHold") is not True:
         return ReviewDerivation("candidate", "ineligible:gates")

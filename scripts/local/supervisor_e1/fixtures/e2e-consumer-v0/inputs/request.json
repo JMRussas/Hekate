@@ -1,0 +1,13 @@
+{
+  "destination": "conv-golden-successor",
+  "wanted": [
+    {
+      "kind": "review_progress",
+      "seq": 7
+    },
+    {
+      "kind": "binding",
+      "seq": 5
+    }
+  ]
+}

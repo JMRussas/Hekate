@@ -1,0 +1,274 @@
+{
+  "bom-prefix": {
+    "bytes": 10,
+    "note": "a UTF-8 BOM before the JSON; refused (the producer never writes one)",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "e3170108e7583c4ad52e05763a606c1dceef76c81a8e1503dde511b5ca764f81",
+    "strict": "strict_json"
+  },
+  "controls-escaped": {
+    "bytes": 35,
+    "note": "controls as short escapes or lowercase \\u00xx; quote and backslash escaped",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "69331acccd3fffd081db80d61769ba3b7587e919fb88196b14204b8970bfc2d4",
+    "strict": "ok"
+  },
+  "duplicate-keys": {
+    "bytes": 13,
+    "note": "never produced by canonical output; refused by the strict reader",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "1c53ee0df7b12fd4d65b976120c7fa6b847dc41dffd7f0331c3237a1ceab1756",
+    "strict": "strict_json"
+  },
+  "escaped-duplicate-key": {
+    "bytes": 18,
+    "note": "the same key written raw and escaped: a duplicate after decoding; refused",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "c95ba945b310a34906bbfc28ce1346b87741d5a2b3066d1d3ecfa0acbd86392c",
+    "strict": "strict_json"
+  },
+  "float-dot-zero": {
+    "bytes": 13,
+    "note": "Python renders 1000.0; JS JSON.stringify renders 1000",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "6e05a64a2c3f3215e73ee2ce11e0b3dfa18600a72b4e947ba519364510d83c68",
+    "strict": "ok"
+  },
+  "float-large-exponent": {
+    "bytes": 11,
+    "note": "exponent >= 1e16 is not reachable (clock <= 1e12)",
+    "producerReachable": false,
+    "pyCanonV0Canonical": true,
+    "sha256": "f4bcbb57bdf54b5b595d88096406c936d86bf0b6dd316d0ad2b4d2504c610403",
+    "strict": "ok"
+  },
+  "float-large-fraction": {
+    "bytes": 21,
+    "note": "reachable fake-clock value near MAX_AT",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "bdcacaa73a2af5aeb60c60b758260683b284d766feb3fc5c0884480ec0a2396e",
+    "strict": "ok"
+  },
+  "float-negative-zero": {
+    "bytes": 11,
+    "note": "reachable fake-clock value; JS renders 0",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "86bf7ccf1760006213f2355c79553e4382bd2b40064f6fd585f9e3c92fdae562",
+    "strict": "ok"
+  },
+  "float-small-exponent": {
+    "bytes": 12,
+    "note": "reachable fake-clock value; JS renders 0.00001",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "9bad9bbe70ae28408cb0d2b37d98a81c708a78b7dc868ce39159a3bb5ca95cb6",
+    "strict": "ok"
+  },
+  "float-subnormal": {
+    "bytes": 13,
+    "note": "the smallest subnormal double; a reachable fake-clock value (0 <= v, repr fits)",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "6f4c1303b9a6380b4afd03995ddd356633300198ea55c0d6bc51328fefba90d7",
+    "strict": "ok"
+  },
+  "infinity": {
+    "bytes": 14,
+    "note": "not JSON; refused",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "02c7562cb7c8ca861c2534a206877f2e085e3ff3ce60362735791b0c1b4582b4",
+    "strict": "strict_json"
+  },
+  "int-2^53+1": {
+    "bytes": 22,
+    "note": "reachable only through an unbounded PlanStore event_seq in the manifest basis; a JS Number parse rounds it",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "4ac8309cc76123ef6c5325ef925fc873e9b5856ec4f844ef1462f9303960378a",
+    "strict": "ok"
+  },
+  "int-2^53-1": {
+    "bytes": 22,
+    "note": "the largest integer a JS Number holds exactly",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "e1da48c6a6089f06ecb4e0a2259e658e3786b2420f52baccdf929ec6460d7b41",
+    "strict": "ok"
+  },
+  "int-2^63-1": {
+    "bytes": 25,
+    "note": "Postgres bigint maximum; a JS Number parse rounds it",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "faf5d00c8f17856eac0c8cae6eae118ca936a9ae1af9de80da15dcc33e844a9d",
+    "strict": "ok"
+  },
+  "invalid-utf8-byte": {
+    "bytes": 9,
+    "note": "not UTF-8; refused",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "dc2222acf0a31b9e965c6577a25c70f729766e07124482731257cb4bca738af7",
+    "strict": "strict_json"
+  },
+  "lone-surrogate-escape": {
+    "bytes": 14,
+    "note": "a lone high surrogate written as an escape; refused",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "89f8ca88ea20e6cd48ed0ab6b731b66377cab0c8fb9a7187ea96ac6813ed24e4",
+    "strict": "strict_json"
+  },
+  "lone-surrogate-key": {
+    "bytes": 12,
+    "note": "a lone low surrogate as a key; refused",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "e3667620e5308faa2d8bba085de4fa1fcc2cdd4227354de96d155b3f35f9a929",
+    "strict": "strict_json"
+  },
+  "nan": {
+    "bytes": 9,
+    "note": "not JSON; refused",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "0ce896293703c00486a61416514acc94d2919f4bd42141dedcca7ddfb97ec422",
+    "strict": "strict_json"
+  },
+  "nfc-precomposed": {
+    "bytes": 10,
+    "note": "U+00E9 (NFC); NO normalization: a different hash from the NFD vector",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "5a4e86c58f34a06c3644a4e4593bf6b0fbdf422ebe55ba69d8c0497ed221acad",
+    "strict": "ok"
+  },
+  "nfd-decomposed": {
+    "bytes": 11,
+    "note": "e + U+0301 (NFD); NO normalization: a different hash from the NFC vector",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "82acf8eef379c4d8de882ddd312ca10688510defa5acfe42abce586b569e8f81",
+    "strict": "ok"
+  },
+  "nonascii-keys-codepoint-order": {
+    "bytes": 18,
+    "note": "parses, but the v0 producer never emits non-ASCII keys; code-point order differs from JS UTF-16 order",
+    "producerReachable": false,
+    "pyCanonV0Canonical": true,
+    "sha256": "f95f01f7635708fc22c45f783a60405c3db223110693d1a6527afdcd5462ba96",
+    "strict": "ok"
+  },
+  "noncanonical-escaped-nonascii": {
+    "bytes": 14,
+    "note": "valid JSON; py-canon.v0 writes raw UTF-8, not a \\u00e9 escape",
+    "producerReachable": false,
+    "pyCanonV0Canonical": false,
+    "sha256": "806c22952ca1c970cfef1e505c157dfa6da7b735d478bc95970e157dddc67767",
+    "strict": "ok"
+  },
+  "noncanonical-escaped-slash": {
+    "bytes": 12,
+    "note": "valid JSON; py-canon.v0 never escapes '/'",
+    "producerReachable": false,
+    "pyCanonV0Canonical": false,
+    "sha256": "5b94c41bffc280f0b5b3a27142f4801232a3dea8e368a1680dd1e3609ba8b546",
+    "strict": "ok"
+  },
+  "noncanonical-exponent-form": {
+    "bytes": 12,
+    "note": "valid JSON; py-canon.v0 would write 1100.0",
+    "producerReachable": false,
+    "pyCanonV0Canonical": false,
+    "sha256": "50877b8e92087cbdcf36ad7180a246216deec0ec6cb80855c2fb153be3b46209",
+    "strict": "ok"
+  },
+  "noncanonical-exponent-int-like": {
+    "bytes": 10,
+    "note": "valid JSON; py-canon.v0 would write 1.0",
+    "producerReachable": false,
+    "pyCanonV0Canonical": false,
+    "sha256": "52d0bb26f83ecdbfe642967da82f6ae639e7995b4e413848d5270a08fc3fdace",
+    "strict": "ok"
+  },
+  "noncanonical-key-order": {
+    "bytes": 13,
+    "note": "valid JSON; py-canon.v0 sorts keys",
+    "producerReachable": false,
+    "pyCanonV0Canonical": false,
+    "sha256": "a1d46c3cdb4e5795c8d637f80daeb578ebb1a9a65dc1ed5f11f51794c3c89f3a",
+    "strict": "ok"
+  },
+  "noncanonical-negative-zero-int": {
+    "bytes": 8,
+    "note": "valid JSON; parses to the int 0, which py-canon.v0 writes as 0",
+    "producerReachable": false,
+    "pyCanonV0Canonical": false,
+    "sha256": "dbd681e539ad171ed90bfe0b80b788200b28a669b886b868605c53fb1ee9a962",
+    "strict": "ok"
+  },
+  "noncanonical-trailing-zero": {
+    "bytes": 14,
+    "note": "valid JSON; py-canon.v0 would write 1100.0",
+    "producerReachable": false,
+    "pyCanonV0Canonical": false,
+    "sha256": "c4c4189ee4809230b82cecf5093889a1fb5642197c459b78a7d8a451488dc1a0",
+    "strict": "ok"
+  },
+  "noncanonical-whitespace": {
+    "bytes": 10,
+    "note": "valid JSON; py-canon.v0 has no whitespace",
+    "producerReachable": false,
+    "pyCanonV0Canonical": false,
+    "sha256": "efc6fbbe835f02996e070d9b3f37ffc4153f8ed11590fbf555bff7021d271fe9",
+    "strict": "ok"
+  },
+  "overflowing-number": {
+    "bytes": 11,
+    "note": "parses to infinity in Python; refused as non-finite",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "7fc8940a305ac930b84cdf1ab55fe88136c436e8dbe696f535e4b578d4dc3cb1",
+    "strict": "strict_json"
+  },
+  "overlong-utf8": {
+    "bytes": 10,
+    "note": "an overlong encoding of U+0000; refused as invalid UTF-8",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "ea4d6cb06b0d439a17e7e05a24630f3ff46dd9bceb771d9cb97d389ee2300b68",
+    "strict": "strict_json"
+  },
+  "utf8-astral-and-separators": {
+    "bytes": 25,
+    "note": "astral (4-byte UTF-8) and U+2028/U+2029 raw (neither Python nor JS escapes them)",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "03ce60b60dabd0366a67d401fe574f7db2a1ab6b62b14469f4dbd9f7af484f56",
+    "strict": "ok"
+  },
+  "utf8-encoded-surrogate": {
+    "bytes": 11,
+    "note": "a surrogate encoded as UTF-8 (CESU-style); refused as invalid UTF-8",
+    "producerReachable": false,
+    "pyCanonV0Canonical": null,
+    "sha256": "ac0c777c2228e0f9876787eb280b1871713f08f121ea791ab87ec8f832b8b9cf",
+    "strict": "strict_json"
+  },
+  "utf8-nonascii-values": {
+    "bytes": 40,
+    "note": "combining marks, a ligature, RTL Arabic, CJK as raw UTF-8 values",
+    "producerReachable": true,
+    "pyCanonV0Canonical": true,
+    "sha256": "0978601c4a81b55dd6d1b8f98963dec8b286dc095906f73ffc3ae6da542b7f0b",
+    "strict": "ok"
+  }
+}

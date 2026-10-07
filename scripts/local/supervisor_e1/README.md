@@ -96,3 +96,42 @@ Plan [028](../../../context-store/plans/028-e2b-durable-journal-proposal.md) §9
 | `e1/journal_child.py` | A child process with its own database session, killed by tests at crash points. |
 
 Dependency: `psycopg[binary]` (locked). The E2b-a tests need session advisory locks, explicit transactions and concurrent connections, which one-shot `psql` cannot provide.
+
+## E2c: worker ACK, progress and review obligation (test-only, disposable database)
+
+Plan [030](../../../context-store/plans/030-worker-ack-progress-review-boundary.md) rev 7 §12 (sha256 `52ef6784…ab3a`). Evidence: [031](../../../context-store/plans/031-supervisor-e2c-validation.md). Part of the default suite. **Fixture constants only** (`hkw1` sessions, the `packageRef` forms, G/V/K, windows): none of them is an accepted production identity, auth or default contract. No worker, provider, wake, send, bridge or ChatAgent change.
+
+| File | Role |
+|---|---|
+| `e1/acts.py` | Pure. Exact act wire (030 §4/§4.1), `decide_act` / `decide_confirm` / `decide_request` / `decide_binding` over a validated record list plus PlanStore facts, derived bookkeeping, the binding chain (linkage + append seq, never `at`), deadline phases and the C-B read with per-field proof. `ActsModel` runs it over the E2a `ModelJournal`. |
+| `e1/acts_durable.py` | `ActsJournal(DurableJournal)`: every same-session entry point is serialized by one re-entrant lock. Route A = one transaction that takes the PlanStore project advisory lock first, reads the PlanStore facts, then the E2b-a global → writer → stream locks, decides, and appends one record (or bumps one counter). `read_cb` is one REPEATABLE READ READ ONLY snapshot; a journal outage returns the PlanStore leaf with evidence unknown. |
+| `e1/acts_schema.sql` | Fixture-only `e2c_counters` (saturating u32, known keys plus one shared bucket), `e2c_queue` (one entry per key per reason) and `e2c_runs` (a runId is dispatched once across all streams). Act records themselves are ordinary `supervisor_journal.records`. |
+| `e1/evidence.py` | Vocabulary only: `dispatch_intent` (reserves `dispatch_outcome`) and the E2c ordinary kinds. The E2a classifier does not interpret them. |
+| `tests/test_e2c_model.py`, `tests/test_e2c_live.py` | Model cases and live cases against real claims, transitions and decisions. |
+
+E2c streams use `E2C_BOUNDS` (per stream 256); the E2a/E2b-a defaults are unchanged.
+
+## E2d: selective-context handoff, review-lead rollover (test-only, disposable database)
+
+Plan [032](../../../context-store/plans/032-selective-context-conversation-handoff.md) rev 6 §6 (sha256 `60a3bdfa…3899`). Evidence: [033](../../../context-store/plans/033-supervisor-e2d-validation.md). Part of the default suite. **Review-lead rollover and the package only**; worker rollover (R/S) is deferred. No conversation is launched, woken or invoked. The task part is **H1-shaped test data**, not a ChatAgent H1 rendering. Import authorization is an explicit two-sided **stub**. Fixture constants only.
+
+| File | Role |
+|---|---|
+| `e1/handoff.py` | Pure. The `handoff-envelope.v0` + canonical manifest (`candidateDigest`), the per-role proof policy (liveness from the PlanStore class), the single byte/reference accounting rule, pending-effect listing, import verification, the semantic freshness set, the commit decision (retry check first, then freshness, then the predecessor CAS) and receipt status. |
+| `e1/handoff_durable.py` | `prepare` (one snapshot, immutable candidate, no authority), `commit` (route A via `ActsJournal._route_a`; the stored candidate is reloaded and verified in the transaction), `verify_receipt`, `redeliver`. |
+| `e1/handoff_schema.sql` | Fixture-only `e2d_candidates` (immutable; retains the exact Task bytes). |
+| `tests/test_e2d_model.py`, `tests/test_e2d_live.py` | Model and live cases. |
+
+Activation is a client obligation: binding validation accepts a successor's acts once the commit is durable, even before it fetches the receipt (tested and documented, no fence claimed).
+
+## E2e: offline handoff consumer (test-only)
+
+Plan [034](../../../context-store/plans/034-offline-handoff-consumer-contract.md) rev 3 (sha256 `17273a51…9db9`). Evidence: [035](../../../context-store/plans/035-supervisor-e2e-validation.md). Consumes the **exact accepted E2d v0 bytes** through a `handoff-delivery.v0` wrapper (`codec: py-canon.v0`), builds a separately identified **consumer view** (the committed candidate is never altered) and composes it with H1 **without changing H1**: H1 stays one message and is only called with `windowTokens` reduced by the view's cost. No invocation, launch, wake, write or production auth; the import/retrieval policy is a default-deny **stub**.
+
+| File | Role |
+|---|---|
+| `e1/consumer.py` | Pure. Raw ingress caps (unread), strict decoding (duplicates, non-finite numbers, lone surrogates, invalid UTF-8 → typed refusal), closed receipt/H1-option shapes, digests over the exact bytes, E2d shape verification, delivered-content caps, the policy stub, bounded whitelisted retrieval (authorization before any callback; request bounded and deduped first; optional outages become `unavailable`), the view with a fixed-width reservation and `viewDigest` outside its preimage, H1 binding, and an **H1-shaped stub** for the default suite. |
+| `e1/consumer_durable.py` | The delivery from stored bytes, the **one combined snapshot** revalidation bound to the verified candidate, and a retriever bound to the verified stream that validates the chain and the full pointer per call. |
+| `e1/sha_check.mjs` | SHA-256 over exact bytes under the pinned Node (opt-in only). |
+| `tests/test_e2e_model.py`, `tests/test_e2e_live.py` | Default suite (Python + Postgres). |
+| `interop/test_e2e_node_sha.py`, `interop_live/test_e2e_h1.py` | Opt-in: pinned Node SHA over exact bytes; the **real** pinned H1 as the task at prepare, bound at the consumer, with the exact budget boundary. A missing pinned prerequisite errors the selected suite only. |

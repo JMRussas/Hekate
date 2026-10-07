@@ -34,7 +34,7 @@ from psycopg.rows import dict_row
 
 from e1.coherent import CoherentFacts, prove_finish
 from e1.durable import CONNECT_OPTIONS, _valid_clock, read_stream_records
-from e1.evidence import MAX_AT, Classification, Facts, Record, ReviewWorkflow, classify
+from e1.evidence import DECISIONS, MAX_AT, Classification, Facts, Record, ReviewWorkflow, classify, older_attempt_decision
 
 _EVENTS_PAGE_SQL = """
 SELECT t.seq, t.j, t.page_rows FROM (
@@ -142,15 +142,22 @@ def read_stream_coherent(conn: psycopg.Connection, root: str, claim_key: str, rb
 def snapshot_review(node: dict[str, Any] | None) -> str | None:
     """The GLOBAL review fact as far as the node row in the SAME snapshot can decide it (mirrors the
     raw part of PlanRules.EffectiveAcceptanceOf). A standing decision may still be stale through
-    prerequisite pins, which need the whole graph: reported as decided_unverified, never guessed."""
+    prerequisite pins, which need the whole graph: reported as decided_unverified, never guessed.
+    A valid decision that provably belongs to a strictly older attempt epoch (plan 038,
+    HK-ISSUE-012) leaves the current attempt unreviewed: candidate, never decided_unverified."""
     if node is None:
         return None
     if node.get("work_status") != "done":
         return "not_done"
     if node.get("acc_decision") is None:
         return "candidate"
-    if (node.get("acc_content_revision") != node.get("content_revision") or node.get("acc_artifact_ref") != node.get("artifact_ref")
-            or node.get("acc_attempt_epoch") != node.get("attempt_epoch")):
+    if older_attempt_decision(node.get("acc_decision"), node.get("acc_attempt_epoch"), node.get("attempt_epoch")):
+        return "candidate"
+    # The attempt id is also compared: PlanRules.ValidateState (PlanRules.cs 159) makes a same-epoch decision
+    # naming another attempt id an INVALID state, so a row showing one is never decided (agrees with acts.review_state).
+    if (node.get("acc_decision") not in DECISIONS
+            or node.get("acc_content_revision") != node.get("content_revision") or node.get("acc_artifact_ref") != node.get("artifact_ref")
+            or node.get("acc_attempt_epoch") != node.get("attempt_epoch") or node.get("acc_attempt_id") != node.get("attempt_id")):
         return "operator_classification"
     return "decided_unverified"
 

@@ -1,0 +1,16 @@
+{
+  "codec": "py-canon.v0",
+  "consumerSha256": "30ca084a4712560aec2975b79e5d71d0febb107bc4868a154b0cbcc2c0e61a6e",
+  "estimator": "chatagent-utf8-conservative-v1@5255daa",
+  "evidence": "035 (accepted, msg 1328)",
+  "generatedAt": "2026-10-07",
+  "h1": {
+    "bridge": "e1/h1_bridge.py",
+    "chatagentCommit": "5255daacfc670a4919f61439eb12adcb6a401920",
+    "checkout": "C:\\Users\\jruss\\AppData\\Local\\Temp\\claude\\d--Git-Hekate\\ad845ee3-ddf5-4018-8f3b-f217b500bf47\\scratchpad\\chatagent-5255daa",
+    "node": "24.21.0"
+  },
+  "hekateBase": "d0ed671 + accepted E2c/E2d/E2e overlay",
+  "plan": "034 rev 3 (17273a5194ccec681a7b9eca7089db84cf20fe3489e64f3729130059cd2ab9db)",
+  "wrapper": "handoff-delivery.v0"
+}

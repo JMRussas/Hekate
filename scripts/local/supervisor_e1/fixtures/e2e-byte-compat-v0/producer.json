@@ -1,0 +1,10 @@
+{
+  "codec": "py-canon.v0",
+  "consumerSha256": "30ca084a4712560aec2975b79e5d71d0febb107bc4868a154b0cbcc2c0e61a6e",
+  "deliveries": "accepted producer code on the E2d MODEL path; synthetic receipt and as-of proof; H1-SHAPED stub; offline",
+  "generatedAt": "2026-10-07",
+  "handoffSha256": "1e9036f6ed29983c1282dde0a3a256094984e2c6a9a3d8940a575beeea6faab2",
+  "kind": "e2e-byte-compat-v0 (supplement to the accepted e2e-consumer-v0 golden bundle)",
+  "plan": "034 rev 3 (17273a5194ccec681a7b9eca7089db84cf20fe3489e64f3729130059cd2ab9db)",
+  "wrapper": "handoff-delivery.v0"
+}

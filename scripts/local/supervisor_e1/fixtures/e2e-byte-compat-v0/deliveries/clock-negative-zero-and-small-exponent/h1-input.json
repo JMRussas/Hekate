@@ -1,0 +1,1 @@
+{"response": "{\"synthetic\":true}", "rules": [], "systemInstruction": "S", "roleInstructions": {"fast": "F", "deep": "D"}, "budget": {"windowTokens": 200000, "maxHistoryTurns": 0, "safetyTokens": 0, "fastOutputTokens": 1000, "deepOutputTokens": 1000}, "capturedAtIso": "2026-10-07T12:00:00Z"}

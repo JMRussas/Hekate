@@ -1,0 +1,17 @@
+{
+  "principal": "lead-1",
+  "rules": [
+    {
+      "action": "source_read",
+      "allow": true,
+      "id": "read-all",
+      "match": {}
+    },
+    {
+      "action": "destination_use",
+      "allow": true,
+      "id": "use-all",
+      "match": {}
+    }
+  ]
+}

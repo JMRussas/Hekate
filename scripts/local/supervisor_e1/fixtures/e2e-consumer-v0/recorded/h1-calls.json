@@ -1,0 +1,272 @@
+[
+  {
+    "options": {
+      "budget": {
+        "deepOutputTokens": 1000,
+        "fastOutputTokens": 1000,
+        "maxHistoryTurns": 0,
+        "safetyTokens": 0,
+        "windowTokens": 192536
+      },
+      "capturedAtIso": "2026-10-07T12:00:00Z",
+      "response": "{\"contractVersion\":\"plan-contract/v1\",\"replayed\":false,\"stillCurrent\":true,\"current\":{\"work\":\"in_progress\",\"attemptId\":\"att-1\",\"attemptEpoch\":1},\"receipt\":{\"rootId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"claimKey\":\"94061211f44946a291e8dfcef0d497bc\",\"outcome\":\"claimed\",\"nodeId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"attemptId\":\"att-1\",\"attemptEpoch\":1,\"executorRef\":\"hkw1:worker-a:97e0ced0-8435-44dc-853b-11a9480f1ff7\",\"contentRevision\":1,\"contentDigest\":\"7268A40632FEFA471F744E5F693E49A881BBE7F85CD52050897FD9915147BE6F\",\"contentSnapshot\":{\"value\":\"target spec\",\"attributes\":{\"acceptance_criteria\":\"tests pass\"}},\"prereqDigest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"prereqSnapshot\":{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]},\"eventSeq\":4,\"actor\":\"supervisor-e2c\",\"createdAt\":\"2026-10-07T18:09:21.126181Z\"}}",
+      "roleInstructions": {
+        "deep": "GOLDEN-DEEP",
+        "fast": "GOLDEN-FAST"
+      },
+      "rules": [
+        {
+          "path": "AGENTS.md",
+          "revision": "golden-rev",
+          "text": "Golden rule: verify, then report."
+        }
+      ],
+      "systemInstruction": "GOLDEN-SYSTEM"
+    },
+    "result": {
+      "context": {
+        "budgetMethod": "utf8-conservative-v1",
+        "capturedAtIso": "2026-10-07T12:00:00Z",
+        "memoryIsNull": true,
+        "messages": [
+          {
+            "content": "ChatAgent plan task (plan-contract/v1)\nRoot: b84e7403-5fcc-4f37-99e6-ac855af5ffa7\nNode: 3dd9d766-cdae-47b3-8b79-6f551ed92f1e\nClaim key: 94061211f44946a291e8dfcef0d497bc\nAttempt epoch: 1\nContent revision: 1\nAttempt id (5 bytes):\natt-1\nRequirement (11 bytes):\ntarget spec\nAttributes: 1\nAttribute key (19 bytes):\nacceptance_criteria\nAttribute value (10 bytes):\ntests pass\nPrerequisites (1048 bytes):\n{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]}\nRules: 1\nRule path (9 bytes):\nAGENTS.md\nRule revision (10 bytes):\ngolden-rev\nRule text (33 bytes):\nGolden rule: verify, then report.\n",
+            "role": "user"
+          }
+        ],
+        "optionalCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "roleInstructions": {
+          "deep": "GOLDEN-DEEP",
+          "fast": "GOLDEN-FAST"
+        },
+        "snapshotId": "7ba2bccb-2fff-482c-b630-95ba6eccefc4",
+        "systemInstruction": "GOLDEN-SYSTEM"
+      },
+      "ok": true,
+      "probes": {
+        "assignmentRejectedOrIgnored": true,
+        "ruleFieldReads": [],
+        "sourceFrozen": true,
+        "unchangedAfterInputMutation": true
+      },
+      "source": {
+        "actor": "supervisor-e2c",
+        "attemptEpoch": 1,
+        "attemptId": "att-1",
+        "claimKey": "94061211f44946a291e8dfcef0d497bc",
+        "contentDigest": "7268A40632FEFA471F744E5F693E49A881BBE7F85CD52050897FD9915147BE6F",
+        "contentRevision": 1,
+        "contractVersion": "plan-contract/v1",
+        "createdAt": "2026-10-07T18:09:21.126181Z",
+        "eventSeq": 4,
+        "executorRef": "hkw1:worker-a:97e0ced0-8435-44dc-853b-11a9480f1ff7",
+        "kind": "hekate-plan-leaf",
+        "nodeId": "3dd9d766-cdae-47b3-8b79-6f551ed92f1e",
+        "prereqDigest": "448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d",
+        "replayed": false,
+        "rootId": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+        "stillCurrent": true,
+        "supplied": {
+          "prerequisitesSha256": "162b76ebd8df27c062a7a42cfa96a606559206b5a2c87c818bfd0ee635883996",
+          "requirementSha256": "303c548fe5600673720464550ede577464d3c3872ffa8f43c6e1b49322191fb3",
+          "rules": [
+            {
+              "path": "AGENTS.md",
+              "revision": "golden-rev",
+              "sha256": "2388bd9c1949d31b902bc11ed85b119e62c6c8e747b09fc31319269c151e273b"
+            }
+          ]
+        }
+      },
+      "suppliedSha256": "0dd6f611f62d1add1b0ef7fb416a3932a3d813c137024641fdfa78a536ad5ba9",
+      "text": "ChatAgent plan task (plan-contract/v1)\nRoot: b84e7403-5fcc-4f37-99e6-ac855af5ffa7\nNode: 3dd9d766-cdae-47b3-8b79-6f551ed92f1e\nClaim key: 94061211f44946a291e8dfcef0d497bc\nAttempt epoch: 1\nContent revision: 1\nAttempt id (5 bytes):\natt-1\nRequirement (11 bytes):\ntarget spec\nAttributes: 1\nAttribute key (19 bytes):\nacceptance_criteria\nAttribute value (10 bytes):\ntests pass\nPrerequisites (1048 bytes):\n{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]}\nRules: 1\nRule path (9 bytes):\nAGENTS.md\nRule revision (10 bytes):\ngolden-rev\nRule text (33 bytes):\nGolden rule: verify, then report.\n"
+    }
+  },
+  {
+    "options": {
+      "budget": {
+        "deepOutputTokens": 1000,
+        "fastOutputTokens": 1000,
+        "maxHistoryTurns": 0,
+        "safetyTokens": 0,
+        "windowTokens": 194581
+      },
+      "capturedAtIso": "2026-10-07T12:00:00Z",
+      "response": "{\"contractVersion\":\"plan-contract/v1\",\"replayed\":false,\"stillCurrent\":true,\"current\":{\"work\":\"in_progress\",\"attemptId\":\"att-1\",\"attemptEpoch\":1},\"receipt\":{\"rootId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"claimKey\":\"94061211f44946a291e8dfcef0d497bc\",\"outcome\":\"claimed\",\"nodeId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"attemptId\":\"att-1\",\"attemptEpoch\":1,\"executorRef\":\"hkw1:worker-a:97e0ced0-8435-44dc-853b-11a9480f1ff7\",\"contentRevision\":1,\"contentDigest\":\"7268A40632FEFA471F744E5F693E49A881BBE7F85CD52050897FD9915147BE6F\",\"contentSnapshot\":{\"value\":\"target spec\",\"attributes\":{\"acceptance_criteria\":\"tests pass\"}},\"prereqDigest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"prereqSnapshot\":{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]},\"eventSeq\":4,\"actor\":\"supervisor-e2c\",\"createdAt\":\"2026-10-07T18:09:21.126181Z\"}}",
+      "roleInstructions": {
+        "deep": "GOLDEN-DEEP",
+        "fast": "GOLDEN-FAST"
+      },
+      "rules": [
+        {
+          "path": "AGENTS.md",
+          "revision": "golden-rev",
+          "text": "Golden rule: verify, then report."
+        }
+      ],
+      "systemInstruction": "GOLDEN-SYSTEM"
+    },
+    "result": {
+      "context": {
+        "budgetMethod": "utf8-conservative-v1",
+        "capturedAtIso": "2026-10-07T12:00:00Z",
+        "memoryIsNull": true,
+        "messages": [
+          {
+            "content": "ChatAgent plan task (plan-contract/v1)\nRoot: b84e7403-5fcc-4f37-99e6-ac855af5ffa7\nNode: 3dd9d766-cdae-47b3-8b79-6f551ed92f1e\nClaim key: 94061211f44946a291e8dfcef0d497bc\nAttempt epoch: 1\nContent revision: 1\nAttempt id (5 bytes):\natt-1\nRequirement (11 bytes):\ntarget spec\nAttributes: 1\nAttribute key (19 bytes):\nacceptance_criteria\nAttribute value (10 bytes):\ntests pass\nPrerequisites (1048 bytes):\n{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]}\nRules: 1\nRule path (9 bytes):\nAGENTS.md\nRule revision (10 bytes):\ngolden-rev\nRule text (33 bytes):\nGolden rule: verify, then report.\n",
+            "role": "user"
+          }
+        ],
+        "optionalCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "roleInstructions": {
+          "deep": "GOLDEN-DEEP",
+          "fast": "GOLDEN-FAST"
+        },
+        "snapshotId": "0176bcac-eb69-44ef-8ffb-1d96e6bfdb20",
+        "systemInstruction": "GOLDEN-SYSTEM"
+      },
+      "ok": true,
+      "probes": {
+        "assignmentRejectedOrIgnored": true,
+        "ruleFieldReads": [],
+        "sourceFrozen": true,
+        "unchangedAfterInputMutation": true
+      },
+      "source": {
+        "actor": "supervisor-e2c",
+        "attemptEpoch": 1,
+        "attemptId": "att-1",
+        "claimKey": "94061211f44946a291e8dfcef0d497bc",
+        "contentDigest": "7268A40632FEFA471F744E5F693E49A881BBE7F85CD52050897FD9915147BE6F",
+        "contentRevision": 1,
+        "contractVersion": "plan-contract/v1",
+        "createdAt": "2026-10-07T18:09:21.126181Z",
+        "eventSeq": 4,
+        "executorRef": "hkw1:worker-a:97e0ced0-8435-44dc-853b-11a9480f1ff7",
+        "kind": "hekate-plan-leaf",
+        "nodeId": "3dd9d766-cdae-47b3-8b79-6f551ed92f1e",
+        "prereqDigest": "448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d",
+        "replayed": false,
+        "rootId": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+        "stillCurrent": true,
+        "supplied": {
+          "prerequisitesSha256": "162b76ebd8df27c062a7a42cfa96a606559206b5a2c87c818bfd0ee635883996",
+          "requirementSha256": "303c548fe5600673720464550ede577464d3c3872ffa8f43c6e1b49322191fb3",
+          "rules": [
+            {
+              "path": "AGENTS.md",
+              "revision": "golden-rev",
+              "sha256": "2388bd9c1949d31b902bc11ed85b119e62c6c8e747b09fc31319269c151e273b"
+            }
+          ]
+        }
+      },
+      "suppliedSha256": "0dd6f611f62d1add1b0ef7fb416a3932a3d813c137024641fdfa78a536ad5ba9",
+      "text": "ChatAgent plan task (plan-contract/v1)\nRoot: b84e7403-5fcc-4f37-99e6-ac855af5ffa7\nNode: 3dd9d766-cdae-47b3-8b79-6f551ed92f1e\nClaim key: 94061211f44946a291e8dfcef0d497bc\nAttempt epoch: 1\nContent revision: 1\nAttempt id (5 bytes):\natt-1\nRequirement (11 bytes):\ntarget spec\nAttributes: 1\nAttribute key (19 bytes):\nacceptance_criteria\nAttribute value (10 bytes):\ntests pass\nPrerequisites (1048 bytes):\n{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]}\nRules: 1\nRule path (9 bytes):\nAGENTS.md\nRule revision (10 bytes):\ngolden-rev\nRule text (33 bytes):\nGolden rule: verify, then report.\n"
+    }
+  },
+  {
+    "options": {
+      "budget": {
+        "deepOutputTokens": 1000,
+        "fastOutputTokens": 1000,
+        "maxHistoryTurns": 0,
+        "safetyTokens": 0,
+        "windowTokens": 192801
+      },
+      "capturedAtIso": "2026-10-07T12:00:00Z",
+      "response": "{\"contractVersion\":\"plan-contract/v1\",\"replayed\":false,\"stillCurrent\":true,\"current\":{\"work\":\"in_progress\",\"attemptId\":\"att-1\",\"attemptEpoch\":1},\"receipt\":{\"rootId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"claimKey\":\"94061211f44946a291e8dfcef0d497bc\",\"outcome\":\"claimed\",\"nodeId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"attemptId\":\"att-1\",\"attemptEpoch\":1,\"executorRef\":\"hkw1:worker-a:97e0ced0-8435-44dc-853b-11a9480f1ff7\",\"contentRevision\":1,\"contentDigest\":\"7268A40632FEFA471F744E5F693E49A881BBE7F85CD52050897FD9915147BE6F\",\"contentSnapshot\":{\"value\":\"target spec\",\"attributes\":{\"acceptance_criteria\":\"tests pass\"}},\"prereqDigest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"prereqSnapshot\":{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]},\"eventSeq\":4,\"actor\":\"supervisor-e2c\",\"createdAt\":\"2026-10-07T18:09:21.126181Z\"}}",
+      "roleInstructions": {
+        "deep": "GOLDEN-DEEP",
+        "fast": "GOLDEN-FAST"
+      },
+      "rules": [
+        {
+          "path": "AGENTS.md",
+          "revision": "golden-rev",
+          "text": "Golden rule: verify, then report."
+        }
+      ],
+      "systemInstruction": "GOLDEN-SYSTEM"
+    },
+    "result": {
+      "context": {
+        "budgetMethod": "utf8-conservative-v1",
+        "capturedAtIso": "2026-10-07T12:00:00Z",
+        "memoryIsNull": true,
+        "messages": [
+          {
+            "content": "ChatAgent plan task (plan-contract/v1)\nRoot: b84e7403-5fcc-4f37-99e6-ac855af5ffa7\nNode: 3dd9d766-cdae-47b3-8b79-6f551ed92f1e\nClaim key: 94061211f44946a291e8dfcef0d497bc\nAttempt epoch: 1\nContent revision: 1\nAttempt id (5 bytes):\natt-1\nRequirement (11 bytes):\ntarget spec\nAttributes: 1\nAttribute key (19 bytes):\nacceptance_criteria\nAttribute value (10 bytes):\ntests pass\nPrerequisites (1048 bytes):\n{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]}\nRules: 1\nRule path (9 bytes):\nAGENTS.md\nRule revision (10 bytes):\ngolden-rev\nRule text (33 bytes):\nGolden rule: verify, then report.\n",
+            "role": "user"
+          }
+        ],
+        "optionalCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "roleInstructions": {
+          "deep": "GOLDEN-DEEP",
+          "fast": "GOLDEN-FAST"
+        },
+        "snapshotId": "3960b13a-3f49-432d-98a3-8802ae739bed",
+        "systemInstruction": "GOLDEN-SYSTEM"
+      },
+      "ok": true,
+      "probes": {
+        "assignmentRejectedOrIgnored": true,
+        "ruleFieldReads": [],
+        "sourceFrozen": true,
+        "unchangedAfterInputMutation": true
+      },
+      "source": {
+        "actor": "supervisor-e2c",
+        "attemptEpoch": 1,
+        "attemptId": "att-1",
+        "claimKey": "94061211f44946a291e8dfcef0d497bc",
+        "contentDigest": "7268A40632FEFA471F744E5F693E49A881BBE7F85CD52050897FD9915147BE6F",
+        "contentRevision": 1,
+        "contractVersion": "plan-contract/v1",
+        "createdAt": "2026-10-07T18:09:21.126181Z",
+        "eventSeq": 4,
+        "executorRef": "hkw1:worker-a:97e0ced0-8435-44dc-853b-11a9480f1ff7",
+        "kind": "hekate-plan-leaf",
+        "nodeId": "3dd9d766-cdae-47b3-8b79-6f551ed92f1e",
+        "prereqDigest": "448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d",
+        "replayed": false,
+        "rootId": "b84e7403-5fcc-4f37-99e6-ac855af5ffa7",
+        "stillCurrent": true,
+        "supplied": {
+          "prerequisitesSha256": "162b76ebd8df27c062a7a42cfa96a606559206b5a2c87c818bfd0ee635883996",
+          "requirementSha256": "303c548fe5600673720464550ede577464d3c3872ffa8f43c6e1b49322191fb3",
+          "rules": [
+            {
+              "path": "AGENTS.md",
+              "revision": "golden-rev",
+              "sha256": "2388bd9c1949d31b902bc11ed85b119e62c6c8e747b09fc31319269c151e273b"
+            }
+          ]
+        }
+      },
+      "suppliedSha256": "0dd6f611f62d1add1b0ef7fb416a3932a3d813c137024641fdfa78a536ad5ba9",
+      "text": "ChatAgent plan task (plan-contract/v1)\nRoot: b84e7403-5fcc-4f37-99e6-ac855af5ffa7\nNode: 3dd9d766-cdae-47b3-8b79-6f551ed92f1e\nClaim key: 94061211f44946a291e8dfcef0d497bc\nAttempt epoch: 1\nContent revision: 1\nAttempt id (5 bytes):\natt-1\nRequirement (11 bytes):\ntarget spec\nAttributes: 1\nAttribute key (19 bytes):\nacceptance_criteria\nAttribute value (10 bytes):\ntests pass\nPrerequisites (1048 bytes):\n{\"chain\":[{\"id\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"},{\"id\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"nodeType\":\"plan\",\"parentId\":null},{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\"}],\"nodes\":[{\"id\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\",\"kind\":\"leaf\",\"work\":\"done\",\"children\":[],\"nodeType\":\"task\",\"parentId\":\"b84e7403-5fcc-4f37-99e6-ac855af5ffa7\",\"attemptId\":\"p1\",\"acceptance\":{\"decision\":\"accepted\",\"attemptId\":\"p1\",\"decidedBy\":\"e1-verifier\",\"artifactRef\":\"sha-p\",\"evidenceRef\":\"ev-p\",\"attemptEpoch\":1,\"contentRevision\":1},\"artifactRef\":\"sha-p\",\"attemptEpoch\":1,\"contentRevision\":1,\"pinnedPrereqDigest\":\"32f7191b5bb45d8d4a948121be3b26201e04091271df1b10276d0f6aa8708070\",\"pinnedContentRevision\":1}],\"digest\":\"448f3745e0057eabdc14a952bbabf8aff90126f1b86230d13079aeffacfb369d\",\"declared\":[{\"gate\":\"accepted\",\"ownerId\":\"3dd9d766-cdae-47b3-8b79-6f551ed92f1e\",\"predecessorId\":\"3525db92-3b97-4fc2-b3bc-8399aa60cf37\"}]}\nRules: 1\nRule path (9 bytes):\nAGENTS.md\nRule revision (10 bytes):\ngolden-rev\nRule text (33 bytes):\nGolden rule: verify, then report.\n"
+    }
+  }
+]

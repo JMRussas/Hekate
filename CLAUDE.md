@@ -187,6 +187,7 @@ Read **on-demand** when working in the relevant area.
 |-----|-------------|
 | `PLAN_TO_CODE.md` | Working on the Planner, codegen (Generator/Lowerer/Emitter), Hermes execution, or any of the four open gap-fills. Explains the typed-plan + bounded-hole model the system is converging on. |
 | `context-store/plans/011-typed-changes-hermes-refactor.md` | Status of the four Plan→Code gap-fills; pick up where the last person stopped |
+| `context-store/plans/037-open-issues-register.md` | Canonical open-issue register (`HK-ISSUE-NNN`): check before starting or closing work; cite IDs in checkpoints |
 | `context-store/CLAUDE.md` | Working on agent memory, context router, node types, DB schema |
 | `orchestration/CLAUDE.md` | Working on task execution, planning, wave dispatch, auth |
 | `.claude/architecture.md` | Understanding cross-component design |

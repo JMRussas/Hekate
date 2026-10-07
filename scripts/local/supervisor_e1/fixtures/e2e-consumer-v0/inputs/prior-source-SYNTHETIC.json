@@ -1,0 +1,21 @@
+{
+  "conversationId": "conv-golden-predecessor",
+  "note": "fixture data, not a production source store",
+  "records": [
+    {
+      "contentHash": "9159f9661abefa0b0f74a6dcd911bfcab9578cbe40af09a4a56ee6bfae6d1aa3",
+      "eventId": "e-user-1",
+      "messageId": "m-user-1",
+      "provenance": "user-stated",
+      "text": "Please keep the public API unchanged."
+    },
+    {
+      "contentHash": "4706aca39e46e6bdb2e14ee891b45d37bd7d145b57e97086a4a136cfbe91796a",
+      "eventId": "e-asst-1",
+      "messageId": "m-asst-1",
+      "provenance": "assistant-claimed",
+      "text": "I already updated the README section on retries."
+    }
+  ],
+  "synthetic": true
+}

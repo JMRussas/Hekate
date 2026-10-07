@@ -1,0 +1,21 @@
+{
+  "basis": {
+    "synthetic": "as-of proof consistent with the manifest; not a database read"
+  },
+  "candidate_digest": "44a3e711e8bdfe14c3db50f9806c134c38717bac87dfdd861de1abfc5c705008",
+  "current_binding": "2f910d22-f8f1-5c0f-9c85-412377ed2efa",
+  "package_ref": "{\"contentDigest\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"contentRevision\":1,\"instructions\":{\"deep\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"fast\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"system\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"kind\":\"supplied.v1\",\"prereqDigest\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"suppliedSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+  "pending": [],
+  "pins_problem": null,
+  "queue": [],
+  "receipt_status": "current",
+  "record_id": "9df34564-970e-5d23-a972-a81b7205a620",
+  "review_class": "candidate",
+  "review_identity": {
+    "artifactRef": "sha-art",
+    "attemptEpoch": 1,
+    "attemptId": "att-1",
+    "nodeId": "1281634d-5c21-4682-ad4f-fe1877d78070",
+    "rootId": "fbfc4fd4-0ca7-4087-8fda-00dbaeddcf95"
+  }
+}
