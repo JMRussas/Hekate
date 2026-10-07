@@ -34,6 +34,12 @@ This runner drives the **existing** pilot (`e1/pilot.py`), the real-worker adapt
 2. Owned clone: `git clone --no-local --no-checkout` of the source (read only), then a detached checkout at the base. Git runs under `git_env()` throughout.
 3. Anchor: the anchor is an ancestor of the base, and `anchor..base` touches **exactly** the oracle files (A/M, new mode 100644). Each oracle blob has its declared hash.
 4. Dependencies: the lockfile hash is checked before install, in a pristine `node_modules`. Then `npm ci --ignore-scripts --no-audit --no-fund --offline|--prefer-offline` runs under the pinned Node with `run_bounded` (tree kill, drained). The vitest and tsc entry hashes are checked after.
+   - **npm's environment** (revision 2, msgs 1675–1683, after the first real preflight was refused at `deps_install_failed`):
+     - npm, and only npm, gets the worker allowlist plus three variables. The worker and test environments are not widened.
+     - `npm_config_cache` is the operator's warm cache. It is required and must be an absolute, existing directory under native `Path` rules, so a relative path, a drive-relative `C:x` or a missing UNC path is refused. It fails closed: `npm_cache_required` / `npm_cache_invalid`, with no silent default cache.
+     - `npm_config_userconfig` and `npm_config_globalconfig` both point to the run root's owned **empty** `npm-empty.npmrc`. Preflight creates it exclusively, outside every worktree, and it is re-checked as an empty regular file before every npm spawn (`npmrc_missing` / `npmrc_not_empty`).
+     - npm's builtin `npmrc` beside the pinned CLI cannot be disabled; the env values override it. Its sha256 is recorded as provenance.
+     - The deps evidence records the cache path, whether `_cacache` is present, the npmrc path and hash, and the **bounded output head** on success and refusal. No config contents or credentials are recorded.
 5. Structured baseline: the run must end normally, its report must not be truncated, and its exit must equal `expectedExit`. The report is **stdout only**; stderr is bounded, digested and kept as evidence (F1). The set of `(file, fullName, status, first failure line)` must equal the declared cases. No suite-level `message` is allowed, and the counts must agree. A mismatch gives `spec_baseline_mismatch` with the missing and extra cases.
 
 **Run:**

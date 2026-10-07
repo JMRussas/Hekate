@@ -25,6 +25,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 import uuid
@@ -42,6 +44,7 @@ PREFLIGHT = "preflight.json"
 CLEAN_STATUS = ["!! node_modules/"]
 VITEST_ENTRY = "node_modules/vitest/vitest.mjs"
 TSC_ENTRY = "node_modules/typescript/bin/tsc"
+NPMRC = "npm-empty.npmrc"   # the run root's owned EMPTY npm user/global config (msg 1683)
 ERR_KEEP = 4096          # stderr prefix kept for report-bearing runs (stdout alone is the report)
 
 
@@ -141,9 +144,49 @@ def owned_clone(spec: T.TaskSpec, run_root: Path) -> Path:
 
 # --- dependencies ------------------------------------------------------------------------------------------
 
-def install_deps(spec: T.TaskSpec, wt: Path) -> dict[str, Any]:
-    """Pristine `npm ci` in `wt` from the lockfile (hash-checked BEFORE), entries hash-checked AFTER.
-    Raises PreflightRefused (callers map it to an uncertain stop)."""
+def make_npmrc(run_root: Path) -> None:
+    """The run root's OWNED empty npm config (created once, exclusively, by preflight; outside every worktree)."""
+    with open(Path(run_root) / NPMRC, "xb"):
+        pass
+
+
+def npm_env(spec: T.TaskSpec, run_root: Path) -> tuple[dict[str, str], dict[str, Any]]:
+    """The environment for npm ONLY (msgs 1675-1683): the worker allowlist plus
+    - npm_config_cache: the operator's warm cache, REQUIRED, an absolute existing directory (native Path
+      rules: a drive-relative `C:x` or a relative path is refused; a UNC path must exist). Fail closed:
+      absent -> npm_cache_required, invalid -> npm_cache_invalid; there is no silent default cache.
+    - npm_config_userconfig / npm_config_globalconfig: the run root's owned EMPTY file, re-checked as an
+      empty regular file before every spawn, so no ambient npmrc changes registry, auth, proxy or cache.
+    npm's builtin npmrc (beside the pinned CLI) cannot be disabled by env; these env values override it,
+    and its sha256 is recorded as provenance. No config contents or credentials are recorded."""
+    raw = os.environ.get("npm_config_cache")
+    if not raw:
+        raise PreflightRefused("npm_cache_required")
+    cache = Path(raw)
+    if not cache.is_absolute() or not cache.is_dir():
+        raise PreflightRefused("npm_cache_invalid", raw)
+    rc = Path(run_root) / NPMRC
+    try:
+        st = os.lstat(rc)
+    except OSError:
+        raise PreflightRefused("npmrc_missing", str(rc)) from None
+    if not stat.S_ISREG(st.st_mode) or st.st_size != 0:
+        raise PreflightRefused("npmrc_not_empty", str(rc))
+    builtin = Path(spec.doc["hashes"]["npmCli"]["path"]).parents[1] / "npmrc"
+    try:
+        builtin_sha = sha256_file(builtin) if builtin.is_file() else None
+    except OSError:
+        builtin_sha = None
+    env = {**W.worker_env(), "npm_config_cache": str(cache), "npm_config_userconfig": str(rc), "npm_config_globalconfig": str(rc)}
+    ev = {"npmCache": str(cache), "cacachePresent": (cache / "_cacache").is_dir(), "npmrc": str(rc),
+          "npmrcSha256": sha256_file(rc), "builtinNpmrc": str(builtin), "builtinNpmrcSha256": builtin_sha}
+    return env, ev
+
+
+def install_deps(spec: T.TaskSpec, wt: Path, run_root: Path) -> dict[str, Any]:
+    """Pristine `npm ci` in `wt` from the lockfile (hash-checked BEFORE), entries hash-checked AFTER, under
+    npm_env(). The bounded output head is kept on success AND refusal. Raises PreflightRefused (callers
+    map it to an uncertain stop)."""
     check_pins(spec)
     h, deps = spec.doc["hashes"], spec.doc["deps"]
     lock = Path(wt) / "package-lock.json"
@@ -151,11 +194,12 @@ def install_deps(spec: T.TaskSpec, wt: Path) -> dict[str, Any]:
         raise PreflightRefused("lock_mismatch")
     if (Path(wt) / "node_modules").exists():
         raise PreflightRefused("deps_not_pristine")
+    env, npm_ev = npm_env(spec, run_root)                       # checked right before the spawn
     argv = [h["pinnedNodeExe"]["path"], h["npmCli"]["path"], "ci", "--ignore-scripts", "--no-audit", "--no-fund",
             "--offline" if deps["network"] == "offline" else "--prefer-offline"]
-    b = R.run_bounded(argv, cwd=Path(wt), timeout_s=deps["timeoutS"], keep=deps["outputKeepBytes"], env=W.worker_env())
+    b = R.run_bounded(argv, cwd=Path(wt), timeout_s=deps["timeoutS"], keep=deps["outputKeepBytes"], env=env)
     ev = {"rc": b.rc, "timedOut": b.timed_out, "killVerified": b.kill_verified, "drained": b.drained, "outputSha256": b.sha256,
-          "outputBytes": b.total}
+          "outputBytes": b.total, "outputHead": b.head.decode("utf-8", errors="replace"), "npm": npm_ev}
     if not (b.kill_verified and b.drained) or b.timed_out or b.rc != 0:
         raise PreflightRefused("deps_install_failed", ev)
     for key, rel in (("vitestEntry", VITEST_ENTRY), ("tscEntry", TSC_ENTRY)):
@@ -196,7 +240,7 @@ def baseline(spec: T.TaskSpec, repo: Path, run_root: Path) -> dict[str, Any]:
     wt = run_root / "baseline"
     if _git("worktree", "add", "--detach", str(wt), spec.doc["source"]["taskBaseCommit"], cwd=repo).returncode != 0:
         raise PreflightRefused("baseline_worktree_failed")
-    deps = install_deps(spec, wt)
+    deps = install_deps(spec, wt, run_root)
     check_pins(spec)
     check_tree(spec, wt)
     b = R.run_bounded(list(b0["argv"]), cwd=wt, timeout_s=b0["timeoutS"], keep=b0["reportMaxBytes"], env=W.worker_env(),
@@ -228,6 +272,7 @@ def preflight(spec: T.TaskSpec, run_root: Path) -> dict[str, Any]:
     if run_root.exists():
         raise PreflightRefused("run_root_exists")
     run_root.mkdir(parents=True)
+    make_npmrc(run_root)
     rec: dict[str, Any] = {"specSha256": spec.sha256, "ok": False}
     try:
         check_pins(spec)
@@ -281,6 +326,7 @@ class SpecVerifier:
     spec: T.TaskSpec
     repo: Path
     run_dir_of: Callable[[], Path]
+    run_root: Path                                   # holds the owned empty npmrc (never inside a worktree)
 
     def __post_init__(self):
         self.reports: list[dict[str, Any]] = []
@@ -330,9 +376,9 @@ class SpecVerifier:
         if _git("rev-parse", "HEAD", cwd=wt).stdout.strip() != art:   # the verified tree IS the artifact commit
             return verdict("uncertain", "verify_head_not_artifact")
         try:                                                        # pristine deps, AFTER the worker exited
-            rep["deps"] = install_deps(self.spec, wt)
+            rep["deps"] = install_deps(self.spec, wt, self.run_root)
         except PreflightRefused as e:
-            rep["depsRefused"] = e.code
+            rep["depsRefused"] = [e.code, e.detail]
             return verdict("uncertain", "verify_deps_failed")
         steps = []
         rep["steps"] = steps
@@ -427,10 +473,11 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
             cfg = R.adapter_config(params, repo=repo, base_sha=d["source"]["taskBaseCommit"], run_id=cfgp.run_id,
                                    run_dir=resolved.run_dir.resolve())
             # the worker's OWN dependencies, installed after `worktree add` and before launch (the prepare hook)
-            holder["w"] = W.CliWorker(W.CliConfig(**{**cfg.__dict__, "prepare": lambda wt: install_deps(spec, wt)}))
+            holder["w"] = W.CliWorker(W.CliConfig(**{**cfg.__dict__, "prepare": lambda wt: install_deps(spec, wt, root)}))
         return holder["w"](order)
 
-    verifier = SpecVerifier(spec, repo, lambda: resolved.run_dir.resolve())
+    root = Path(run_root).resolve()
+    verifier = SpecVerifier(spec, repo, lambda: resolved.run_dir.resolve(), root)
     pilot = P.Pilot(resolved, setup, client, aj, worker=worker, reviewer=verifier, execution_kind=execution_kind)
     result = pilot.run()
     evidence: dict[str, Any] = {"rootGo": root_go, "specSha256": spec.sha256, "preflight": rec, "repo": str(repo),

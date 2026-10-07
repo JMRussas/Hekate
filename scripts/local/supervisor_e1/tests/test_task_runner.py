@@ -2,12 +2,14 @@
 with a FAKE pinned node (the base Python), fake npm/vitest/tsc and the FAKE worker CLI. No real npm,
 Node or model; the end-to-end cases use the disposable harness database."""
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from e1 import cli_worker as W
 from e1 import consumer as C
 from e1 import pilot as P
 from e1 import pilot_real as R
@@ -18,11 +20,20 @@ from e1.durable import install
 from e1.handoff_durable import install_handoff
 from e2b_support import reset_schema
 from helpers import key
-from task_support import (FIRST, ORACLE_A, commit, edited, git, make_repo, make_spec, pinned_node, sha_file,
+from task_support import (FIRST, NPM_CLI, ORACLE_A, commit, edited, git, make_repo, make_spec, pinned_node, sha_file,
                           source_state, write_spec)
 
 FAKE = Path(__file__).resolve().parent / "fake_cli.py"
 PY = Path(R.sys.executable).resolve()
+
+
+@pytest.fixture(autouse=True)
+def npm_cache(tmp_path, monkeypatch) -> Path:
+    """A HERMETIC warm cache: npm_config_cache -> <tmp>/npm-cache with _cacache (never the operator's)."""
+    cache = tmp_path / "npm-cache"
+    (cache / "_cacache").mkdir(parents=True)
+    monkeypatch.setenv("npm_config_cache", str(cache))
+    return cache
 
 
 @pytest.fixture
@@ -164,6 +175,79 @@ def test_the_recorded_ca012_baseline_report_is_exactly_the_frozen_specs_cases():
         sum(c["status"] == "failed" for c in b0["cases"]), sum(c["status"] == "passed" for c in b0["cases"]))
 
 
+# ------------------------------------------------------------------------ npm's scoped environment (msgs 1675-1683)
+
+def test_npm_gets_only_the_scoped_cache_and_the_owned_empty_configs(fx, tmp_path, npm_cache):
+    f, doc = fx
+    rec = TR.preflight(spec_of(tmp_path, doc), tmp_path / "rr")
+    deps = rec["baseline"]["deps"]
+    rc = tmp_path / "rr" / TR.NPMRC
+    assert deps["npm"] == {"npmCache": str(npm_cache), "cacachePresent": True, "npmrc": str(rc),
+                           "npmrcSha256": hashlib.sha256(b"").hexdigest(),
+                           "builtinNpmrc": str(Path(doc["hashes"]["npmCli"]["path"]).parents[1] / "npmrc"),
+                           "builtinNpmrcSha256": None}                     # the fake npm has no builtin npmrc
+    assert "added 2 packages" in deps["outputHead"] and deps["outputBytes"] == len(deps["outputHead"].encode())
+    assert rc.is_file() and rc.stat().st_size == 0 and not (tmp_path / "rr" / "baseline" / TR.NPMRC).exists()
+    assert not any(k.lower().startswith("npm_config") for k in W.worker_env())      # the worker env is NOT widened
+
+
+def test_a_builtin_npmrc_is_recorded_by_hash_only(fx, tmp_path, monkeypatch):
+    f, doc = fx
+    tools = tmp_path / "npm" / "node_modules" / "npm"
+    (tools / "bin").mkdir(parents=True)
+    cli = tools / "bin" / "npm-cli.js"
+    for src in (NPM_CLI, NPM_CLI.parent / "vitest.py", NPM_CLI.parent / "tsc.py"):   # the fake copies its siblings
+        (cli.parent / (cli.name if src == NPM_CLI else src.name)).write_bytes(src.read_bytes())
+    (tools / "npmrc").write_text("cache=D:/somewhere/else\n", encoding="utf-8")
+    d = edited(doc, lambda d: d["hashes"]["npmCli"].update(path=cli.as_posix(), sha256=sha_file(cli)))
+    rec = TR.preflight(spec_of(tmp_path, d), tmp_path / "rr")
+    npm = rec["baseline"]["deps"]["npm"]
+    assert npm["builtinNpmrcSha256"] == sha_file(tools / "npmrc") and "somewhere" not in json.dumps(rec)
+
+
+def test_an_absent_cache_fails_closed_before_any_npm_spawn(fx, tmp_path, monkeypatch):
+    f, doc = fx
+    monkeypatch.delenv("npm_config_cache")
+    code, rec = pre_refusal(tmp_path, doc)
+    assert code == "npm_cache_required" and not (tmp_path / "rr" / "baseline" / "node_modules").exists()
+
+
+@pytest.mark.parametrize("raw", ["relative/cache", "C:relative-to-drive", "missing-abs", "a-file", "unc"])
+def test_an_invalid_cache_fails_closed_before_any_npm_spawn(fx, tmp_path, monkeypatch, raw):
+    f, doc = fx
+    (tmp_path / "a-file").write_text("x", encoding="utf-8")
+    value = {"missing-abs": str(tmp_path / "no-such-cache"), "a-file": str(tmp_path / "a-file"),
+             "unc": r"\\localhost\hekate-no-such-share-1675\npm-cache"}.get(raw, raw)
+    monkeypatch.setenv("npm_config_cache", value)
+    code, rec = pre_refusal(tmp_path, doc)
+    assert (code, rec["detail"]) == ("npm_cache_invalid", value)
+    assert not (tmp_path / "rr" / "baseline" / "node_modules").exists()
+
+
+def test_a_cold_cache_is_refused_with_npms_own_error_in_the_evidence(fx, tmp_path, monkeypatch):
+    """The 1675 failure, offline: the cache exists but holds nothing -> npm's ENOTCACHED text is recorded."""
+    f, doc = fx
+    cold = tmp_path / "cold-cache"
+    cold.mkdir()
+    monkeypatch.setenv("npm_config_cache", str(cold))
+    code, rec = pre_refusal(tmp_path, doc)
+    assert code == "deps_install_failed" and rec["detail"]["rc"] == 1
+    assert "ENOTCACHED" in rec["detail"]["outputHead"] and rec["detail"]["npm"]["cacachePresent"] is False
+
+
+def test_the_empty_npmrc_is_rechecked_before_every_npm_spawn(fx, tmp_path):
+    f, doc = fx
+    spec = spec_of(tmp_path, doc)
+    TR.preflight(spec, tmp_path / "rr")
+    rc = tmp_path / "rr" / TR.NPMRC
+    rc.write_text("registry=https://example.invalid/\n", encoding="utf-8")
+    assert refusal(TR.npm_env, spec, tmp_path / "rr") == "npmrc_not_empty"
+    rc.unlink()
+    assert refusal(TR.npm_env, spec, tmp_path / "rr") == "npmrc_missing"
+    rc.mkdir()
+    assert refusal(TR.npm_env, spec, tmp_path / "rr") == "npmrc_not_empty"
+
+
 def test_report_cases_refuses_a_suite_level_error_and_foreign_files(tmp_path):
     rep = {"testResults": [{"name": str(tmp_path / "t.test.ts"), "message": "SyntaxError", "assertionResults": []}]}
     assert refusal(TR.report_cases, rep, tmp_path) == "baseline_suite_error"
@@ -184,7 +268,7 @@ def ver(fx, tmp_path):
         rec = TR.preflight(spec, root)
         run_dir = root / "run"
         run_dir.mkdir()
-        return TR.SpecVerifier(spec, Path(rec["repo"]), lambda: run_dir), Path(rec["repo"])
+        return TR.SpecVerifier(spec, Path(rec["repo"]), lambda: run_dir, root), Path(rec["repo"])
     return make, f
 
 
@@ -407,10 +491,10 @@ def test_touching_the_oracle_or_the_lock_is_rejected_before_any_artifact_code(ta
 def test_a_failed_prepare_journals_nothing_and_spawns_nothing(taskrun, monkeypatch):
     go, _ = taskrun
 
-    def install_fails(spec, wt):
+    def install_fails(spec, wt, root):
         if Path(wt).name.startswith("wt-r"):
             raise TR.PreflightRefused("deps_install_failed")
-        return real(spec, wt)
+        return real(spec, wt, root)
     real = TR.install_deps
     monkeypatch.setattr(TR, "install_deps", install_fails)
     res, ev = go("value_ok")
