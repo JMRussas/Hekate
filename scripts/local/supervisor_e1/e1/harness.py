@@ -81,6 +81,7 @@ class Harness:
         self.db_created = False
         self.api: subprocess.Popen[bytes] | None = None
         self.project_id: str | None = None
+        self.db_port: str | None = None
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -109,6 +110,7 @@ class Harness:
                         '{{(index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort}}', self.container]).stdout.strip()
         if host_ip != "127.0.0.1":
             raise RuntimeError(f"database published on {host_ip!r}, not loopback")
+        self.db_port = db_port
 
         _run([self.docker, "exec", self.container, "createdb", "-U", "postgres", self.db])
         self.db_created = True
@@ -200,6 +202,13 @@ class Harness:
         return problems
 
     # --- raw database access (setup / assertions only) ---------------------
+
+    @property
+    def dsn(self) -> str:
+        """Loopback DSN of THIS disposable database (E2b-a fixture connections only)."""
+        if not self.db_created or not self.db_port or not DB_NAME_RE.match(self.db):
+            raise RuntimeError("no disposable database")
+        return f"host=127.0.0.1 port={self.db_port} dbname={self.db} user=postgres password=postgres"
 
     def psql(self, sql: str) -> str:
         if not self.container:

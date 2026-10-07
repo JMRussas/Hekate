@@ -83,3 +83,16 @@ Plan [026](../../../context-store/plans/026-launch-and-review-evidence-proposal.
 | `e1/supervisor.py` | An optional `journal(kind, data)` hook, a no-op by default. When an intent is refused, its effect does not happen. Every outcome record is required: if one fails or comes back `degraded`, the run stops with `outcome_unrecorded:<kind>` before any further effect. `launched` and `exited` are model-only facts. |
 
 To run the H1 suites against the pinned commit while the sibling ChatAgent checkout has moved on, point `HEKATE_E1_CHATAGENT_DIR` at a detached `5255daa` clone whose `node_modules` is a shared directory junction to the original (not enforced read-only; the tests do not write to it). Never reset the original checkout.
+
+## E2b-a: durable journal experiment (test-only, disposable database)
+
+Plan [028](../../../context-store/plans/028-e2b-durable-journal-proposal.md) §9. Evidence: [029](../../../context-store/plans/029-supervisor-e2b-a-validation.md). Part of the default suite. The `supervisor_journal` schema exists **only** in the harness's disposable `hekate_plan_e1_*` database; nothing is added to `PlanStoreSchema` or any production migration. No worker, provider, service, wake or send.
+
+| File | Role |
+|---|---|
+| `e1/journal_schema.sql` | Fixture-only tables: a singleton `global_usage` row (totals and shared caps), `writer_usage` (epoch, unresolved), `streams`, `records`, `summaries`, `takeovers`. Append-only triggers refuse UPDATE, TRUNCATE and any DELETE outside a compaction transaction. These are integrity checks, **not authorization**. |
+| `e1/durable.py` | `DurableJournal`: the E2a hook contract over those tables, reusing `e1/evidence.py` for vocabulary, payload rules, reservations and resolution. One record per transaction, with locks in the order global, then writer, then stream. Idempotent client record ids. A lost COMMIT reply raises `CommitUnknown`, and `confirm()` is the only way to learn the outcome. Every append checks the epoch and that its own session holds the writer lock (append fencing only; effects are not fenced). The hash chain detects accidental corruption, not a credentialed writer. Corrupt streams and summaries are never compacted or evicted. |
+| `e1/recovery.py` | The shared coherent-read adapter experiment (not a production proof path). Each stream is read in one REPEATABLE READ snapshot, bounded in SQL, and classified with the E2a classifier. `scan(now)` is bounded per call, uses a cursor, returns intended notifications only, and maintains a bounded operator-queue view with explicit overflow. It writes nothing. |
+| `e1/journal_child.py` | A child process with its own database session, killed by tests at crash points. |
+
+Dependency: `psycopg[binary]` (locked). The E2b-a tests need session advisory locks, explicit transactions and concurrent connections, which one-shot `psql` cannot provide.

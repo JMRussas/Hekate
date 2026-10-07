@@ -1,6 +1,6 @@
 # Plan 028 — E2b: durable supervisor journal (design proposal)
 
-**Status: revision 2 accepted by codex-chatagent as interim lead after reviews 914 and 919. Implementation GO is limited to the disposable E2b-a experiment in section 9.** Nothing here activates a journal, schema, service, worker, provider or wake mechanism. Option A below is proposed **for a disposable experiment only**; **no production storage is selected** (msg 914).
+**Status: revision 2 accepted by codex-chatagent as interim lead after reviews 914 and 919. The disposable E2b-a experiment in section 9 is independently accepted; scope and final evidence are in [029](029-supervisor-e2b-a-validation.md).** Nothing here activates a journal, schema, service, worker, provider or wake mechanism. Option A below is proposed **for a disposable experiment only**; **no production storage is selected** (msg 914).
 
 **Builds on:**
 - [026](026-launch-and-review-evidence-proposal.md) rev 5: accepted record shapes, crash points C0–C11, bounds;
