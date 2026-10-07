@@ -41,7 +41,7 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-010 | D-2, 028 OQ2 | Operator acts and authorization before auth exists (028 OQ2) | decision | unattended-blocker | root lead / user | open |
 | HK-ISSUE-011 | D-3..D-6, 028 OQ3–6 | Remaining production questions (028 OQ3–OQ6) | decision | deferred | root lead | open |
 | HK-ISSUE-012 | — | A prior-attempt decision blocks the fix round's review | implementation-gap | pilot-blocker | journal derivations / claude-hekate | closed (plan 038 rev 2; root acceptance msg 1479) |
-| HK-ISSUE-013 | — | A real run's run.json says `dryRun: true` | defect | deferred | Hekate / claude-hekate (export producer slice) | open |
+| HK-ISSUE-013 | — | A real run's run.json says `dryRun: true` | defect | deferred | Hekate / claude-hekate (export producer slice) | closed (future runs: host-declared executionKind; root acceptance msg 1602) |
 
 ## Entries
 
@@ -225,6 +225,12 @@ No nodes are created and no separate database is used until that migration is de
 - **Historical evidence is NOT rewritten:** the trial's run.json and evidence.json stay byte-identical (root, msg 1585).
 - **Next action (in the export producer slice, branch `feat/handoff-export-v0`):** label FUTURE runs with an explicit HOST-DECLARED `executionKind`: `simulated` (in-process dry worker), `fake-cli` (the adapter driving tests/fake_cli.py) or `claude-cli` (the real executable). It is never inferred from `report.attested`, which is also true for the fake CLI. Define `dryRun = (executionKind != "claude-cli")`; it makes no authentication claim.
 - **Closure (V&V):** tests show the actual mode gives `executionKind: claude-cli, dryRun: false`; the default simulated mode gives `simulated, true`; the fake CLI gives `fake-cli, true`. The trial's historical files are unchanged. Cost capture stays optional/deferred.
+- **CLOSED (root acceptance, msg 1602), for the truthful host-declared mode of FUTURE runs only.**
+  - `e1/pilot.py`: `Pilot(execution_kind=…)` is one of `simulated` | `fake-cli` | `claude-cli`; anything else is refused (`config_execution_kind`). The default is `simulated`.
+  - run.json records `executionKind` and `dryRun = executionKind != "claude-cli"`, never inferred from `report.attested`. No authentication claim is made.
+  - `e1/pilot_real.py`: `run()` requires `execution_kind`; `main` declares `fake-cli` when `--exe-arg` is given, else `claude-cli`.
+  - Verified unit cases: the default gives simulated/true; the fake CLI gives fake-cli/true; the parametrized derivation gives claude-cli/false; an invalid kind is refused. Producer freeze 2: independent review msg 1600, root's 40 focused tests msg 1602.
+  - The historical HK-ISSUE-007 trial bytes (run.json `7ec8872e…`, evidence.json `a00e8d3e…`) are preserved unchanged.
 
 ## External references (owned elsewhere; not HK issues)
 

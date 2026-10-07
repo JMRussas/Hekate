@@ -46,6 +46,9 @@ REVIEW_INSTRUCTIONS = {"system": "You are an independent reviewer.", "fast": "Ch
 H1_BUDGET = {"windowTokens": 200_000, "maxHistoryTurns": 0, "safetyTokens": 0, "fastOutputTokens": 1000, "deepOutputTokens": 1000}
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 MAX_ROUNDS_LIMIT = 3
+# HK-ISSUE-013: what actually ran, as DECLARED by the host that wired the worker (never inferred):
+# simulated = the in-process dry worker; fake-cli = the CLI adapter driving tests/fake_cli.py; claude-cli = the real executable.
+EXECUTION_KINDS = ("simulated", "fake-cli", "claude-cli")
 
 
 class PilotRefused(Exception):
@@ -169,6 +172,39 @@ Worker = Callable[[WorkOrder], WorkReport]
 Reviewer = Callable[[ReviewOrder], Verdict]
 
 
+class ReviewTaskSource:
+    """How the review handoff's Task, its H1 options and the composing H1 are produced. The DEFAULT is the
+    dry-run H1-SHAPED stub, byte for byte as before; the opt-in real-H1 source (pinned ChatAgent H1 on the
+    retained claim bytes) is e1/pilot_export.RealH1ReviewSource (plan 1532)."""
+    name = "stub"
+
+    def task_and_options(self, *, n: int, art: str, cfg: "PilotConfig", package_ref: str,
+                         claim_raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
+        task = {"text": f"Review artifact {art} for: {cfg.task_text}\nCriteria: {cfg.criteria}",
+                "instructions": REVIEW_INSTRUCTIONS, "packageRef": package_ref}
+        h1_in = {"response": json.dumps({"round": n}), "rules": [], "systemInstruction": REVIEW_INSTRUCTIONS["system"],
+                 "roleInstructions": {"fast": REVIEW_INSTRUCTIONS["fast"], "deep": REVIEW_INSTRUCTIONS["deep"]},
+                 "budget": H1_BUDGET, "capturedAtIso": "2026-10-07T00:00:00Z"}
+        return task, h1_in
+
+    def builder(self, task_text: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+        return C.h1_stub(task_text)
+
+
+@dataclass(frozen=True)
+class ExportContext:
+    """What the post-compose export hook receives: the exact inputs and output of one composition."""
+    round: int
+    record: "RoundRecord"
+    delivery: Any                       # consumer.Delivery (exact bytes)
+    fresh: Any                          # consumer.Fresh (the one-snapshot as-of proof)
+    policy: Any                         # consumer.PolicyStub
+    destination: str
+    composition: Any                    # consumer.Composition
+    review_source: str                  # "stub" | "chatagent-h1"
+    claim_raw: bytes
+
+
 def dry_artifact(order: WorkOrder) -> str:
     """A deterministic stand-in commit SHA bound to (base, attempt). Not a real commit."""
     k = order.execution_key
@@ -226,10 +262,16 @@ class _Stop(Exception):
 
 class Pilot:
     def __init__(self, resolved: Resolved, setup: SetupClient, client: SupervisorClient, aj: ActsJournal, *,
-                 worker: Worker = dry_worker, reviewer: Reviewer):
+                 worker: Worker = dry_worker, reviewer: Reviewer, review_source: "ReviewTaskSource | None" = None,
+                 exporter: "Callable[[ExportContext], None] | None" = None, execution_kind: str = "simulated"):
         self.r, self.cfg = resolved, resolved.cfg
         self.setup, self.client, self.aj = setup, client, aj
         self.worker, self.reviewer = worker, reviewer
+        self.review_source = review_source if review_source is not None else ReviewTaskSource()
+        self.exporter = exporter
+        if execution_kind not in EXECUTION_KINDS:
+            raise PilotRefused("config_execution_kind", f"one of {EXECUTION_KINDS}")
+        self.execution_kind = execution_kind
         self.root, self.leaf = str(uuid.uuid4()), str(uuid.uuid4())
         self.rounds: list[RoundRecord] = []
 
@@ -284,7 +326,9 @@ class Pilot:
 
         # claim (intent recorded before the effect)
         self.aj.append(self.root, ck, "claim_intent", {"attemptId": rec.attempt_id, "executorRef": ws, "actor": cfg.supervisor})
-        receipt = _ok(self.client.claim(self.root, ck, rec.attempt_id, ws, cfg.supervisor), "claim")["receipt"]
+        claim_resp = self.client.claim(self.root, ck, rec.attempt_id, ws, cfg.supervisor)
+        receipt = _ok(claim_resp, "claim")["receipt"]
+        claim_raw = claim_resp.raw              # the EXACT claim response bytes (the real-H1 export input; plan 1532)
         if receipt["outcome"] != "claimed" or receipt["nodeId"] != self.leaf or receipt["attemptId"] != rec.attempt_id:
             raise _Stop("claim_mismatch", receipt.get("outcome"))
         rec.attempt_epoch = receipt["attemptEpoch"]
@@ -368,8 +412,11 @@ class Pilot:
                 # review is operator classification, so stop and name the decision (fail closed).
                 raise _Stop("prior_decision_blocks_review", {"priorDecision": acc, "attemptEpoch": rec.attempt_epoch})
             raise _Stop("review_request_refused", {"outcome": d.outcome, "reason": d.reason})
-        review_task = {"text": f"Review artifact {art} for: {self.cfg.task_text}\nCriteria: {cfg.criteria}",
-                       "instructions": REVIEW_INSTRUCTIONS, "packageRef": key["packageRef"]}
+        try:
+            review_task, h1_in = self.review_source.task_and_options(n=n, art=art, cfg=cfg, package_ref=key["packageRef"],
+                                                                     claim_raw=claim_raw)
+        except Exception as e:  # noqa: BLE001 -- the injected task source (e.g. the pinned real H1) failed: typed stop
+            raise _Stop("review_task_unavailable", type(e).__name__) from None
         try:
             prep = handoff_prepare(self.aj, self.root, ck, rk, prepare_id=str(uuid.uuid4()), target=ls2, gate="operator",
                                    gate_ref=f"pilot-{cfg.run_id}-fresh-reviewer-r{n}", task=review_task,
@@ -380,17 +427,23 @@ class Pilot:
         if d.outcome != "accepted" or receipt_h is None:
             raise _Stop("handoff_commit_refused", d.outcome)
         rec.handoff_id, rec.candidate_digest = prep.transition["handoffId"], prep.package.candidate_digest
-        h1_in = {"response": json.dumps({"round": n}), "rules": [], "systemInstruction": REVIEW_INSTRUCTIONS["system"],
-                 "roleInstructions": {"fast": REVIEW_INSTRUCTIONS["fast"], "deep": REVIEW_INSTRUCTIONS["deep"]},
-                 "budget": H1_BUDGET, "capturedAtIso": "2026-10-07T00:00:00Z"}
         delivery = CD.delivery(self.aj.dsn, rec.handoff_id, receipt_h, h1_in)
+        policy, destination = C.PolicyStub(cfg.lead), f"pilot-{cfg.run_id}-review-r{n}"
         try:
             fresh = CD.fresh(self.aj.dsn, C.verify_delivery(delivery))
-            comp = C.compose(delivery, fresh, policy=C.PolicyStub(cfg.lead), destination=f"pilot-{cfg.run_id}-review-r{n}",
-                             h1=C.h1_stub(review_task["text"]))
+            comp = C.compose(delivery, fresh, policy=policy, destination=destination,
+                             h1=self.review_source.builder(review_task["text"]))
         except C.Refused as e:
             raise _Stop("handoff_refused", e.code) from None
         rec.view_digest = comp.view_digest
+        if self.exporter is not None:
+            # Post-compose export hook (plan 1532): the EXACT delivery, as-of proof, policy, request and
+            # composition the reviewer is about to see. A failure is a typed stop, never a silent skip.
+            try:
+                self.exporter(ExportContext(n, rec, delivery, fresh, policy, destination, comp, self.review_source.name,
+                                            claim_raw))
+            except Exception as e:  # noqa: BLE001
+                raise _Stop("export_failed", getattr(e, "code", None) or type(e).__name__) from None
 
         # the independent reviewer sees only the verified view
         try:
@@ -477,6 +530,9 @@ class Pilot:
         """The run log is the only file the driver writes, inside its own run directory."""
         doc = {"runId": self.cfg.run_id, "repo": str(self.cfg.repo), "baseSha": self.r.base_sha, "outcome": result.outcome,
                "reason": result.reason, "detail": result.detail, "root": result.root, "leaf": result.leaf, "pending": result.pending,
-               "rounds": [asdict(r) for r in result.rounds], "dryRun": True,
+               "rounds": [asdict(r) for r in result.rounds],
+               # HK-ISSUE-013: HOST-DECLARED execution kind; dryRun is derived from it, never from report.attested
+               # (a fake CLI is also attested). No authentication claim is made by either field.
+               "executionKind": self.execution_kind, "dryRun": self.execution_kind != "claude-cli",
                "workaround": "HK-ISSUE-005: fix rounds use done->cancelled->todo + a new claimKey (dry run only)"}
         (self.r.run_dir / "run.json").write_text(json.dumps(doc, indent=1, sort_keys=True), encoding="utf-8", newline="\n")

@@ -43,6 +43,7 @@ def realrun(harness, setup, client, tmp_path):
         aj = ActsJournal(harness.dsn, f"pilot-real#{key()[:8]}", now=1000.0).open()
         opened.append(aj)
         return R.run(params(**over), tmp_path / "pilot-real", setup=setup, client=client, aj=aj, project_id=harness.project_id,
+                     execution_kind="fake-cli",
                      task_suffix=f"\nFAKE-SCENARIO: {scenario}\n")
     yield go
     for aj in opened:
@@ -71,6 +72,43 @@ def test_correct_work_is_independently_verified_and_accepted(realrun):
     assert git(repo, "branch", "--show-current") == "main" and git(repo, "rev-parse", "HEAD") == ev["base"]
 
 
+def test_export_provenance_is_derived_from_the_journal_not_typed_in(harness, setup, client, tmp_path):
+    """Review 1593 #2: provenance.worker == that round's journal `exited` fields; kind from the host-declared
+    execution kind. The H1 is an injected STAND-IN (labelled injected, test_only), never the real one here."""
+    from e1 import export as X
+    from e1 import pilot_export as PE
+    from test_pilot_export import StandInH1
+    reset_schema(harness.dsn)
+    install(harness.dsn, E2C_BOUNDS)
+    install_acts(harness.dsn)
+    install_handoff(harness.dsn)
+    aj = ActsJournal(harness.dsn, f"pilot-real-x#{key()[:8]}", now=1000.0).open()
+    try:
+        res, ev = R.run(params(), tmp_path / "pr", setup=setup, client=client, aj=aj, project_id=harness.project_id,
+                        execution_kind="fake-cli", task_suffix="\nFAKE-SCENARIO: calc_ok\n", export=True,
+                        review_source=PE.RealH1ReviewSource(build=StandInH1()), export_test_only=True)
+    finally:
+        aj.close()
+    assert res.outcome == "accepted" and len(ev["exports"]) == 1
+    out = Path(ev["exports"][0]["dir"])
+    X.verify(out)
+    prov = json.loads((out / "provenance.json").read_bytes())
+    exited = [j["data"] for j in ev["journal"] if j["kind"] == "exited"][-1]
+    exited = json.loads(exited) if isinstance(exited, str) else exited
+    assert prov["worker"] == {"kind": "fake", "requestedModel": exited["requestedModel"],
+                              "reportedModels": exited["reportedModels"], "reportedModelsAuthenticated": False}
+    assert prov["worker"]["requestedModel"] == "fake-model" and "fake-runtime-model-1" in prov["worker"]["reportedModels"]
+    assert prov["synthetic"] is True and json.loads((out / "expected.json").read_bytes())["h1Builder"] == X.STUB_H1
+    assert len(prov["hekateCommit"]) == 40 and isinstance(prov["hekateTreeClean"], bool)
+
+
+def test_a_fake_cli_run_is_labelled_fake_cli_and_dry(realrun):
+    """HK-ISSUE-013: the host declares the kind; the fake CLI is ALSO attested, so attestation decides nothing."""
+    res, ev = realrun("calc_ok")
+    log = json.loads((Path(ev["runDir"]) / "run.json").read_text(encoding="utf-8"))
+    assert (log["executionKind"], log["dryRun"]) == ("fake-cli", True)
+
+
 def test_failing_tests_are_rejected_then_the_fix_round_is_accepted(realrun):
     res, ev = realrun("calc_bad_then_ok")
     assert (res.outcome, len(res.rounds)) == ("accepted", 2)
@@ -94,7 +132,7 @@ def test_a_diff_outside_the_allowlist_is_rejected_before_any_test_runs(realrun):
 
 def test_an_executable_hash_mismatch_is_refused_before_any_write(tmp_path):
     with pytest.raises(R.RunnerRefused) as e:
-        R.run(params(executable_sha256="0" * 64), tmp_path / "x", setup=None, client=None, aj=None, project_id="p")
+        R.run(params(executable_sha256="0" * 64), tmp_path / "x", setup=None, client=None, aj=None, project_id="p", execution_kind="fake-cli")
     assert e.value.code == "exe_hash_mismatch" and list(tmp_path.iterdir()) == []
 
 
@@ -190,14 +228,14 @@ def test_a_worker_exception_is_a_typed_stop_that_keeps_run_json(realrun, monkeyp
 ])
 def test_malformed_params_are_refused_with_no_writes(tmp_path, over, code):
     with pytest.raises(R.RunnerRefused) as e:
-        R.run(params(**over), tmp_path / "x", setup=None, client=None, aj=None, project_id="p")
+        R.run(params(**over), tmp_path / "x", setup=None, client=None, aj=None, project_id="p", execution_kind="fake-cli")
     assert e.value.code == code and list(tmp_path.iterdir()) == []
 
 
 def test_an_existing_run_root_is_refused(tmp_path):
     (tmp_path / "x").mkdir()
     with pytest.raises(R.RunnerRefused) as e:
-        R.run(params(), tmp_path / "x", setup=None, client=None, aj=None, project_id="p")
+        R.run(params(), tmp_path / "x", setup=None, client=None, aj=None, project_id="p", execution_kind="fake-cli")
     assert e.value.code == "run_root_exists" and list((tmp_path / "x").iterdir()) == []
 
 

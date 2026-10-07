@@ -263,6 +263,30 @@ def test_the_run_log_is_the_only_file_written(pilot, tmp_path):
     assert doc["rounds"][1]["previous"]["claimKey"] == res.rounds[0].claim_key
 
 
+def test_the_default_run_is_labelled_simulated_and_dry(pilot, tmp_path):
+    """HK-ISSUE-013: the default in-process worker is `simulated`, dryRun true."""
+    p = pilot(Verdicts("accepted"))
+    p.run()
+    log = json.loads((tmp_path / f"pilot-{p.cfg.run_id}" / "run.json").read_text(encoding="utf-8"))
+    assert (log["executionKind"], log["dryRun"]) == ("simulated", True)
+
+
+@pytest.mark.parametrize("kind, dry", [("simulated", True), ("fake-cli", True), ("claude-cli", False)])
+def test_dry_run_is_derived_only_from_the_declared_kind(tmp_path, kind, dry):
+    r = P.resolve(cfg(None, tmp_path))
+    p = P.Pilot(r, None, None, None, reviewer=Verdicts(), execution_kind=kind)
+    r.run_dir.mkdir()
+    p.write_log(P.PilotResult("needs_operator", "x", "root", "leaf", r.base_sha, []))
+    log = json.loads((r.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert (log["executionKind"], log["dryRun"]) == (kind, dry)
+
+
+def test_an_undeclared_execution_kind_is_refused(tmp_path):
+    with pytest.raises(P.PilotRefused) as e:
+        P.Pilot(P.resolve(cfg(None, tmp_path)), None, None, None, reviewer=Verdicts(), execution_kind="real")
+    assert e.value.code == "config_execution_kind"
+
+
 def test_frozen_accepted_modules_are_unchanged():
     got = {rel: hashlib.sha256((PROJECT / rel).read_bytes()).hexdigest() for rel in FROZEN}
     assert got == FROZEN

@@ -352,9 +352,15 @@ def journal_dump(dsn: str, root: str) -> list[dict[str, Any]]:
             "SELECT claim_key, seq, kind, data FROM supervisor_journal.records WHERE root = %s ORDER BY claim_key, seq", (root,))]
 
 
-def run(params: RealParams, run_root: Path, *, setup, client, aj, project_id: str, task_suffix: str = "",
-        root_go: str | None = None) -> tuple[P.PilotResult, dict]:
-    """One pilot run. `task_suffix` is for offline tests only (the fake CLI's scenario line)."""
+def run(params: RealParams, run_root: Path, *, setup, client, aj, project_id: str, execution_kind: str,
+        task_suffix: str = "", root_go: str | None = None, export: bool = False,
+        review_source: P.ReviewTaskSource | None = None, export_test_only: bool = False) -> tuple[P.PilotResult, dict]:
+    """One pilot run. `task_suffix` is for offline tests only (the fake CLI's scenario line).
+
+    export=True (plan 1532, opt-in): the review task comes from the PINNED real H1 (RealH1ReviewSource) and
+    every round's composition is published as one handoff-export.v0 under <run_root>/exports, with
+    provenance DERIVED by the Exporter. `review_source` / `export_test_only` exist for offline tests only
+    (an injected stand-in H1 is labelled injected and needs test_only)."""
     validate_params(params)
     check_executable(params)                                       # before ANY write
     if run_root.exists():
@@ -375,7 +381,15 @@ def run(params: RealParams, run_root: Path, *, setup, client, aj, project_id: st
         return holder["w"](order)
 
     verifier = Verifier(repo, base, lambda: resolved.run_dir.resolve())
-    pilot = P.Pilot(resolved, setup, client, aj, worker=worker, reviewer=verifier)
+    exporter = None
+    if export:
+        from e1 import pilot_export as PE                      # the opt-in path only
+        review_source = review_source if review_source is not None else PE.RealH1ReviewSource()
+        (run_root / "exports").mkdir()
+        exporter = PE.Exporter(out_root=run_root / "exports", run_id=cfgp.run_id, hekate_repo=Path(__file__).resolve().parent,
+                               dsn=aj.dsn, execution_kind=execution_kind, source=review_source, test_only=export_test_only)
+    pilot = P.Pilot(resolved, setup, client, aj, worker=worker, reviewer=verifier, execution_kind=execution_kind,
+                    review_source=review_source, exporter=exporter)
     result = pilot.run()                    # never raises: unexpected failures become a typed needs_operator stop
     errors: list[dict[str, str]] = []
 
@@ -394,6 +408,7 @@ def run(params: RealParams, run_root: Path, *, setup, client, aj, project_id: st
                 "adapter": best_effort("adapter", lambda: {str(k): vars(v) for k, v in (holder["w"].evidence.items() if "w" in holder else [])}),
                 "records": best_effort("records", lambda: {r.claim_key: pilot.records_of(r.claim_key) for r in result.rounds}),
                 "journal": best_effort("journal", lambda: journal_dump(aj.dsn, pilot.root)),
+                "exports": list(exporter.published) if exporter is not None else [],
                 "databaseRetained": False,          # harness.stop always drops the disposable DB; keep_work keeps only its work folder
                 "errors": errors}
     best_effort("write", lambda: (resolved.run_dir / "evidence.json").write_text(
@@ -414,6 +429,7 @@ def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -
     ap.add_argument("--budget", default="1.00")
     ap.add_argument("--launch-real-model", action="store_true")
     ap.add_argument("--root-go")
+    ap.add_argument("--export", action="store_true", help="opt-in: real pinned H1 review task + one handoff-export.v0 per round")
     a = ap.parse_args(argv)
     command = (a.exe.resolve(),) + ((a.exe_arg.resolve(),) if a.exe_arg else ())
     params = RealParams(command, a.exe_sha256, model=a.model, max_budget_usd=a.budget)
@@ -451,8 +467,10 @@ def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -
         install_handoff(h.dsn)
         aj = ActsJournal(h.dsn, f"pilot-real#{uuid.uuid4().hex[:8]}", now=1000.0).open()
         try:
+            # HOST-DECLARED (HK-ISSUE-013): a second command element means the offline fake CLI, else the real CLI.
+            kind = "fake-cli" if a.exe_arg else "claude-cli"
             res, ev = run(params, a.run_root.resolve(), setup=SetupClient(h.base_url), client=SupervisorClient(h.base_url), aj=aj,
-                          project_id=h.project_id, root_go=a.root_go)
+                          project_id=h.project_id, execution_kind=kind, root_go=a.root_go, export=a.export)
         finally:
             aj.close()
         print(json.dumps({"outcome": res.outcome, "reason": res.reason, "detail": res.detail, "rounds": len(res.rounds),
