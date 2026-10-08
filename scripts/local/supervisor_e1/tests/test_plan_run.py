@@ -271,7 +271,7 @@ def test_a_node_in_flight_stops_the_rerun_without_a_new_claim(fx, harness, setup
     c = client.claim(plan.root, f"elsewhere-{key()[:8]}", "other-attempt", None, "someone-else")
     assert c.body["receipt"]["nodeId"] == plan.node_ids["a"]
     r = driver(plan)
-    assert (r.outcome, r.reason) == ("needs_operator", "inflight_ownership")
+    assert (r.outcome, r.reason) == ("needs_operator", "inflight")
     assert r.detail == {"a": {"work": "in_progress", "acceptance": "none"}} and r.steps == []
     assert r.nodes["a"]["attemptEpoch"] == 1 and not (tmp_path / "plan-run" / "a").exists()
 
@@ -305,10 +305,20 @@ def test_no_ready_work_is_never_done_and_names_the_blockers():
              "b": st(siblingOrder=1, blockers=[{"reason": "predecessor_not_completed", "predecessor": "x"}])}
     assert PR.classify(state) == ("stop", ("no_ready_work", {"b": [{"reason": "predecessor_not_completed", "predecessor": "x"}]}))
     assert PR.classify({"a": st(work="done", acceptance="accepted")}) == ("done", None)
-    assert PR.classify({"a": st(work="done", acceptance="none")})[1][0] == "inflight_ownership"         # awaiting review
-    assert PR.classify({"a": st(work="done", acceptance="stale")})[1][0] == "inflight_ownership"
+    assert PR.classify({"a": st(work="done", acceptance="none")})[1][0] == "review_pending"         # awaiting review (review 1827)
+    assert PR.classify({"a": st(work="done", acceptance="stale")})[1][0] == "acceptance_stale"
     assert PR.classify({"a": st(work="cancelled")})[1] == ("node_cancelled", ["a"])
     assert PR.classify({"b": st(siblingOrder=1, ready=True), "a": st(ready=True)}) == ("next", "a")       # PlanStore's order
+
+
+def test_done_requires_planstores_own_root_verdict_to_agree():
+    """Review 1827: all leaves accepted AND the root container complete/accepted; any disagreement is plan_drift."""
+    done = {"a": st(work="done", acceptance="accepted")}
+    assert PR.classify(done, ("complete", "accepted")) == ("done", None)
+    assert PR.classify(done, ("incomplete", "pending")) == (
+        "stop", ("plan_drift", {"leavesAllAccepted": True, "rootContainer": ["incomplete", "pending"]}))
+    assert PR.classify({"a": st(ready=True)}, ("complete", "accepted"))[1][0] == "plan_drift"
+    assert PR.classify({"a": st(ready=True)}, ("incomplete", "pending")) == ("next", "a")
 
 
 def test_the_claim_check_pins_node_content_and_predecessor_artifacts():

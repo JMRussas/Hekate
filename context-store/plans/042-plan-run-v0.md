@@ -12,8 +12,8 @@
 plan-import.v0 JSON ──► PlanStore plan (root + task nodes + Accepted-gate edges)        e1/plan_import.py
 run_plan(plan):                                                                          e1/plan_run.py
   one authoritative GET /plans/{root}
-    ├─ in flight / rejected / cancelled / plan drift ──► STOP needs_operator (nothing claimed)
-    ├─ every imported node accepted ─────────────────► all_done   (the ONLY success)
+    ├─ inflight / review_pending / acceptance_stale / rejected / cancelled / plan drift ──► STOP (nothing claimed)
+    ├─ every imported node accepted AND root container complete/accepted ──► all_done (the ONLY success; a disagreement is plan_drift)
     ├─ nothing ready ────────────────────────────────► STOP needs_operator, blockers named per node
     └─ first ready node (PlanStore's claim order):
          spec pinned in the node value? (pending ──► STOP spec_pending)
