@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from e1 import acts as A
-from e1.evidence import INTENTS, Record
+from e1.evidence import INTENTS, Record, is_terminal_resolution
 
 POLICY = "handoff.v0"
 ENVELOPE = "handoff-envelope.v0"
@@ -68,6 +68,10 @@ def pending_effects(records: list[Record], corrupt: str | None, outstanding: lis
     - open intents: an intent record whose reserved terminal outcome has not been recorded
       (cross-checked against the stream row's `outstanding`, read in the same snapshot);
     - unconfirmed appends the caller holds (CommitUnknown) with their confirm() status.
+    An intent recorded BEFORE the stream's final operator_resolution, when that resolution is terminal
+    (is_terminal_resolution of that record alone; root msgs 2240/2243), is still listed, with status
+    "closed:<decision>". Its reservation may already be released: `outstanding` == [] is accepted only when such a
+    resolution exists and no intent after it is open; otherwise `outstanding` must equal every remaining terminal.
     Raises if the list cannot be built (a corrupt stream hides what may be pending)."""
     if corrupt:
         raise Refused("pending_unlistable", corrupt)
@@ -79,9 +83,17 @@ def pending_effects(records: list[Record], corrupt: str | None, outstanding: lis
             if r.kind in o[1]:
                 o[1].remove(r.kind)
                 break
-    items = [{"kind": "open_intent", "id": f"{r.kind}@{r.seq}", "status": "unknown", "awaiting": rest}
+    resolutions = [r for r in records if r.kind == "operator_resolution"]
+    closing = resolutions[-1] if resolutions and is_terminal_resolution(resolutions[-1:]) else None
+    closed = {r.seq for r, rest in open_ if rest and closing is not None and r.seq < closing.seq}
+    items = [{"kind": "open_intent", "id": f"{r.kind}@{r.seq}",
+              "status": f"closed:{closing.payload['decision']}" if r.seq in closed else "unknown", "awaiting": rest}
              for r, rest in open_ if rest]
-    if sorted(t for _, rest in open_ for t in rest) != sorted(t for o in outstanding for t in o):
+    remaining = sorted(t for _, rest in open_ for t in rest)
+    after = [t for r, rest in open_ for t in rest if r.seq not in closed]
+    held = sorted(t for o in outstanding for t in o)
+    released = closing is not None and not after and held == []          # resolve() already released the closed intents
+    if held != remaining and not released:
         raise Refused("pending_unlistable", "open intents disagree with the stream's outstanding reservations")
     for u in unconfirmed:
         items.append({"kind": "commit_unknown", "id": u["recordId"], "status": u.get("status", "unknown"), "awaiting": [u["kind"]]})
