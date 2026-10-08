@@ -263,7 +263,8 @@ class _Stop(Exception):
 class Pilot:
     def __init__(self, resolved: Resolved, setup: SetupClient, client: SupervisorClient, aj: ActsJournal, *,
                  worker: Worker = dry_worker, reviewer: Reviewer, review_source: "ReviewTaskSource | None" = None,
-                 exporter: "Callable[[ExportContext], None] | None" = None, execution_kind: str = "simulated"):
+                 exporter: "Callable[[ExportContext], None] | None" = None, execution_kind: str = "simulated",
+                 attach: tuple[str, str] | None = None, claim_check: "Callable[[dict[str, Any]], Any] | None" = None):
         self.r, self.cfg = resolved, resolved.cfg
         self.setup, self.client, self.aj = setup, client, aj
         self.worker, self.reviewer = worker, reviewer
@@ -272,7 +273,17 @@ class Pilot:
         if execution_kind not in EXECUTION_KINDS:
             raise PilotRefused("config_execution_kind", f"one of {EXECUTION_KINDS}")
         self.execution_kind = execution_kind
-        self.root, self.leaf = str(uuid.uuid4()), str(uuid.uuid4())
+        # Attach mode (plan-run v0, plan 042): drive an EXISTING imported node (root, leaf) instead of creating a
+        # disposable one-leaf plan. Every claim must return exactly that leaf (else claim_mismatch: nothing is
+        # dispatched), and the optional claim_check(receipt) may stop the round (returns a reason) BEFORE dispatch.
+        if attach is not None:
+            try:
+                attach = (str(uuid.UUID(attach[0])), str(uuid.UUID(attach[1])))
+            except (ValueError, TypeError, IndexError):
+                raise PilotRefused("config_attach") from None
+        self.attached = attach is not None
+        self.claim_check = claim_check
+        self.root, self.leaf = attach if attach is not None else (str(uuid.uuid4()), str(uuid.uuid4()))
         self.rounds: list[RoundRecord] = []
 
     # -- PlanStore helpers
@@ -330,7 +341,12 @@ class Pilot:
         receipt = _ok(claim_resp, "claim")["receipt"]
         claim_raw = claim_resp.raw              # the EXACT claim response bytes (the real-H1 export input; plan 1532)
         if receipt["outcome"] != "claimed" or receipt["nodeId"] != self.leaf or receipt["attemptId"] != rec.attempt_id:
-            raise _Stop("claim_mismatch", receipt.get("outcome"))
+            raise _Stop("claim_mismatch", {"outcome": receipt.get("outcome"), "nodeId": receipt.get("nodeId")} if self.attached
+                        else receipt.get("outcome"))
+        if self.claim_check is not None:
+            why = self.claim_check(receipt)           # pins of the claimed node (spec, content, prerequisites)
+            if why:
+                raise _Stop("claim_check_failed", why)
         rec.attempt_epoch = receipt["attemptEpoch"]
         self.aj.append(self.root, ck, "claimed", {"outcome": "claimed", "nodeId": self.leaf, "attemptId": rec.attempt_id,
                                                   "attemptEpoch": rec.attempt_epoch})
@@ -468,7 +484,8 @@ class Pilot:
         self.r.run_dir.mkdir()
         outcome, reason, pending, detail = "needs_operator", "max_rounds", [], None
         try:
-            self.create_plan()
+            if not self.attached:
+                self.create_plan()
             for n in range(1, self.cfg.max_rounds + 1):
                 rec = self.run_round(n)
                 if rec.decision == "accepted":

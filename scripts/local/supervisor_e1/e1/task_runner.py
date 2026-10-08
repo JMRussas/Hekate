@@ -520,8 +520,10 @@ def load_preflight(spec: T.TaskSpec, run_root: Path) -> dict[str, Any]:
 
 def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], executable_sha256: str, setup, client, aj,
         project_id: str, execution_kind: str, root_go: str | None, task_suffix: str = "",
-        timeouts: tuple[int, int, int] = (1200, 600, 300)) -> tuple[P.PilotResult, dict[str, Any]]:
-    """ONE supervised pilot on the owned clone. Requires a passing preflight of THIS spec."""
+        timeouts: tuple[int, int, int] = (1200, 600, 300), attach: tuple[str, str] | None = None,
+        claim_check: Callable[[dict[str, Any]], Any] | None = None) -> tuple[P.PilotResult, dict[str, Any]]:
+    """ONE supervised pilot on the owned clone. Requires a passing preflight of THIS spec. `attach`/`claim_check`
+    (plan-run v0, plan 042) drive an existing imported node instead of a disposable one-leaf plan."""
     rec = load_preflight(spec, run_root)
     check_pins(spec)
     repo, d = Path(rec["repo"]), spec.doc
@@ -552,7 +554,8 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
 
     root = Path(run_root).resolve()
     verifier = SpecVerifier(spec, repo, lambda: resolved.run_dir.resolve(), root)
-    pilot = P.Pilot(resolved, setup, client, aj, worker=worker, reviewer=verifier, execution_kind=execution_kind)
+    pilot = P.Pilot(resolved, setup, client, aj, worker=worker, reviewer=verifier, execution_kind=execution_kind,
+                    attach=attach, claim_check=claim_check)
     result = pilot.run()
     evidence: dict[str, Any] = {"rootGo": root_go, "specSha256": spec.sha256, "preflight": rec, "repo": str(repo),
                                 "runDir": str(resolved.run_dir), "outcome": result.outcome, "reason": result.reason,
