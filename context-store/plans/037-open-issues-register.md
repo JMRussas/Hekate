@@ -274,7 +274,7 @@ No nodes are created and no separate database is used until that migration is de
   - the blast radius of a takeover on the writer's other streams;
   - idempotent partial apply (`operator_takeover` always bumps the epoch; operator-act ids are fresh per call; an act left uncertain blocks `LocalStore.session`);
   - the local pre-launch leftovers (worktree, `npm ci`), which must be listed rather than called "no effects".
-- **Continuation:** blocked in the same run root (`plan_run` stops `node_run_root_exists`). A NEW run root re-attaches to the same nodes (uuid5 identities) and would grant fresh `maxRounds`. Root decision (msg 2127): no apply and no reset of the historical task to `todo`. Recovery and continuation need a joint design with cross-run attempt accounting. check-002 stays stopped and unchanged.
+- **Continuation:** while the attempt is open (`in_progress`), any run, in the same or a NEW run root, stops at `classify` → `inflight` before any claim. Only after a reset to `todo` would a same-root run stop at `node_run_root_exists`, and a NEW run root (which re-attaches through uuid5 identities) would run the node with fresh `maxRounds`; PlanStore's attempt epoch records rounds, but nothing enforces a bound across runs. Root decision (msg 2127): no apply and no reset of the historical task to `todo`. Recovery and continuation need a joint design with cross-run attempt accounting. check-002 stays stopped and unchanged.
 - **Depends on:** HK-ISSUE-016 (the proof must bind the adapter source that ran), HK-ISSUE-010 (operator-act authorization).
 - **Closure (V&V):** a reviewed design and implementation with tests for the fence sequence, the partial-apply replay and cross-run accounting; or a recorded decision that stopped runs stay stopped.
 
