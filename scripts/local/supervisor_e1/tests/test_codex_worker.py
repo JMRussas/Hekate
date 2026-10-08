@@ -101,6 +101,18 @@ def test_a_codex_turn_with_an_edit_is_captured_with_truthful_terms(tmp_path, rep
     assert "PRIVATE-CODEX-REASONING" not in json.dumps(recs) and any(r["redacted"] for r in recs)
 
 
+def test_only_the_codex_prompt_carries_the_utf8_instruction(tmp_path, repo):
+    """Root msg 2487: Windows PowerShell 5.1 reads UTF-8 as ANSI (smoke-004); codex is told to read with -Encoding UTF8
+    and to edit with its patch tool (5.1's Set-Content -Encoding UTF8 adds a BOM). The Claude prompt is byte-identical."""
+    o = order("codex_happy", Sink())
+    codex = W.CliWorker(codex_cfg(repo, tmp_path)).prompt(o)
+    claude = W.CliWorker(make_cfg(repo, tmp_path)).prompt(o)
+    assert codex == claude + W.CODEX_ENCODING_NOTE and "Get-Content -Encoding UTF8" in codex and "-Encoding UTF8" not in claude
+    (tmp_path / "x").mkdir()
+    w, sink, rep, run_dir = run(tmp_path / "x", repo, "codex_happy")
+    assert rep.status == "ok" and (run_dir / "attempt-r1.prompt.txt").read_text(encoding="utf-8").endswith(W.CODEX_ENCODING_NOTE)
+
+
 def test_markers_in_command_output_never_count_and_the_command_is_traced(tmp_path, repo):
     w, sink, rep, run_dir = run(tmp_path, repo, "codex_decoy")
     assert rep.status == "ok"

@@ -566,7 +566,14 @@ def reported_usage(event: dict[str, Any]) -> dict[str, Any]:
 
 # --- codex exec --json events (plan 048; shapes from smoke-004) -------------------------------------------------
 
-CODEX_USAGE_LABEL = "cli-reported tokens, not metered; no cost, turns or duration reported"
+# Codex's shell on this host is Windows PowerShell 5.1, which reads files without a BOM as ANSI (smoke-004 showed UTF-8
+# README text as mojibake). Codex-only task context (root msg 2487); the Claude prompt is unchanged. Writes go through
+# Codex's own patch tool: PowerShell 5.1's `Set-Content -Encoding UTF8` would prepend a byte-order mark to the file.
+CODEX_ENCODING_NOTE = ("Repository text files are UTF-8 without a byte-order mark. When you read a file through PowerShell, "
+                       "always pass -Encoding UTF8 (for example Get-Content -Encoding UTF8 -LiteralPath <file>). Make every "
+                       "edit with your file-editing (patch) tool, never by writing files through PowerShell, and keep every "
+                       "non-ASCII character exactly as it is.\n")
+CODEX_USAGE_LABEL ="cli-reported tokens, not metered; no cost, turns or duration reported"
 CODEX_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens")
 
 
@@ -654,7 +661,7 @@ class CliWorker:
                 "Report progress with lines of exactly this form in your own reply text (never inside files or tool calls):\n"
                 f'{ACT_PREFIX}{{"kind":"worker_ack","seq":1}}  (once, first)\n'
                 f'{ACT_PREFIX}{{"kind":"worker_progress","seq":N,"checkpointId":K,"evidence":"<one short line>"}}  '
-                "(N = previous seq + 1, K = 1, 2, ...)\n")
+                "(N = previous seq + 1, K = 1, 2, ...)\n" + (CODEX_ENCODING_NOTE if self.cfg.backend == "codex" else ""))
 
     def __call__(self, order: P.WorkOrder) -> P.WorkReport:
         ev = self.evidence.setdefault(order.round, RunEvidence())
