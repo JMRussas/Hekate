@@ -475,7 +475,7 @@ def serve(a: argparse.Namespace, *, opener: Callable[[Path], Any] | None = None)
         status = StatusFile(ddir, {
             "schema": SCHEMA, "authority": "PlanStore is the only authority; this file is an observation of the dispatcher process",
             "importSha256": doc.sha256, "planFileSha256": a.plan_sha256, "runRoot": str(run_root), "limits": asdict(limits),
-            "owner": {"pid": os.getpid(), "processBirth": process_birth(os.getpid()), "startedAt": iso(now), "python": sys.version.split()[0], "launch": a.launch_mode,
+            "owner": {"pid": os.getpid(), "processBirth": process_birth(os.getpid()), "startedAt": iso(now), "python": sys.version.split()[0], "launch": a.launch_mode, "launchId": a.launch_id,
                       "storeDb": store.loc.db, "exeSha256": a.exe_sha256},
             "phase": "starting", "state": "starting", "stopReason": None, "detail": None, "previousOwner": prev, "steps": [],
             "nodes": {}, "current": None, "counters": {"cycles": 0, "dispatched": 0}, "exitedCleanly": False})
@@ -572,6 +572,8 @@ def run_argv(a: argparse.Namespace) -> list[str]:
            "--exe", str(a.exe), "--exe-sha256", a.exe_sha256, "--root-go", a.root_go, "--worker", a.worker, "--actor", a.actor,
            "--max-duration-s", str(a.max_duration_s), "--poll-s", str(a.poll_s), "--max-poll-s", str(a.max_poll_s),
            "--heartbeat-s", str(a.heartbeat_s), "--max-nodes", str(a.max_nodes), "--launch-mode", "hidden"]
+    if a.launch_id:
+        out += ["--launch-id", a.launch_id]
     if a.launch_real_model:
         out.append("--launch-real-model")
     if a.exe_arg:
@@ -604,6 +606,7 @@ def launch(a: argparse.Namespace, *, popen: Callable[..., Any] = subprocess.Pope
         return EXIT_REFUSED
     ddir = dispatch_dir(a.state_dir)
     ddir.mkdir(parents=True, exist_ok=True)
+    a.launch_id = uuid.uuid4().hex
     argv = [sys.executable, "-m", "e1.owned_dispatch", *run_argv(a)]
     cwd = Path(__file__).resolve().parents[1]
     breakaway = platform == "win32"
@@ -620,8 +623,8 @@ def launch(a: argparse.Namespace, *, popen: Callable[..., Any] = subprocess.Pope
     deadline = now() + a.wait_s
     while now() < deadline:
         doc = read_status(a.state_dir)
-        if doc and (doc.get("owner") or {}).get("pid") == proc.pid and liveness(doc, now()) == "running":
-            print(json.dumps({"launched": True, "pid": proc.pid, "breakaway": breakaway, "state": doc.get("state"),
+        if doc and (doc.get("owner") or {}).get("launchId") == a.launch_id and liveness(doc, now()) == "running":
+            print(json.dumps({"launched": True, "pid": doc["owner"]["pid"], "launcherPid": proc.pid, "launchId": a.launch_id, "breakaway": breakaway, "state": doc.get("state"),
                               "status": str(ddir / STATUS), "log": str(ddir / LOG)}))
             return EXIT_OK
         if proc.poll() is not None:
@@ -663,6 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--actor", default="operator:local-dispatch")
     ap.add_argument("--observe-only", action="store_true", help="observe once and report; never dispatch")
     ap.add_argument("--launch-mode", choices=("foreground", "hidden"), default="foreground")
+    ap.add_argument("--launch-id", help="host correlation across Windows virtualenv launcher/interpreter processes")
     ap.add_argument("--wait-s", type=int, default=60, help="launch: how long to wait for the child's status")
     d = Limits()
     ap.add_argument("--max-duration-s", type=int, default=d.max_duration_s)

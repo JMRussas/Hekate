@@ -73,3 +73,19 @@ def test_failure_during_owner_setup_stops_acquired_store(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         OD.serve(OD.build_parser().parse_args(argv), opener=lambda _: store)
     assert stopped == [True]
+
+
+def test_launch_correlates_virtualenv_launcher_with_runtime_owner(tmp_path, capsys):
+    from types import SimpleNamespace
+    state, argv = prepared(tmp_path)
+    argv[0] = "launch"
+    def wrapper_spawn(command, **kwargs):
+        launch_id = command[command.index("--launch-id") + 1]
+        value = doc(OD.process_birth(os.getpid()))
+        value.update(schema=OD.SCHEMA, state="running")
+        value["owner"]["launchId"] = launch_id
+        (OD.dispatch_dir(state) / OD.STATUS).write_text(json.dumps(value))
+        return SimpleNamespace(pid=7777, poll=lambda: None)
+    assert OD.launch(OD.build_parser().parse_args(argv), popen=wrapper_spawn) == OD.EXIT_OK
+    result = json.loads(capsys.readouterr().out)
+    assert result["launched"] and result["pid"] == os.getpid() and result["launcherPid"] == 7777
