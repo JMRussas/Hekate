@@ -95,7 +95,12 @@ def strict_loads(raw: bytes, what: str) -> Any:
         raise Refused(e.code, f"{what}: {e.detail}") from None
     except ValueError as e:
         raise Refused("strict_json", f"{what}: {e}") from None
-    _scalars_ok(doc)
+    except RecursionError:              # HK-ISSUE-001: excessive nesting is a typed refusal, never an escape
+        raise Refused("strict_json", f"{what}: nesting too deep") from None
+    try:
+        _scalars_ok(doc)
+    except RecursionError:              # the scan recurses too; a document that just fit the parser can still overflow it
+        raise Refused("strict_json", f"{what}: nesting too deep") from None
     return doc
 
 
@@ -210,6 +215,7 @@ def verify_delivery(d: Delivery) -> Verified:
         req, total, refs, refs_opt = delivered_sizes(m2, json.loads(row["envelope"]), task)
         _ = (m2["transition"]["handoffId"], m2["transition"]["recordId"], m2["transition"]["linkId"], m2["state"]["mandatory"]["identity"],
              m2["authority"]["pending"], m2["authority"]["queue"], m2["evidenceIndex"], m2["optional"]["imports"], m2["optional"]["note"])
+        review_identity(m2)             # HK-ISSUE-002: every identity field present, or a typed delivery_mismatch
     except H.Refused as e:
         raise Refused("delivery_mismatch", e.detail) from None
     except (KeyError, TypeError, AttributeError, IndexError, ValueError):
@@ -262,19 +268,36 @@ class Fresh:
     basis: dict[str, Any] = field(default_factory=dict)
 
 
+FRESH_FIELDS = ("candidate_digest", "record_id", "review_identity", "package_ref", "receipt_status", "current_binding",
+                "review_class", "pins_problem", "pending", "queue", "basis")
+
+
 def review_identity(manifest: dict[str, Any]) -> dict[str, Any]:
-    key = manifest["state"]["mandatory"]["identity"]
-    return {k: key[k] for k in (*A.ATTEMPT_FIELDS, "artifactRef")}
+    """The AttemptKey + artifactRef of the manifest. A missing field is a typed delivery_mismatch (HK-ISSUE-002)."""
+    try:
+        key = manifest["state"]["mandatory"]["identity"]
+        return {k: key[k] for k in (*A.ATTEMPT_FIELDS, "artifactRef")}
+    except (KeyError, TypeError):
+        raise Refused("delivery_mismatch", "manifest identity") from None
 
 
 def revalidate(v: Verified, fresh: Fresh) -> dict[str, Any]:
-    t = v.manifest["transition"]
-    if (fresh.candidate_digest, fresh.record_id, fresh.review_identity, fresh.package_ref) != (
-            v.receipt["candidateDigest"], v.receipt["recordId"], review_identity(v.manifest), v.task["packageRef"]):
+    # HK-ISSUE-002: a malformed proof or a Verified without its bound fields is a TYPED refusal, not an escape.
+    missing = [f for f in FRESH_FIELDS if not hasattr(fresh, f)]
+    if missing:
+        raise Refused("fresh_mismatch", f"the revalidation proof is malformed: missing {missing}")
+    if not isinstance(fresh.pending, list) or not isinstance(fresh.queue, list):
+        raise Refused("fresh_mismatch", "the revalidation proof is malformed: pending/queue")
+    try:
+        t = v.manifest["transition"]
+        bound = (v.receipt["candidateDigest"], v.receipt["recordId"], review_identity(v.manifest), v.task["packageRef"], t["linkId"])
+    except (KeyError, TypeError):
+        raise Refused("delivery_mismatch", "verified delivery fields") from None
+    if (fresh.candidate_digest, fresh.record_id, fresh.review_identity, fresh.package_ref) != bound[:4]:
         raise Refused("fresh_mismatch", "the revalidation proof is not about this exact candidate/key/package")
     if fresh.receipt_status != "current":
         raise Refused("receipt_not_current", fresh.receipt_status)
-    if fresh.current_binding != t["linkId"]:
+    if fresh.current_binding != bound[4]:
         raise Refused("binding_moved")
     if fresh.review_class != "candidate":
         raise Refused("review_not_candidate", fresh.review_class)

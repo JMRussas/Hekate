@@ -24,7 +24,6 @@ REPO = PROJECT.parents[2]                                   # the Hekate checkou
 FROZEN = {
     "e1/acts_durable.py": "5ad500d623e8e85f8a107e7846bde1ac810cf8ce3242fa9b3402c70dce684a44",
     "e1/acts_schema.sql": "cbe901cba3970e08e4edc83eecc829ad40d130fa70f03e411fb056f378cccf7b",
-    "e1/consumer.py": "30ca084a4712560aec2975b79e5d71d0febb107bc4868a154b0cbcc2c0e61a6e",
     "e1/consumer_durable.py": "d21fa3d15c1938646ff21240ee8bd0a52743b0253cae0b583404bfcdae60993e",
     "e1/handoff.py": "1e9036f6ed29983c1282dde0a3a256094984e2c6a9a3d8940a575beeea6faab2",
     "e1/handoff_durable.py": "b6c1d9c3095c4bfba5bae865d5cf1dc4646d4c53e452ab3a95ab4c3ca5006670",
@@ -41,6 +40,14 @@ REVISED_038: dict[str, str | None] = {
     "e1/acts.py": "ffa11dd506b5195fc0db6e813ec74bb9a97ef91d6e7027082436b8989b6bf97b",
     "e1/evidence.py": "db8b7a791fd07a73b42b9a47613f3fb9c5689020c8cfedda37a4ddd3af0f74f7",
     "e1/recovery.py": "c1af35bd00ddc5d8f28d30fa228862db7c79a0822e68d2099c31faf0be849fc6",
+}
+
+# Formerly frozen consumer intentionally revised by plan 041 (HK-ISSUE-001 + HK-ISSUE-002, root msg 1741):
+# typed refusals for excessive nesting and missing identity/proof fields. Provenance: the accepted
+# pre-041 hash was consumer.py 30ca084a4712560aec2975b79e5d71d0febb107bc4868a154b0cbcc2c0e61a6e (the value
+# the frozen golden and supplement bundles' producer.json still record; they are not re-baselined).
+REVISED_041: dict[str, str] = {
+    "e1/consumer.py": "aea15fa421b5a857d9393dbbdff5073a977de5e28bf4a0854b35c0d1983475ed",
 }
 
 
@@ -297,3 +304,8 @@ def test_plan_038_revised_modules_match_their_recorded_revision():
     missing = sorted(rel for rel, want in REVISED_038.items() if want is None)
     assert not missing, f"plan 038 hashes not yet recorded (fill from sha256sum after V&V): { {r: got[r] for r in missing} }"
     assert got == REVISED_038
+
+
+def test_plan_041_revised_consumer_matches_its_recorded_revision():
+    got = {rel: hashlib.sha256((PROJECT / rel).read_bytes()).hexdigest() for rel in REVISED_041}
+    assert got == REVISED_041
