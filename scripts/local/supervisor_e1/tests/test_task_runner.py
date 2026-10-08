@@ -404,7 +404,7 @@ def test_view_binding_parent_and_worktree_problems_are_uncertain(ver):
     stacked = commit(repo, {"src/value.txt": "42\n\n\n"}, "stacked")
     assert review(v, stacked) == ("uncertain", review(v, stacked)[1]) and review(v, stacked)[1]["why"] == "artifact_parent_not_base"
     (v.run_dir_of() / "verify-r1").mkdir()
-    assert review(v, art)[1]["why"] == "verify_worktree_failed"
+    assert review(v, art)[1]["why"] == "verify_worktree_exists"
 
 
 def test_deps_kill_and_drain_failures_are_uncertain(ver, monkeypatch):
@@ -582,3 +582,110 @@ def test_main_preflight_then_run_end_to_end_with_the_fake(harness, fx, tmp_path,
     assert TR.main(argv, harness_factory=lambda: sh) == 0 and sh.stopped
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert out["outcome"] == "accepted" and Path(out["evidence"]).is_file()
+
+
+# ------------------------------------------------------------------------ Windows long paths (msgs 1702-1704 D1/D2)
+
+DEEP = "docs/" + "/".join(["d" * 20] * 5) + "/" + "f" * 18 + ".txt"        # 130 chars, never read by any step
+
+
+@pytest.mark.skipif(R.sys.platform != "win32", reason="MAX_PATH is a Windows limit")
+def test_a_verify_worktree_past_max_path_works_with_the_clone_local_longpaths(tmp_path, tmp_path_factory):
+    """The CA012 pilot's failure, reproduced: <run_dir>/verify-r1 + the deepest tracked path > 260 chars.
+    The owned clone carries core.longpaths=true in its OWN config, so the worktree is created; with it off,
+    the verifier stops uncertain and the git stderr says why."""
+    f = make_repo(tmp_path, extra={DEEP: "deep\n"})
+    doc = make_spec(f, pinned_node(tmp_path_factory.getbasetemp()))
+    spec = spec_of(tmp_path, doc)
+    rr = tmp_path / "rr"
+    rec = TR.preflight(spec, rr)
+    repo = Path(rec["repo"])
+    assert git(repo, "config", "--local", "--get", "core.longpaths") == "true"
+    assert subprocess.run(["git", "-C", f["repo"], "config", "--local", "--get", "core.longpaths"],
+                          capture_output=True, env=W.git_env()).returncode == 1          # the source repo is untouched
+    room = 260 - len(DEEP) - len("/verify-r1/") - len(str(tmp_path)) + 8            # run_dir + DEEP lands over 260
+    long_dir = tmp_path / ("L" * room)
+    long_dir.mkdir()
+    assert len(str(long_dir / "verify-r1" / DEEP)) > 260
+    art = candidate(repo, f["base"], {"src/value.txt": "42\n"})
+    git(repo, "config", "--local", "core.longpaths", "false")                       # the pilot's condition
+    v = TR.SpecVerifier(spec, repo, lambda: long_dir, rr)
+    dec, rep = review(v, art, rnd=1)
+    assert (dec, rep["why"]) == ("uncertain", "verify_worktree_failed")
+    assert "too long" in rep["gitStderr"].lower()                                    # D2: the cause is recorded
+    git(repo, "worktree", "prune")
+    git(repo, "config", "--local", "core.longpaths", "true")                        # what the fixed clone carries
+    dec, rep = review(v, art, rnd=2)
+    assert (dec, rep["why"]) == ("accepted", "all_steps_pass") and len(str(Path(rep["worktree"]) / DEEP)) > 260
+
+
+def test_preflight_git_failures_carry_bounded_stderr(fx, tmp_path):
+    f, doc = fx
+    code, rec = pre_refusal(tmp_path, edited(doc, lambda d: d["source"].update(taskBaseCommit="1" * 40)))
+    assert code == "base_missing" and isinstance(rec["detail"], str) and rec["detail"] and len(rec["detail"]) <= TR.ERR_KEEP
+
+
+# ------------------------------------------------------------------------ verifier-only re-check (msg 1704 option 1)
+
+@pytest.fixture
+def stopped(taskrun, monkeypatch):
+    """A run whose verifier could not create its worktree: needs_operator / review_uncertain, artifact kept."""
+    go, f = taskrun
+    real = TR.SpecVerifier.check_artifact
+
+    def no_worktree(self, art, rnd, rep, verdict):
+        rep["gitStderr"] = "fatal: simulated: Filename too long"
+        return verdict("uncertain", "verify_worktree_failed")
+    monkeypatch.setattr(TR.SpecVerifier, "check_artifact", no_worktree)
+    res, ev = go("value_ok")
+    monkeypatch.setattr(TR.SpecVerifier, "check_artifact", real)
+    assert (res.outcome, res.reason) == ("needs_operator", "review_uncertain")
+    return res, ev, f
+
+
+def test_verify_only_rechecks_the_same_artifact_freshly_and_never_touches_the_original(stopped, fx, tmp_path):
+    res, ev, f = stopped
+    _, doc = fx
+    spec = TR.T.load(tmp_path / "spec.json")
+    pilot = Path(ev["runDir"])
+    before = {n: (pilot / n).read_bytes() for n in ("run.json", "evidence.json")}
+    rec = TR.verify_only(spec, tmp_path / "rr", pilot, tmp_path / "rr" / "reverify-1", root_go="test-only")
+    assert (rec["decision"], rec["why"]) == ("accepted", "all_steps_pass") and rec["mode"] == "verifier-only"
+    b = rec["bound"]
+    assert b["artifactRef"] == res.rounds[0].artifact_ref and all(b["checks"].values())
+    assert b["runJsonSha256"] == hashlib.sha256(before["run.json"]).hexdigest()
+    assert b["evidenceJsonSha256"] == hashlib.sha256(before["evidence.json"]).hexdigest()
+    assert rec["originalOutcome"] == {"outcome": "needs_operator", "reason": "review_uncertain", "unchanged": True}
+    assert {n: (pilot / n).read_bytes() for n in before} == before                  # the original run is never changed
+    assert Path(rec["report"]["worktree"]).parent == (tmp_path / "rr" / "reverify-1").resolve()
+    on_disk = json.loads((tmp_path / "rr" / "reverify-1" / TR.VERIFY_EVIDENCE).read_text(encoding="utf-8"))
+    assert on_disk["decision"] == "accepted" and on_disk["rootGo"] == "test-only"
+    assert refusal(TR.verify_only, spec, tmp_path / "rr", pilot, tmp_path / "rr" / "reverify-1",
+                   root_go="x") == "verify_out_exists"
+
+
+def test_verify_only_refuses_a_broken_binding_before_any_effect(stopped, tmp_path):
+    res, ev, f = stopped
+    spec = TR.T.load(tmp_path / "spec.json")
+    pilot = Path(ev["runDir"])
+    copy = tmp_path / "rr" / "pilot-tampered"
+    copy.mkdir()
+    run = json.loads((pilot / "run.json").read_text(encoding="utf-8"))
+    run["rounds"][-1]["view_digest"] = "0" * 64
+    (copy / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    (copy / "evidence.json").write_bytes((pilot / "evidence.json").read_bytes())
+    with pytest.raises(TR.PreflightRefused) as e:
+        TR.verify_only(spec, tmp_path / "rr", copy, tmp_path / "rr" / "reverify-x", root_go="x")
+    assert e.value.code == "verify_binding_failed" and e.value.detail["prior_review_binds_round"] is False
+    assert not (tmp_path / "rr" / "reverify-x").exists()
+    assert refusal(TR.verify_only, spec, tmp_path / "rr", pilot, tmp_path / "elsewhere", root_go="x") == "verify_paths_not_in_run_root"
+
+
+def test_verify_only_refuses_a_run_that_already_has_a_decision(taskrun, tmp_path):
+    go, f = taskrun
+    res, ev = go("value_ok")
+    assert res.outcome == "accepted"
+    spec = TR.T.load(tmp_path / "spec.json")
+    with pytest.raises(TR.PreflightRefused) as e:
+        TR.verify_only(spec, tmp_path / "rr", Path(ev["runDir"]), tmp_path / "rr" / "reverify-1", root_go="x")
+    assert e.value.code == "verify_binding_failed" and e.value.detail["run_stopped_without_decision"] is False

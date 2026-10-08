@@ -239,7 +239,13 @@ No nodes are created and no separate database is used until that migration is de
   - Code: `e1/task_spec.py`, `e1/task_runner.py`, the optional `prepare` hook in `e1/cli_worker.py`, and `run_bounded(merge=False)` in `e1/pilot_real.py`.
   - Branch: `feat/operator-task-runner`.
   - Pre-freeze review fixes F1–F5 (msgs 1659/1660) and the 1653 requirements are in.
-- **Not claimed:** OS isolation; any real npm, preflight or model run.
+- **Real runs so far:**
+  - Preflight-1 was refused at `deps_install_failed`: the operator's npm cache was stripped. Fixed: scoped npm env, msgs 1675–1695.
+  - Preflight-2 passed: 15 cases, 14 failed (msg 1699).
+  - The one claude-cli pilot produced artifact `a7fd2ec…` and then **stopped before verification**: `review_uncertain` / `verify_worktree_failed`, caused by Windows MAX_PATH (msgs 1702–1704). Fix: a clone-local `core.longpaths` and the git stderr in evidence.
+  - Option 1 (root msg 1704): one verifier-only re-check of the same artifact, with no new model run. The original outcome stays `needs_operator`.
+- **Scope note (msg 1710):** acceptance by the spec's verifier (oracle + tsc) is narrower than full-repo regressions. ChatAgent's full suite on the artifact found three integration-only items: the route inventory (45 → 46), an HTTP test timeout, and a Prettier wrap. They are reported separately as integration evidence.
+- **Not claimed:** OS isolation; a verified pilot result (pending the verifier-only re-check); integration.
 - **Closure (V&V):**
   1. Independent review of the frozen source.
   2. Root acceptance.

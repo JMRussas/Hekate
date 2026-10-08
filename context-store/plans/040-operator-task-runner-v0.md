@@ -41,6 +41,7 @@ This runner drives the **existing** pilot (`e1/pilot.py`), the real-worker adapt
      - An opt-in check (`HEKATE_E1_INTEROP_LIVE=1`) runs the real pinned `npm config get cache` under `npm_env()`, with no network and no install, and asserts that it prints the forwarded cache.
      - npm's builtin `npmrc` beside the pinned CLI cannot be disabled; the env values override it. Its sha256 is recorded as provenance.
      - The deps evidence records the cache path, whether `_cacache` is present, the npmrc path and hash, and the **bounded output head** on success and refusal. No config contents or credentials are recorded.
+   - **Windows long paths** (revision 3, msgs 1702–1704): the first real pilot stopped `review_uncertain` / `verify_worktree_failed`. The verifier's `<run_dir>/verify-r1` plus CA012's deepest tracked path came to 263 characters, over 260. The owned clone is now created with `git clone -c core.longpaths=true`, which goes into the **clone's own** config, so nothing global and nothing in the source changes. Failed git calls (clone, checkout, worktree add, parent, status) record a bounded stderr head in the refusal or verifier report.
 5. Structured baseline: the run must end normally, its report must not be truncated, and its exit must equal `expectedExit`. The report is **stdout only**; stderr is bounded, digested and kept as evidence (F1). The set of `(file, fullName, status, first failure line)` must equal the declared cases. No suite-level `message` is allowed, and the counts must agree. A mismatch gives `spec_baseline_mismatch` with the missing and extra cases.
 
 **Run:**
@@ -74,6 +75,34 @@ Decision order. **uncertain** means the run stops for an operator, with no decis
      - `numFailedTests` is 0;
      - no suite error is reported.
 7. **After all steps:** `git status --porcelain --untracked-files=all --ignored=matching` must be exactly `["!! node_modules/"]` (otherwise rejected), and `check_tree` runs again (uncertain if it fails).
+
+## 3a. Verifier-only re-check (`verify`, msg 1704 option 1)
+
+`task_runner verify --spec S --run-root R --pilot-dir R/pilot-<id> --out R/<new> --root-go G` re-checks **one** artifact of a run that stopped without a decision (`needs_operator` / `review_uncertain`, last round undecided). It uses no model, no harness and no journal.
+
+1. **Binding.** Before any effect, the runner checks that:
+   - the preflight passed for this spec, and the clone is bound to `R/repo` at the base;
+   - the original `run.json` and `evidence.json` name the same spec and base;
+   - the prior verifier report binds the same round, artifact, view digest and candidate digest, and its decision was `uncertain`;
+   - exactly one `result_captured` receipt binds the artifact, the parent and the run-owned ref;
+   - the ref resolves to the artifact.
+   Any failure gives `verify_binding_failed`, with the check map.
+2. **The re-check.** It runs the same post-binding checks as the pilot's verifier (`SpecVerifier.check_artifact`). The worktree and fresh dependencies go under the new `--out` directory, and every step runs.
+3. **Output.**
+   - The result is written to `<out>/verify-evidence.json`, with the sha256 of both original files, the bound receipt, the clone's `core.longpaths`, and the report.
+   - The original files are only read; `originalOutcome` is recorded as unchanged and is never relabelled.
+
+## 3b. The first real CA012 pilot (2026-10-08) and what it does and does not show
+
+- **The run** (root GO 1679; ChatAgent 1689/1695/1699): preflight-2 passed (15 cases, 14 failed). The real claude-cli worker (Sonnet) produced artifact `a7fd2ec7225e480af20c581844663ffb7853be48`, three allowlisted files, +57/−3. The run then **stopped before verification**: `needs_operator` / `review_uncertain` / `verify_worktree_failed`, caused by MAX_PATH (§2). No decision was recorded and nothing was retried. The original `run.json` and `evidence.json` keep that outcome, and it is never relabelled.
+- **The verifier's scope is narrower than integration.**
+  - Acceptance means the spec's steps passed: the oracle files and `tsc`.
+  - ChatAgent's independent full-suite run on the artifact (msg 1708) found three regressions only an integration check can see:
+    - the route-inventory count, 45 → 46, in a file outside the allow list;
+    - the HTTP oracle test timing out at 5 s under full-suite load;
+    - a Prettier wrap.
+  - These are integration evidence, reported separately (msg 1710). They are not verifier findings.
+  - **Lesson for v1:** a declared regression step (the repo's own suite or a named subset), so the verifier sees what integration will.
 
 ## 4. Limits (not claimed)
 

@@ -63,6 +63,12 @@ def _git(*args: str, cwd: Path, text: bool = True) -> subprocess.CompletedProces
     return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=text, timeout=300, env=W.git_env())
 
 
+def git_stderr(p: subprocess.CompletedProcess) -> str:
+    """A failed git call's stderr, bounded (msg 1703 D2): the cause travels with the refusal."""
+    err = p.stderr if isinstance(p.stderr, str) else (p.stderr or b"").decode("utf-8", errors="replace")
+    return err[-ERR_KEEP:]
+
+
 def sha256_file(p: Path) -> str:
     return R.sha256_file(Path(p))
 
@@ -122,12 +128,15 @@ def owned_clone(spec: T.TaskSpec, run_root: Path) -> Path:
     repo = run_root / "repo"
     if repo.exists():
         raise PreflightRefused("clone_exists")
-    c = subprocess.run(["git", "clone", "--no-local", "--no-checkout", "-q", src, str(repo)], capture_output=True, text=True,
-                       timeout=900, env=W.git_env())
+    # core.longpaths in the CLONE's own config (msgs 1703/1704): every later checkout, worktree and status in
+    # the owned clone tolerates paths over 260 chars on Windows. Nothing global or in the source changes.
+    c = subprocess.run(["git", "clone", "-c", "core.longpaths=true", "--no-local", "--no-checkout", "-q", src, str(repo)],
+                       capture_output=True, text=True, timeout=900, env=W.git_env())
     if c.returncode != 0:
-        raise PreflightRefused("clone_failed")
-    if _git("checkout", "-q", "--detach", base, cwd=repo).returncode != 0:
-        raise PreflightRefused("base_missing")
+        raise PreflightRefused("clone_failed", git_stderr(c))
+    co = _git("checkout", "-q", "--detach", base, cwd=repo)
+    if co.returncode != 0:
+        raise PreflightRefused("base_missing", git_stderr(co))
     if _git("rev-parse", "HEAD", cwd=repo).stdout.strip() != base:
         raise PreflightRefused("base_mismatch")
     if _git("merge-base", "--is-ancestor", anchor, base, cwd=repo).returncode != 0:
@@ -247,8 +256,9 @@ def baseline(spec: T.TaskSpec, repo: Path, run_root: Path) -> dict[str, Any]:
     declared cases (file, fullName, status, failure first line); no suite-level error; counts agree."""
     b0 = spec.doc["oracle"]["baseline"]
     wt = run_root / "baseline"
-    if _git("worktree", "add", "--detach", str(wt), spec.doc["source"]["taskBaseCommit"], cwd=repo).returncode != 0:
-        raise PreflightRefused("baseline_worktree_failed")
+    add = _git("worktree", "add", "--detach", str(wt), spec.doc["source"]["taskBaseCommit"], cwd=repo)
+    if add.returncode != 0:
+        raise PreflightRefused("baseline_worktree_failed", git_stderr(add))
     deps = install_deps(spec, wt, run_root)
     check_pins(spec)
     check_tree(spec, wt)
@@ -341,8 +351,6 @@ class SpecVerifier:
         self.reports: list[dict[str, Any]] = []
 
     def __call__(self, order: P.ReviewOrder) -> P.Verdict:
-        d = self.spec.doc
-        base = d["source"]["taskBaseCommit"]
         rep: dict[str, Any] = {"round": order.round, "artifactRef": order.artifact_ref, "viewDigest": order.view_digest,
                                "candidateDigest": order.candidate_digest, "specSha256": self.spec.sha256}
         self.reports.append(rep)
@@ -359,8 +367,19 @@ class SpecVerifier:
             return verdict("uncertain", "view_candidate_mismatch")
         if not (isinstance(art, str) and W.SHA40.fullmatch(art)) or R.view_artifact(view) != art:
             return verdict("uncertain", "artifact_not_bound_in_view")
+        return self.check_artifact(art, order.round, rep, verdict)
+
+    def check_artifact(self, art: str, rnd: int, rep: dict[str, Any], verdict: Callable[[str, str], P.Verdict]) -> P.Verdict:
+        """Everything AFTER the view binding: parent, raw diff and oracle blobs (before any artifact code), a
+        fresh worktree, fresh deps, every step, the clean tree. Shared by the pilot's review and the
+        verifier-only re-check (verify_only), which binds the artifact from a stopped run's records instead."""
+        d = self.spec.doc
+        base = d["source"]["taskBaseCommit"]
+        if not (isinstance(art, str) and W.SHA40.fullmatch(art)):
+            return verdict("uncertain", "artifact_not_a_sha")
         parent = _git("rev-parse", f"{art}^", cwd=self.repo)
         if parent.returncode != 0:
+            rep["gitStderr"] = git_stderr(parent)
             return verdict("uncertain", "git_failed")
         if parent.stdout.strip() != base:
             return verdict("uncertain", "artifact_parent_not_base")
@@ -378,8 +397,12 @@ class SpecVerifier:
         for f in d["oracle"]["files"]:
             if blob_sha256(self.repo, art, f["path"]) != f["sha256"]:
                 return verdict("rejected", "oracle_changed")
-        wt = Path(self.run_dir_of()) / f"verify-r{order.round}"
-        if wt.exists() or _git("worktree", "add", "--detach", str(wt), art, cwd=self.repo).returncode != 0:
+        wt = Path(self.run_dir_of()) / f"verify-r{rnd}"
+        if wt.exists():
+            return verdict("uncertain", "verify_worktree_exists")
+        add = _git("worktree", "add", "--detach", str(wt), art, cwd=self.repo)
+        if add.returncode != 0:
+            rep["gitStderr"] = git_stderr(add)
             return verdict("uncertain", "verify_worktree_failed")
         rep["worktree"] = str(wt)
         if _git("rev-parse", "HEAD", cwd=wt).stdout.strip() != art:   # the verified tree IS the artifact commit
@@ -422,6 +445,7 @@ class SpecVerifier:
                 return verdict("rejected", f"step_failed:{s['name']}")
         status = _git("status", "--porcelain", "--untracked-files=all", "--ignored=matching", cwd=wt)
         if status.returncode != 0:
+            rep["gitStderr"] = git_stderr(status)
             return verdict("uncertain", "git_failed")
         lines = status.stdout.splitlines()
         rep["status"] = lines[:20]
@@ -509,9 +533,81 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
     return result, evidence
 
 
+# --- verifier-only re-check of a stopped run's artifact (msg 1704 option 1) ---------------------------------
+
+VERIFY_EVIDENCE = "verify-evidence.json"
+
+
+def verify_only(spec: T.TaskSpec, run_root: Path, pilot_dir: Path, out: Path, *, root_go: str) -> dict[str, Any]:
+    """ONE fresh verifier check of the artifact of a run that STOPPED WITHOUT A DECISION (review_uncertain).
+    No model, no harness, no journal: the original run.json/evidence.json are only READ, bound by sha256,
+    and never changed; the original needs_operator outcome stands. The artifact is bound from those records
+    (the last round's artifact/view/candidate digests, which the original verifier's view binding already
+    checked, the captured result and the run-owned ref). Fresh worktree under `out`, fresh deps, every step.
+    Writes <out>/verify-evidence.json; refuses typed before any effect when a binding does not hold."""
+    run_root, pilot_dir, out = Path(run_root).resolve(), Path(pilot_dir).resolve(), Path(out).resolve()
+    rec = load_preflight(spec, run_root)
+    repo = Path(rec["repo"])
+    if pilot_dir.parent != run_root or out.parent != run_root:
+        raise PreflightRefused("verify_paths_not_in_run_root")
+    if out.exists():
+        raise PreflightRefused("verify_out_exists")
+    try:
+        run_raw, ev_raw = (pilot_dir / "run.json").read_bytes(), (pilot_dir / "evidence.json").read_bytes()
+        run, ev = json.loads(run_raw), json.loads(ev_raw)
+    except (OSError, ValueError):
+        raise PreflightRefused("verify_records_unreadable") from None
+    try:
+        last = run["rounds"][-1]
+        prior = ev["verifier"][-1]
+        captured = [json.loads(j["data"]) for j in ev["journal"]
+                    if j["kind"] == "result_captured" and j["claimKey"] == last["claim_key"]]
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise PreflightRefused("verify_records_shape") from None
+    art = last["artifact_ref"]
+    ref = f"{W.REF_ROOT}/{run['runId']}/r{last['round']}"
+    checks = {
+        "run_stopped_without_decision": run.get("outcome") == "needs_operator" and run.get("reason") == "review_uncertain"
+                                        and last.get("decision") is None,
+        "same_spec": ev.get("specSha256") == spec.sha256 and prior.get("specSha256") == spec.sha256,
+        "same_base": run.get("baseSha") == spec.doc["source"]["taskBaseCommit"],
+        "prior_review_binds_round": (prior.get("round"), prior.get("artifactRef"), prior.get("viewDigest"),
+                                     prior.get("candidateDigest"), prior.get("decision"))
+                                    == (last["round"], art, last["view_digest"], last["candidate_digest"], "uncertain"),
+        "receipt_binds_artifact": len(captured) == 1 and captured[0].get("artifactRef") == art
+                                  and captured[0].get("parentRef") == spec.doc["source"]["taskBaseCommit"]
+                                  and captured[0].get("runRef") == ref,
+        "owned_ref_binds_artifact": _git("rev-parse", "--verify", "-q", ref, cwd=repo).stdout.strip() == art,
+    }
+    if not all(checks.values()):
+        raise PreflightRefused("verify_binding_failed", checks)
+    longpaths = _git("config", "--local", "--get", "core.longpaths", cwd=repo).stdout.strip()
+    out.mkdir()
+    rep: dict[str, Any] = {"mode": "verifier-only", "round": last["round"], "artifactRef": art, "viewDigest": last["view_digest"],
+                           "candidateDigest": last["candidate_digest"], "specSha256": spec.sha256}
+
+    def verdict(decision: str, why: str) -> P.Verdict:
+        rep.update(decision=decision, why=why)
+        return P.Verdict(decision, json.dumps(rep, sort_keys=True, default=str))
+
+    SpecVerifier(spec, repo, lambda: out, run_root).check_artifact(art, last["round"], rep, verdict)
+    record = {"mode": "verifier-only", "rootGo": root_go, "specSha256": spec.sha256, "preflightOk": True,
+              "bound": {"pilotDir": str(pilot_dir), "runJsonSha256": hashlib.sha256(run_raw).hexdigest(),
+                        "evidenceJsonSha256": hashlib.sha256(ev_raw).hexdigest(), "runId": run["runId"], "claimKey": last["claim_key"],
+                        "artifactRef": art, "runRef": ref, "viewDigest": last["view_digest"], "candidateDigest": last["candidate_digest"],
+                        "receipt": captured[0], "priorReview": prior, "checks": checks},
+              "cloneCoreLongpaths": longpaths or None,
+              "originalOutcome": {"outcome": run["outcome"], "reason": run["reason"], "unchanged": True},
+              "report": rep, "decision": rep.get("decision"), "why": rep.get("why")}
+    (out / VERIFY_EVIDENCE).write_text(json.dumps(record, indent=1, sort_keys=True, default=str), encoding="utf-8", newline="\n")
+    return record
+
+
 def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="task_runner")
-    ap.add_argument("command", choices=("plan", "preflight", "run"))
+    ap.add_argument("command", choices=("plan", "preflight", "run", "verify"))
+    ap.add_argument("--pilot-dir", type=Path, help="verify: the stopped run's pilot-<id> directory under the run root")
+    ap.add_argument("--out", type=Path, help="verify: a NEW directory under the run root for the fresh evidence")
     ap.add_argument("--spec", required=True, type=Path)
     ap.add_argument("--run-root", type=Path)
     ap.add_argument("--exe", type=Path)
@@ -545,6 +641,17 @@ def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -
             return 1
         print(json.dumps({"preflight": "ok", "baseline": rec["baseline"]["cases"], "failed": rec["baseline"]["failed"]}))
         return 0
+    if a.command == "verify":
+        if not (a.pilot_dir and a.out and a.root_go):
+            print("REFUSED verify_needs --pilot-dir --out --root-go")
+            return 2
+        try:
+            rec = verify_only(spec, a.run_root, a.pilot_dir, a.out, root_go=a.root_go)
+        except PreflightRefused as e:
+            print(f"REFUSED {e.code} {json.dumps(e.detail, default=str)}")
+            return 1
+        print(json.dumps({"decision": rec["decision"], "why": rec["why"], "evidence": str(Path(a.out).resolve() / VERIFY_EVIDENCE)}))
+        return 0 if rec["decision"] == "accepted" else 1
     if not (a.launch_real_model and a.root_go and a.exe and a.exe_sha256):
         print("REFUSED run_needs --exe --exe-sha256 --launch-real-model --root-go")
         return 2

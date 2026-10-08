@@ -66,14 +66,16 @@ ORACLE_FILES = {
 LOCK = '{"lockfileVersion": 3}\n'
 
 
-def make_repo(root: Path) -> dict[str, str]:
-    """c0 (initial) -> anchor (the project) -> base (adds ONLY the two oracle files); also a side commit."""
+def make_repo(root: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """c0 (initial) -> anchor (the project, plus `extra` files) -> base (adds ONLY the two oracle files);
+    also a side commit."""
     repo = Path(root) / "src-repo"
     repo.mkdir(parents=True)
     git(repo, "init", "-q", "-b", "main")
     c0 = commit(repo, {"README.md": "fixture\n"}, "c0")
     anchor = commit(repo, {".gitignore": "node_modules/\n", "package.json": '{"name": "fx", "private": true}\n',
-                           "package-lock.json": LOCK, "src/value.txt": "0\n", "src/other.txt": "x\n"}, "anchor")
+                           "package-lock.json": LOCK, "src/value.txt": "0\n", "src/other.txt": "x\n", **(extra or {})},
+                    "anchor")
     base = commit(repo, ORACLE_FILES, "oracle")
     git(repo, "checkout", "-q", "-b", "side", anchor)
     side = commit(repo, {"src/other.txt": "side\n"}, "side")
