@@ -1,9 +1,17 @@
 # 047 — Attempt trace API v0 (read-only)
 
-Status: implemented on `feat/attempt-trace-ui` for root review (root msgs 2449, 2450, 2458, 2461).
-The capture side (the files and journal blocks this API reads) is plan 046 on
-`feat/attempt-trace-capture`. The UI client is `context-store/ui` (`planContract/api.ts`
-`getAttemptTrace`, `components/managed/AttemptTrace.tsx`).
+Status: integrated and exercised live (2026-10-08). Root msgs 2449, 2450, 2458, 2461 and 2473.
+- **Commits:** `a15f5d9` and `a3c3ba0`, reviewed and integrated into the primary branch.
+- **Capture side:** the files and journal blocks this API reads are plan 046.
+- **UI client:** `context-store/ui` (`planContract/api.ts` `getAttemptTrace`,
+  `components/managed/AttemptTrace.tsx`), shown in the Plans view's central column since `7fc017f`.
+- **Live use:** the Claude `readme-trace-001` and Codex `codex-trace-001` rehearsals both served
+  their traces through this endpoint.
+  - A runner-owned Api, then a post-run viewer, each started with `HEKATE_TRACE_ROOT` on that
+    command only, served the traces.
+  - In both, statuses went running/unverified → exited/verified, and every UI request was a GET.
+  - Retained evidence: `D:/hekate-coordinator/view-trace-001/captures-trace-001` and
+    `captures-codex-001` (each with a manifest).
 
 ## Endpoint
 

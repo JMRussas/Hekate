@@ -1,7 +1,14 @@
 # Plan 046 — attempt trace v0: each node attempt's visible conversation
 
-**Status: step A (capture) implemented, pending root review (2026-10-08).** Steps B/C (read-only Api) follow after A's
-review; step D (UI) is claude-chatagent's branch `feat/attempt-trace-ui`.
+**Status: integrated and exercised live (2026-10-08).**
+- **Commits:** capture A `dcb45b0` (root review 2452), integrated with the UI (`7641313`) in `3ba10b7`.
+- **Api:** B/C is plan 047 (`a15f5d9`, `a3c3ba0`).
+- **UI:** central trace layout `7fc017f`, and `1e98805` for permission_denied detail.
+- **Live runs:** the full path (capture → Api → Plans UI) ran in two rehearsals, each with a GET-only
+  capture and verified integrity:
+  - Claude `readme-trace-001`: 37 records, accepted;
+  - Codex `codex-trace-001`: 12 records, accepted by the independent verifier while its shell
+    commands failed on stderr; see plan 048.
 - **Branch:** `feat/attempt-trace-capture` from `d7b51e2`.
 - **GO:** root msg 2441 (capture A), early review 2452 (R1/R2), contract `trace-contract-001` rev 2 (root review 2450).
 - **Test scope:** the fake CLI and temporary repos. No model, no live DB, no push, no edits to the primary repo.
