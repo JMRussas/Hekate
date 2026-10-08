@@ -35,7 +35,7 @@ LABEL = "host-observed, not authenticated: on-disk bytes at observation, not loa
 SCOPE = "scripts/local/supervisor_e1"
 GIT_TIMEOUT_S = 20
 DIRTY_MAX = 32
-ERR_TAIL = 512                  # stderr bytes kept from a failed git call
+ERR_KEEP = 512                  # the FIRST 512 bytes of a failed git call's stderr (run_bounded keeps a prefix)
 GIT_OUT_CAP = 64 * 1024         # stdout bytes a git call may produce; more -> capture_overflow, result unknown
 MODULES_MAX = 64
 MODULE_BYTES_MAX = 1 << 20      # 1 MiB per module file
@@ -53,7 +53,7 @@ def _git_failure(step: str, b: R.Bounded | None, typ: str | None = None) -> dict
 
 def observe_git(src_dir: Path, *, env: dict[str, str] | None = None, run: Runner = R.run_bounded) -> dict[str, Any]:
     """HEAD of the repo holding src_dir and its dirty state within SCOPE. Every git call is streamed with its
-    stdout capped at GIT_OUT_CAP and stderr at ERR_TAIL bytes, under GIT_TIMEOUT_S. A failure, timeout, undrained
+    stdout capped at GIT_OUT_CAP and stderr at its first ERR_KEEP bytes, under GIT_TIMEOUT_S. A failure, timeout, undrained
     reader or over-cap output is recorded and leaves that result UNKNOWN (null), never clean or partial."""
     out: dict[str, Any] = {"toplevel": None, "head": None, "scope": SCOPE, "dirty": None, "dirtyPaths": [],
                            "dirtyPathsTruncated": False, "error": None}
@@ -61,7 +61,7 @@ def observe_git(src_dir: Path, *, env: dict[str, str] | None = None, run: Runner
     def git(step: str, *args: str) -> str | None:
         try:
             b = run(["git", "-C", str(src_dir), *args], cwd=Path(src_dir), timeout_s=GIT_TIMEOUT_S, keep=GIT_OUT_CAP,
-                    env=env if env is not None else W.git_env(), merge=False, err_keep=ERR_TAIL)
+                    env=env if env is not None else W.git_env(), merge=False, err_keep=ERR_KEEP)
         except (OSError, ValueError) as e:               # git missing, or an unusable directory
             out["error"] = _git_failure(step, None, type(e).__name__)
             return None

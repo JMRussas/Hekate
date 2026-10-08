@@ -82,7 +82,7 @@ def test_git_unavailable_hung_or_undrained_is_recorded_with_its_type(tmp_path):
         raise FileNotFoundError("git")
 
     def hung(*a, **kw):
-        assert kw["timeout_s"] == PV.GIT_TIMEOUT_S <= 30 and kw["keep"] == PV.GIT_OUT_CAP and kw["err_keep"] == PV.ERR_TAIL
+        assert kw["timeout_s"] == PV.GIT_TIMEOUT_S <= 30 and kw["keep"] == PV.GIT_OUT_CAP and kw["err_keep"] == PV.ERR_KEEP
         return bounded(None, timed_out=True)
     g = PV.observe_git(tmp_path, run=missing)
     assert g["head"] is None and (g["error"]["rc"], g["error"]["type"]) == (None, "FileNotFoundError")
@@ -118,7 +118,7 @@ def test_bounds_on_dirty_paths_stderr_and_modules(tmp_path):
     assert len(g["dirtyPaths"]) == PV.DIRTY_MAX and g["dirtyPathsTruncated"] is True
 
     err = PV.observe_git(tmp_path, run=lambda *a, **kw: bounded(128, err=b"x" * kw["err_keep"]))["error"]
-    assert err["rc"] == 128 and len(err["stderr"]) == PV.ERR_TAIL
+    assert err["rc"] == 128 and len(err["stderr"]) == PV.ERR_KEEP
 
     many = []
     for i in range(PV.MODULES_MAX + 5):
