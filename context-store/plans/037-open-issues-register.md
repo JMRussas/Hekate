@@ -275,14 +275,15 @@ No nodes are created and no separate database is used until that migration is de
   - idempotent partial apply (`operator_takeover` always bumps the epoch; operator-act ids are fresh per call; an act left uncertain blocks `LocalStore.session`);
   - the local pre-launch leftovers (worktree, `npm ci`), which must be listed rather than called "no effects".
 - **Continuation:** while the attempt is open (`in_progress`), any run, in the same or a NEW run root, stops at `classify` → `inflight` before any claim. Only after a reset to `todo` would a same-root run stop at `node_run_root_exists`, and a NEW run root (which re-attaches through uuid5 identities) would run the node with fresh `maxRounds`; PlanStore's attempt epoch records rounds, but nothing enforces a bound across runs. Root decision (msg 2127): no apply and no reset of the historical task to `todo`. Recovery and continuation need a joint design with cross-run attempt accounting. check-002 stays stopped and unchanged.
-- **Depends on:** HK-ISSUE-016 (the proof must bind the adapter source that ran), HK-ISSUE-010 (operator-act authorization).
+- **Depends on:** HK-ISSUE-016 (host-observed source provenance; the adapter-ordering proof needs more than that metadata), HK-ISSUE-010 (operator-act authorization).
 - **Closure (V&V):** a reviewed design and implementation with tests for the fence sequence, the partial-apply replay and cross-run accounting; or a recorded decision that stopped runs stay stopped.
 
 ### HK-ISSUE-016 — Run records do not name the Hekate source that executed them
 - **Observed (fact):** a run's run.json and evidence.json record the spec, the executable hash and the adapter evidence, but not the Hekate commit or the e1 source that ran. check-002's executing source (`c701ce0`) is known only from the launch message (msg 2065), not from its records.
-- **Impact:** proofs that depend on adapter ordering (HK-ISSUE-015) cannot be bound to the code that ran from the run's own records.
-- **Next action:** a small provenance increment for future runs (proposal requested, msg 2125). It must be host-observed, not authenticated, and must not change any run outcome.
-- **Closure (V&V):** reviewed source and tests; recorded in new runs' evidence.
+- **Impact:** a run's records do not say which Hekate source the runner reported for itself.
+- **Next action:** a small provenance increment for future runs (proposal 2130, GO 2135). It records host-observed source provenance: the git HEAD and dirty state, and the hashes of the on-disk `e1` module files before the first claim. It must not change any run outcome.
+- **Limit:** this metadata alone does NOT prove which loaded code executed (on-disk bytes are not loaded bytecode, and nothing is authenticated). It does not satisfy the adapter-ordering proof HK-ISSUE-015 would need; that needs further provenance and ordering guarantees.
+- **Closure (V&V):** new runs' evidence records host-observed source provenance; reviewed source and tests.
 
 ## External references (owned elsewhere; not HK issues)
 
