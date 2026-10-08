@@ -74,7 +74,12 @@ The harness database is dropped at exit **whatever the outcome**. `Harness.stop(
   - Continue only in the ORIGINAL run root: a recipe node needs its predecessor's owned clone there, otherwise it stops `predecessor_evidence`.
   - A pin is trusted-local: any valid ref on a pending node is accepted; it is not cross-checked with the operator-act log.
   - `actor` is a label, not authentication. The database is never dropped.
-  - Creating a coordinator database is not a CLI command. It is `e1.local_store.LocalStore.create`, and activating a dedicated one needs its own GO.
+  - Create the coordinator's own database once with `uv run python -m e1.local_cli create --state-dir D [--api-port 5109]`.
+    - `D` must be outside any git work tree.
+    - It refuses before any effect when `D` already holds a locator, when the port is 5108 (the harness) or invalid, or when the port is in use.
+    - It never adopts, repairs or drops a database. On success it stops its Api and keeps the database.
+    - A failure after the database exists keeps it and its locator for inspection (exit 1).
+    - Activating a dedicated database for real use needs its own GO.
 - **A recipe node needs no operator step.** A `{"recipe": ...}` node (D3 v1: one predecessor, same original repository) gets its base derived from the predecessor's accepted artifact within the same run, so a fully pinned or recipe chain can reach `all_done` in ONE `run`. Its stops (`repo_lineage_mismatch`, `recipe_tamper`, `oracle_conflict`, `predecessor_evidence`, ...) pass through as `reason` and `detail`. The integration repo, resolved spec and provenance are under `<run-root>/<key>.integration/`.
 - **A pending spec is an operator stop.** A `spec: null` node, whose base is prepared by an operator (D3 v0), stops with `spec_pending` once its predecessors are accepted. Their accepted artifacts are in the per-node owned clones under the run root. To continue:
   1. integrate those artifacts into the source repo;
