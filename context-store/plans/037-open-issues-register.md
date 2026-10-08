@@ -44,7 +44,7 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-013 | — | A real run's run.json says `dryRun: true` | defect | deferred | Hekate / claude-hekate (export producer slice) | closed (future runs: host-declared executionKind; root acceptance msg 1602) |
 | HK-ISSUE-014 | — | Operator task runner v0 for a real task spec (CA012 first) | implementation-gap | pilot-blocker | Hekate / claude-hekate (plan 040) | closed (bounded operator runner v0, final source `30279d8`; root acceptance msg 1731) |
 | HK-ISSUE-015 | — | An interrupted pre-launch dispatch cannot be reconciled or continued | implementation-gap | unattended-blocker | Hekate + PlanStore + journal / unassigned | open (design not ready; root msg 2127) |
-| HK-ISSUE-016 | B5 (2120) | Run records do not name the Hekate source that executed them | implementation-gap | deferred | Hekate / claude-hekate (proposal pending) | open |
+| HK-ISSUE-016 | B5 (2120) | Run records do not name the Hekate source that executed them | implementation-gap | deferred | Hekate / claude-hekate | closed (bounded host-observed metadata only, source `c0d4094`; root acceptance msg 2168) |
 
 ## Entries
 
@@ -283,7 +283,10 @@ No nodes are created and no separate database is used until that migration is de
 - **Impact:** a run's records do not say which Hekate source the runner reported for itself.
 - **Next action:** a small provenance increment for future runs (proposal 2130, GO 2135). It records host-observed source provenance: the git HEAD and dirty state, and the hashes of the on-disk `e1` module files before the first claim. It must not change any run outcome.
 - **Limit:** this metadata alone does NOT prove which loaded code executed (on-disk bytes are not loaded bytecode, and nothing is authenticated). It does not satisfy the adapter-ordering proof HK-ISSUE-015 would need; that needs further provenance and ordering guarantees.
-- **Closure (V&V):** new runs' evidence records host-observed source provenance; reviewed source and tests.
+- **Implemented:** `e1/provenance.py` plus the `task_runner.record_provenance` call before `pilot.run` (reviewed as `b976819` → `7e61113` → `8287036`; integrated as `c2ed0e6` → `db68729` → `c0d4094`). Each node run writes `provenance-<runId>.json` exclusively in its run root, and `evidence.json` repeats it as `provenance` / `provenanceFile` / `provenanceSha256`. Git output is bounded (64 KiB stdout, first 512 bytes of stderr, 20 s); an overflow, timeout or failure leaves that field null with an error, never clean. A failed write keeps the observation, with the file and hash null. Run outcomes are unchanged.
+- **Review:** root source review (msgs 2157 → 2168), claude-chatagent peer ACCEPT of `7e61113`.
+- **Tests at the integrated head:** `test_provenance` 9 passed; `test_task_runner` 80 passed, 1 skipped (logs in `D:/hekate-coordinator/diagnostics/integrate-provenance/`).
+- **Closure (V&V):** new runs' evidence records host-observed source provenance; reviewed source and tests. **CLOSED (root msg 2168)** for bounded host-observed metadata only. The Limit above stands, and HK-ISSUE-015 stays open.
 
 ## External references (owned elsewhere; not HK issues)
 
