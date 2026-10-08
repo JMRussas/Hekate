@@ -71,6 +71,20 @@ test('Claude (fake-cli shapes): init, text, paired tool use and result, result; 
   expect(items[5].text).toBe('success · 7 turns · $0.05 · 15184 ms');
 });
 
+test('a Claude permission_denied event names the refused tool and keeps its message', () => {
+  // Shape as emitted in the readme-trace-001 rehearsal (record seq 12); the message is shortened.
+  const items = normalizeTrace(records([{
+    type: 'system', subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: 'toolu_01Hvz8rYCRhKTgccP2f9Tez5',
+    decision_reason_type: 'subcommandResults',
+    message: 'This Bash command contains multiple operations. The following parts require approval: cd wt-r1',
+    session_id: 's', uuid: 'u',
+  }]), 'claude-cli');
+  expect(items).toEqual([expect.objectContaining({
+    role: 'system', toolName: 'Bash', toolId: 'toolu_01Hvz8rYCRhKTgccP2f9Tez5', isError: true,
+    text: 'permission denied · Bash: This Bash command contains multiple operations. The following parts require approval: cd wt-r1',
+  })]);
+});
+
 test('a redacted record keeps its visible text and tool items, then notes the omission once', () => {
   const [r] = records([{ type: 'assistant', message: { content: [{ type: 'text', text: 'Plan:' }, { type: 'tool_use', id: 't2', name: 'Edit', input: {} }] } }]);
   const items = normalizeTrace([{ ...r, redacted: true }], 'claude-cli');

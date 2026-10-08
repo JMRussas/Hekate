@@ -57,6 +57,12 @@ interface Emit {
 function claudeLine(line: Obj, emit: Emit, omitted: () => void) {
   const type = s(line.type);
   if (type === 'stream_event') return;   // partial deltas; the complete message follows
+  if (type === 'system' && line.subtype === 'permission_denied') {
+    // The CLI refused a tool use: name the tool and keep its own explanation.
+    emit('system', `permission denied${s(line.tool_name) ? ` · ${line.tool_name}` : ''}${s(line.message) ? `: ${line.message}` : ''}`,
+      { toolName: s(line.tool_name), toolId: s(line.tool_use_id), isError: true });
+    return;
+  }
   if (type === 'system') {
     const parts = [s(line.subtype) ?? 'system'];
     if (s(line.model)) parts.push(`model ${line.model}`);
