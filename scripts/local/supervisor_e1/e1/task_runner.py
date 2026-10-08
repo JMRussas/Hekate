@@ -39,6 +39,7 @@ from e1 import cli_worker as W
 from e1 import consumer as C
 from e1 import pilot as P
 from e1 import pilot_real as R
+from e1 import provenance as PV
 from e1 import task_spec as T
 
 PREFLIGHT = "preflight.json"
@@ -83,6 +84,30 @@ def owned_refs(repo: Path) -> list[str]:
     if p.returncode != 0:
         raise GitReadFailed(p)
     return p.stdout.splitlines()
+
+
+PROVENANCE = "provenance-{run_id}.json"
+
+
+def record_provenance(run_root: Path, run_id: str) -> tuple[dict[str, Any] | None, dict[str, Any], list[dict[str, Any]]]:
+    """Observe the runner's source (e1/provenance.py) and persist it EXCLUSIVELY under the run root before the
+    pilot's first effect. Never raises and never changes the run: (observation, {provenanceFile, provenanceSha256}
+    of the file actually written, error records). A failed write keeps the observation but names no file and no hash."""
+    none = {"provenanceFile": None, "provenanceSha256": None}
+    try:
+        prov = PV.observe(Path(__file__).resolve().parents[1], PV.loaded_e1_modules(), env=W.git_env())
+    except Exception as e:  # noqa: BLE001 -- observe() is designed not to raise; this is the backstop
+        return None, none, [error_record("provenance", e)]
+    raw = json.dumps(prov, indent=1, sort_keys=True).encode("utf-8")
+    path = Path(run_root) / PROVENANCE.format(run_id=run_id)
+    try:
+        with open(path, "xb") as f:
+            f.write(raw)
+    except FileExistsError:
+        return prov, none, [{"part": "provenanceFile", "type": "exists"}]
+    except OSError as e:
+        return prov, none, [error_record("provenanceFile", e)]
+    return prov, {"provenanceFile": str(path), "provenanceSha256": hashlib.sha256(raw).hexdigest()}, []
 
 
 def error_record(part: str, e: Exception) -> dict[str, Any]:
@@ -569,6 +594,7 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
                          task_text=d["task"]["text"] + task_suffix, criteria=d["task"]["criteria"], max_rounds=d["worker"]["maxRounds"],
                          run_id=uuid.uuid4().hex[:12])
     resolved = P.resolve(cfgp)
+    prov, prov_file, prov_errors = record_provenance(Path(run_root), cfgp.run_id)   # BEFORE any claim/dispatch/spawn
     holder: dict[str, Any] = {}
 
     def worker(order: P.WorkOrder) -> P.WorkReport:
@@ -588,7 +614,8 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
     result = pilot.run()
     evidence: dict[str, Any] = {"rootGo": root_go, "specSha256": spec.sha256, "preflight": rec, "repo": str(repo),
                                 "runDir": str(resolved.run_dir), "outcome": result.outcome, "reason": result.reason,
-                                "detail": result.detail, "verifier": verifier.reports, "databaseRetained": False, "errors": []}
+                                "detail": result.detail, "verifier": verifier.reports, "databaseRetained": False,
+                                "provenance": prov, **prov_file, "errors": list(prov_errors)}
 
     def best_effort(part: str, fn: Callable[[], Any]) -> None:
         try:

@@ -805,3 +805,54 @@ def test_a_failed_git_read_keeps_only_the_bounded_tail_of_stderr():
     long = "y" * (TR.ERR_KEEP + 50) + "fatal: why"
     detail = TR.GitReadFailed(subprocess.CompletedProcess(["git"], 128, "", long)).detail
     assert detail == {"rc": 128, "stderr": long[-TR.ERR_KEEP:]} and detail["stderr"].endswith("fatal: why")
+
+
+# --- runner-source provenance (HK-ISSUE-016, root msgs 2135/2144): before the claim, never changes the run -------
+
+def test_provenance_is_persisted_before_the_first_claim_and_bound_in_the_evidence(taskrun, client, tmp_path, monkeypatch):
+    go, _ = taskrun
+    seen = []
+    real_claim = client.claim
+
+    def claim(*a, **kw):
+        seen.append(sorted(p.name for p in (tmp_path / "rr").glob("provenance-*.json")))
+        return real_claim(*a, **kw)
+    monkeypatch.setattr(client, "claim", claim)
+    res, ev = go("value_ok")
+    assert (res.outcome, len(res.rounds)) == ("accepted", 1) and launches(ev) == 1
+    assert seen and all(len(names) == 1 for names in seen)                   # the file existed at EVERY claim
+    f = Path(ev["provenanceFile"])
+    assert f.name == seen[0][0] and hashlib.sha256(f.read_bytes()).hexdigest() == ev["provenanceSha256"]
+    assert json.loads(f.read_text(encoding="utf-8")) == ev["provenance"] and ev["errors"] == []
+    assert {"e1/task_runner.py", "e1/cli_worker.py", "e1/pilot.py", "e1/durable.py", "e1/acts_durable.py"} <= set(ev["provenance"]["modules"])
+
+
+def test_a_failed_provenance_write_changes_nothing_but_the_evidence(taskrun, monkeypatch):
+    go, _ = taskrun
+    monkeypatch.setattr(TR, "PROVENANCE", "no-such-dir/provenance-{run_id}.json")
+    res, ev = go("value_ok")
+    assert (res.outcome, len(res.rounds)) == ("accepted", 1) and launches(ev) == 1
+    assert ev["provenance"]["schema"] == "hekate-run-provenance.v0"                # the observation is still embedded
+    assert (ev["provenanceFile"], ev["provenanceSha256"]) == (None, None)        # ...but no file and no hash is claimed
+    assert ev["errors"] == [{"part": "provenanceFile", "type": "FileNotFoundError"}]
+
+
+def test_a_failed_provenance_observation_changes_nothing_but_the_evidence(taskrun, monkeypatch):
+    go, _ = taskrun
+
+    def boom(*a, **kw):
+        raise RuntimeError("observe failed")
+    monkeypatch.setattr(TR.PV, "observe", boom)
+    res2, ev2 = go("value_ok")
+    assert (res2.outcome, len(res2.rounds)) == ("accepted", 1) and launches(ev2) == 1
+    assert (ev2["provenance"], ev2["provenanceFile"], ev2["provenanceSha256"]) == (None, None, None)
+    assert ev2["errors"] == [{"part": "provenance", "type": "RuntimeError"}]
+
+
+def test_an_existing_provenance_file_is_never_overwritten(tmp_path):
+    prov, f, errs = TR.record_provenance(tmp_path, "abc123")
+    assert errs == [] and Path(f["provenanceFile"]).is_file()
+    before = Path(f["provenanceFile"]).read_bytes()
+    prov2, f2, errs2 = TR.record_provenance(tmp_path, "abc123")
+    assert errs2 == [{"part": "provenanceFile", "type": "exists"}] and f2 == {"provenanceFile": None, "provenanceSha256": None}
+    assert prov2 is not None and Path(f["provenanceFile"]).read_bytes() == before
