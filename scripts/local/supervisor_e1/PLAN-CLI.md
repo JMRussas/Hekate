@@ -6,10 +6,19 @@ It runs plans that are already written. It does not split a roadmap into tasks: 
 
 **Test-scoped.** `run` uses the disposable harness only (a new database and Api, dropped at exit). It never uses a live database, never pushes, and never edits the source checkout.
 
+## Before a run
+
+The setup is the one maintained in [README.md, "Run"](README.md#run): uv, plus the owned `hekate-local` container started with `scripts/local/hekate-local.ps1 start`. `validate` needs nothing else. `run` also needs two environment variables:
+
+- `npm_config_cache`: an absolute, existing, **warm** npm cache directory. Every install is `npm ci` against it: `--offline` when the spec's dependencies say `network: offline`, otherwise `--prefer-offline`. When it is absent the run refuses with `npm_cache_required`; when it is not an absolute existing directory it refuses with `npm_cache_invalid`. There is no default cache.
+- `HEKATE_E1_CONTAINER_WORKSPACE=D:\Git\Hekate`: required when the CLI runs from any checkout other than `D:\Git\Hekate`, such as an approved clean worktree under `.worktrees/`. It names the owned container, and any other value is refused.
+
 ## Commands
 
 ```powershell
 cd scripts/local/supervisor_e1
+$env:npm_config_cache = "D:\npm-cache"                 # your warm cache (absolute, existing)
+$env:HEKATE_E1_CONTAINER_WORKSPACE = "D:\Git\Hekate"   # needed outside the primary checkout
 
 # No effects: parse the plan and load and hash-check every pinned spec. No harness, clone, install, test or spawn.
 uv run python -m e1.plan_cli validate --plan D:/plans/slice.json
