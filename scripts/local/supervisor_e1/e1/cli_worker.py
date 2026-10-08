@@ -182,22 +182,39 @@ def command_for(cfg: CliConfig, workdir: Path) -> list[str]:
     return codex_command(cfg, workdir) if cfg.backend == "codex" else build_command(cfg)
 
 
+def _norm(p: str) -> str:
+    return os.path.normcase(os.path.normpath(p))
+
+
 def windows_apps_dir() -> str | None:
     base = os.environ.get("LOCALAPPDATA")
-    return os.path.normcase(os.path.normpath(os.path.join(base, "Microsoft", "WindowsApps"))) if base else None
+    return _norm(os.path.join(base, "Microsoft", "WindowsApps")) if base else None
+
+
+def packaged_apps_root() -> str | None:
+    base = os.environ.get("ProgramFiles")
+    return _norm(os.path.join(base, "WindowsApps")) if base else None
+
+
+def codex_path_excluded(entry: str) -> bool:
+    """A PATH entry the codex worker must not see: the exact %LOCALAPPDATA%\\Microsoft\\WindowsApps alias directory, or
+    %ProgramFiles%\\WindowsApps itself or any directory under it (a packaged app such as Store PowerShell 7). Neither can
+    start under the unelevated sandbox's restricted token (smoke-003: alias, Access is denied; codex-trace-001: packaged
+    pwsh 7.6.6, 0xC0070005). Everything else is kept, in order."""
+    if not entry:
+        return False
+    p, alias, pkg = _norm(entry), windows_apps_dir(), packaged_apps_root()
+    return p == alias or (pkg is not None and (p == pkg or p.startswith(pkg + os.sep)))
 
 
 def worker_env(backend: str = "claude") -> dict[str, str]:
     """The allowlisted environment plus CONTROLLED values: no bytecode files from any Python the worker
     (or its test command) runs, so a test run cannot leave __pycache__ in the diff (msg 1545). For codex ONLY, the
-    exact %LOCALAPPDATA%\\Microsoft\\WindowsApps PATH entry is dropped: its pwsh.exe app-execution alias cannot start under
-    the unelevated sandbox's restricted token, and without it Codex falls back to System32 Windows PowerShell
-    (smokes 003/004, diag-002)."""
+    WindowsApps alias and packaged-app PATH entries are dropped (codex_path_excluded), so Codex's shell discovery falls
+    back to System32 Windows PowerShell, which the sandbox can start (smoke-004, diag-002). Claude's PATH is unchanged."""
     env = {**{k: os.environ[k] for k in ENV_ALLOW if k in os.environ}, "PYTHONDONTWRITEBYTECODE": "1"}
-    target = windows_apps_dir()
-    if backend == "codex" and target and "PATH" in env:
-        env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
-                                      if not p or os.path.normcase(os.path.normpath(p)) != target)
+    if backend == "codex" and "PATH" in env:
+        env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep) if not codex_path_excluded(p))
     return env
 
 
