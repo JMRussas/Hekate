@@ -50,3 +50,26 @@ def test_launch_checks_plan_pin_before_spawning(tmp_path, capsys):
         raise AssertionError("bad plan pin spawned a child")
     assert OD.launch(OD.build_parser().parse_args(argv), popen=never) == OD.EXIT_REFUSED
     assert json.loads(capsys.readouterr().out)["refused"] == "plan_pin_mismatch"
+
+
+def test_nonpositive_pid_never_probes_process_group():
+    value = doc("birth")
+    for pid in (0, -1):
+        value["owner"]["pid"] = pid
+        def never(_):
+            raise AssertionError("nonpositive pid probed")
+        assert OD.liveness(value, time.time(), never) == "owner_gone"
+
+
+def test_failure_during_owner_setup_stops_acquired_store(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    _, argv = prepared(tmp_path)
+    stopped = []
+    store = SimpleNamespace(loc=SimpleNamespace(db="test-owned"), stop=lambda: stopped.append(True))
+    def broken(_):
+        raise OSError("creation identity unavailable")
+    monkeypatch.setattr(OD, "process_birth", broken)
+    import pytest
+    with pytest.raises(OSError):
+        OD.serve(OD.build_parser().parse_args(argv), opener=lambda _: store)
+    assert stopped == [True]

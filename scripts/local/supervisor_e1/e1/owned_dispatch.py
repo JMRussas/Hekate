@@ -228,7 +228,7 @@ def liveness(doc: dict[str, Any], now: float, alive: Callable[[int], bool] = pid
     if doc.get("phase") == "exited":
         return "exited"
     pid = (doc.get("owner") or {}).get("pid")
-    if type(pid) is not int or not alive(pid):
+    if type(pid) is not int or pid <= 0 or not alive(pid):
         return "owner_gone"
     recorded = (doc.get("owner") or {}).get("processBirth")
     current = process_birth(pid)
@@ -313,6 +313,7 @@ class Dispatcher:
                  run_root: Path | None = None, clock: Callable[[], float] = time.time,
                  sleep: Callable[[float], None] = time.sleep, load_spec: Callable[[str, str], Any] = PI.load_spec):
         self.load_spec = load_spec
+        self.duration_clock = time.monotonic if clock is time.time else clock
         self.run_root = run_root
         self.lim, self.plan, self.status, self.read_view, self.dispatch = limits, plan, status, read_view, dispatch
         self.stop_requested, self.observe_only, self.clock, self.sleep = stop_requested, observe_only, clock, sleep
@@ -320,11 +321,11 @@ class Dispatcher:
         self.cycles = 0
 
     def run(self) -> int:
-        t0, poll, last = self.clock(), self.lim.poll_s, None
+        t0, poll, last = self.duration_clock(), self.lim.poll_s, None
         while True:
             if self.stop_requested():
                 return self.finish("stopped", "stop_requested")
-            if self.clock() - t0 >= self.lim.max_duration_s:
+            if self.duration_clock() - t0 >= self.lim.max_duration_s:
                 return self.finish("stopped", "duration_elapsed")
             self.cycles += 1
             self.status.update(phase="observing", counters={"cycles": self.cycles, "dispatched": self.dispatched})
@@ -348,16 +349,18 @@ class Dispatcher:
             sig = (obs.reason, json.dumps(obs.detail, sort_keys=True, default=str))
             poll = min(poll * 2, self.lim.max_poll_s) if sig == last else self.lim.poll_s
             last = sig
-            self.status.update(phase="waiting", state="blocked", stopReason=obs.reason, detail=obs.detail, nextPollInS=poll)
+            self.status.update(phase="waiting", state="blocked", stopReason=obs.reason, detail=obs.detail, nextPollInS=poll,
+                               blockedNodes=[dict(nodeId=node["nodeId"], work=node["work"], reason=obs.reason) for node in obs.nodes.values()
+                                             if not node["ready"] and node["acceptance"] != "accepted"])
             self.wait(poll, t0)
 
     def wait(self, seconds: float, t0: float) -> bool:
         """Sleep in <=1s slices; False when a stop or the duration bound ended the wait early."""
-        end = self.clock() + seconds
-        while self.clock() < end:
-            if self.stop_requested() or self.clock() - t0 >= self.lim.max_duration_s:
+        end = self.duration_clock() + seconds
+        while self.duration_clock() < end:
+            if self.stop_requested() or self.duration_clock() - t0 >= self.lim.max_duration_s:
                 return False
-            self.sleep(min(1.0, max(0.0, end - self.clock())))
+            self.sleep(min(1.0, max(0.0, end - self.duration_clock())))
         return True
 
     def dispatch_once(self, obs: Observation) -> tuple[str, str | None, Any] | None:
@@ -466,15 +469,19 @@ def serve(a: argparse.Namespace, *, opener: Callable[[Path], Any] | None = None)
     except LS.LocalStoreRefused as e:
         print(json.dumps({"refused": e.code, "detail": e.detail}, default=str))
         return EXIT_REFUSED
-    ddir.mkdir(parents=True, exist_ok=True)
-    now = time.time()
-    status = StatusFile(ddir, {
-        "schema": SCHEMA, "authority": "PlanStore is the only authority; this file is an observation of the dispatcher process",
-        "importSha256": doc.sha256, "planFileSha256": a.plan_sha256, "runRoot": str(run_root), "limits": asdict(limits),
-        "owner": {"pid": os.getpid(), "processBirth": process_birth(os.getpid()), "startedAt": iso(now), "python": sys.version.split()[0], "launch": a.launch_mode,
-                  "storeDb": store.loc.db, "exeSha256": a.exe_sha256},
-        "phase": "starting", "state": "starting", "stopReason": None, "detail": None, "previousOwner": prev, "steps": [],
-        "nodes": {}, "current": None, "counters": {"cycles": 0, "dispatched": 0}, "exitedCleanly": False})
+    try:
+        ddir.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        status = StatusFile(ddir, {
+            "schema": SCHEMA, "authority": "PlanStore is the only authority; this file is an observation of the dispatcher process",
+            "importSha256": doc.sha256, "planFileSha256": a.plan_sha256, "runRoot": str(run_root), "limits": asdict(limits),
+            "owner": {"pid": os.getpid(), "processBirth": process_birth(os.getpid()), "startedAt": iso(now), "python": sys.version.split()[0], "launch": a.launch_mode,
+                      "storeDb": store.loc.db, "exeSha256": a.exe_sha256},
+            "phase": "starting", "state": "starting", "stopReason": None, "detail": None, "previousOwner": prev, "steps": [],
+            "nodes": {}, "current": None, "counters": {"cycles": 0, "dispatched": 0}, "exitedCleanly": False})
+    except BaseException:
+        store.stop()
+        raise
     halt = threading.Event()
     hb = Heartbeat(status, limits.heartbeat_s)
     code = EXIT_STOPPED
@@ -613,7 +620,7 @@ def launch(a: argparse.Namespace, *, popen: Callable[..., Any] = subprocess.Pope
     deadline = now() + a.wait_s
     while now() < deadline:
         doc = read_status(a.state_dir)
-        if doc and (doc.get("owner") or {}).get("pid") == proc.pid and doc.get("heartbeat"):
+        if doc and (doc.get("owner") or {}).get("pid") == proc.pid and liveness(doc, now()) == "running":
             print(json.dumps({"launched": True, "pid": proc.pid, "breakaway": breakaway, "state": doc.get("state"),
                               "status": str(ddir / STATUS), "log": str(ddir / LOG)}))
             return EXIT_OK
