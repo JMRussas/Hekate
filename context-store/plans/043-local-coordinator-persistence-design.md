@@ -1,4 +1,4 @@
-# Plan 043 — local development coordinator: persistence and operator acts (P2 DESIGN, revision 2)
+# Plan 043 — local development coordinator: persistence and operator acts (P2 DESIGN, revision 3)
 
 **Status: revision 3, the design accepted for source implementation with disposable tests (2026-10-07; root msgs 1800, 1837, 1873, 1878).**
 - No code, no schema activation and no writes to any live database. Implementation needs a separate GO after D3.
