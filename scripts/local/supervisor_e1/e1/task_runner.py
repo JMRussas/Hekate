@@ -574,8 +574,10 @@ def verify_only(spec: T.TaskSpec, run_root: Path, pilot_dir: Path, out: Path, *,
         "prior_review_binds_round": (prior.get("round"), prior.get("artifactRef"), prior.get("viewDigest"),
                                      prior.get("candidateDigest"), prior.get("decision"))
                                     == (last["round"], art, last["view_digest"], last["candidate_digest"], "uncertain"),
-        # diffRecords is written only AFTER the original view/candidate/artifact binding passed and the raw diff was read
-        "prior_review_passed_binding": isinstance(prior.get("diffRecords"), list) and bool(prior["diffRecords"]),
+        # The ONE supported checkpoint (msgs 1703/1718): the original stopped at verify_worktree_failed, i.e. AFTER its
+        # view/candidate/artifact binding and the raw diff read (diffRecords is written only then). Any other stop refuses.
+        "prior_review_passed_binding": prior.get("why") == "verify_worktree_failed"
+                                       and isinstance(prior.get("diffRecords"), list) and bool(prior["diffRecords"]),
         "receipt_binds_artifact": len(captured) == 1 and captured[0].get("artifactRef") == art
                                   and captured[0].get("parentRef") == spec.doc["source"]["taskBaseCommit"]
                                   and captured[0].get("runRef") == ref,

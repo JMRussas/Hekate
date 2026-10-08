@@ -683,8 +683,14 @@ def test_verify_only_refuses_a_broken_binding_before_any_effect(stopped, tmp_pat
     assert refusal(TR.verify_only, spec, tmp_path / "rr", pilot, tmp_path / "elsewhere", root_go="x") == "verify_paths_not_in_run_root"
 
 
-def test_verify_only_refuses_when_the_original_review_stopped_before_its_binding(stopped, tmp_path):
-    """No recorded diff = the original never passed the view binding: there is nothing to re-verify against."""
+@pytest.mark.parametrize("why, keep_diff", [
+    ("view_unverifiable", True),           # a PRE-binding stop with matching digests (msg 1718): refused by the checkpoint
+    ("artifact_not_bound_in_view", True),
+    ("verify_deps_failed", True),          # a later stop is not the supported checkpoint either
+    ("verify_worktree_failed", False),     # the right reason but no recorded diff
+])
+def test_verify_only_refuses_any_checkpoint_but_a_post_binding_worktree_failure(stopped, tmp_path, why, keep_diff):
+    """Only the CA012 case is supported: stopped at verify_worktree_failed after the binding and the diff read."""
     res, ev, f = stopped
     spec = TR.T.load(tmp_path / "spec.json")
     pilot = Path(ev["runDir"])
@@ -692,8 +698,9 @@ def test_verify_only_refuses_when_the_original_review_stopped_before_its_binding
     copy.mkdir()
     (copy / "run.json").write_bytes((pilot / "run.json").read_bytes())
     e2 = json.loads((pilot / "evidence.json").read_text(encoding="utf-8"))
-    del e2["verifier"][-1]["diffRecords"]
-    e2["verifier"][-1]["why"] = "view_unverifiable"
+    if not keep_diff:
+        del e2["verifier"][-1]["diffRecords"]
+    e2["verifier"][-1]["why"] = why
     (copy / "evidence.json").write_text(json.dumps(e2), encoding="utf-8")
     with pytest.raises(TR.PreflightRefused) as e:
         TR.verify_only(spec, tmp_path / "rr", copy, tmp_path / "rr" / "reverify-y", root_go="x")
