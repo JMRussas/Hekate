@@ -11,7 +11,7 @@
     commands failed on stderr; see plan 048.
 - **Branch:** `feat/attempt-trace-capture` from `d7b51e2`.
 - **GO:** root msg 2441 (capture A), early review 2452 (R1/R2), contract `trace-contract-001` rev 2 (root review 2450).
-- **Test scope:** the fake CLI and temporary repos. No model, no live DB, no push, no edits to the primary repo.
+- **Implementation test scope (before live rehearsals):** the fake CLI and temporary repos. No model, no live DB, no push, no edits to the primary repo.
 
 ## 1. What changes for the user
 
