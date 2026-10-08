@@ -45,6 +45,7 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-014 | — | Operator task runner v0 for a real task spec (CA012 first) | implementation-gap | pilot-blocker | Hekate / claude-hekate (plan 040) | closed (bounded operator runner v0, final source `30279d8`; root acceptance msg 1731) |
 | HK-ISSUE-015 | — | An interrupted pre-launch dispatch cannot be reconciled or continued | implementation-gap | unattended-blocker | Hekate + PlanStore + journal / unassigned | open (design not ready; root msg 2127) |
 | HK-ISSUE-016 | B5 (2120) | Run records do not name the Hekate source that executed them | implementation-gap | deferred | Hekate / claude-hekate | closed (bounded host-observed metadata only, source `c0d4094`; root acceptance msg 2168) |
+| HK-ISSUE-017 | — | `resolve()` releases intents recorded after the terminal resolution | defect | deferred | journal / unassigned | open |
 
 ## Entries
 
@@ -288,6 +289,12 @@ No nodes are created and no separate database is used until that migration is de
 - **Review:** root source review (msgs 2157 → 2168), claude-chatagent peer ACCEPT of `7e61113`.
 - **Tests at the integrated head:** `test_provenance` 9 passed; `test_task_runner` 80 passed, 1 skipped (logs in `D:/hekate-coordinator/diagnostics/integrate-provenance/`).
 - **Closure (V&V):** new runs' evidence records host-observed source provenance; reviewed source and tests. **CLOSED (root msg 2168)** for bounded host-observed metadata only. The Limit above stands, and HK-ISSUE-015 stays open.
+
+### HK-ISSUE-017 — `resolve()` releases intents recorded after the terminal resolution
+- **Observed (fact, root msg 2252):** `ModelJournal.resolve` and `DurableJournal.resolve` accept a stream whose LAST `operator_resolution` is terminal, then set `outstanding = []` for EVERY reservation, including intents appended AFTER that resolution record (appends stay allowed until `resolve()`). Compaction can later replace those records with a summary, hiding the unanswered intent.
+- **Current mitigation (not a fix):** `handoff.pending_effects` (pending-effects fix, branch `test/pending-effects-resolved-regression`) lists only pre-resolution intents as `closed:<decision>` and REFUSES (`pending_unlistable`) a resolved stream with an intent after the resolution, so the listing never hides it. `resolve()` itself is unchanged.
+- **Next action:** a separate increment making `resolve()` consistent with the terminal prefix (e.g. refuse resolution while an intent after the terminal resolution is unanswered), plus a compaction guard. Not in the pending-effects patch.
+- **Closure (V&V):** reviewed source and tests covering resolve and compaction for post-resolution intents.
 
 ## External references (owned elsewhere; not HK issues)
 
