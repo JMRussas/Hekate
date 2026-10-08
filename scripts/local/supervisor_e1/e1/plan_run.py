@@ -90,9 +90,18 @@ def snapshot(plan: PI.ImportedPlan, view: dict[str, Any]) -> dict[str, dict[str,
     return out
 
 
-def classify(state: dict[str, dict[str, Any]]) -> tuple[str, Any]:
+def root_container(plan: PI.ImportedPlan, view: dict[str, Any]) -> tuple[str, str]:
+    """PlanStore's own verdict on the plan root, from the SAME view (readiness.containers)."""
+    c = next((x for x in view["readiness"]["containers"] if x["nodeId"] == plan.root), None)
+    if c is None:
+        raise _Stop("plan_drift", {"rootContainer": "missing"})
+    return c["completion"], c["acceptance"]
+
+
+def classify(state: dict[str, dict[str, Any]], container: tuple[str, str] | None = None) -> tuple[str, Any]:
     """('stop', reason/detail) | ('done', None) | ('next', key). Distinct stop reasons (review 1827): `inflight` (an
-    attempt is open), `review_pending` (done, no decision), `acceptance_stale` (accepted, then its content changed)."""
+    attempt is open), `review_pending` (done, no decision), `acceptance_stale` (accepted, then its content changed).
+    `container` is PlanStore's own root verdict (completion, acceptance); done requires it to agree (else plan_drift)."""
     for reason, test in (("inflight", lambda s: s["work"] == "in_progress"),
                          ("review_pending", lambda s: s["work"] == "done" and s["acceptance"] == "none"),
                          ("acceptance_stale", lambda s: s["work"] == "done" and s["acceptance"] == "stale")):
@@ -105,7 +114,11 @@ def classify(state: dict[str, dict[str, Any]]) -> tuple[str, Any]:
     cancelled = [k for k, s in state.items() if s["work"] == "cancelled"]
     if cancelled:
         return "stop", ("node_cancelled", cancelled)
-    if all(s["work"] == "done" and s["acceptance"] == "accepted" for s in state.values()):
+    leaves_done = all(s["work"] == "done" and s["acceptance"] == "accepted" for s in state.values())
+    root_done = container == ("complete", "accepted")
+    if container is not None and leaves_done != root_done:
+        return "stop", ("plan_drift", {"leavesAllAccepted": leaves_done, "rootContainer": list(container)})
+    if leaves_done:
         return "done", None
     ready = sorted((s["siblingOrder"], k) for k, s in state.items() if s["ready"])
     if not ready:
@@ -157,9 +170,10 @@ def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, execut
     result = PlanRunResult("needs_operator", None, plan.root, plan.doc.sha256)
     try:
         for _ in range(len(plan.node_ids) + 1):
-            state = snapshot(plan, _ok(setup.plan(plan.root), "plan"))
+            v = _ok(setup.plan(plan.root), "plan")
+            state = snapshot(plan, v)
             result.nodes = state
-            verdict, what = classify(state)
+            verdict, what = classify(state, root_container(plan, v))
             if verdict == "done":
                 result.outcome, result.reason = "all_done", None
                 break

@@ -311,6 +311,16 @@ def test_no_ready_work_is_never_done_and_names_the_blockers():
     assert PR.classify({"b": st(siblingOrder=1, ready=True), "a": st(ready=True)}) == ("next", "a")       # PlanStore's order
 
 
+def test_done_requires_planstores_own_root_verdict_to_agree():
+    """Review 1827: all leaves accepted AND the root container complete/accepted; any disagreement is plan_drift."""
+    done = {"a": st(work="done", acceptance="accepted")}
+    assert PR.classify(done, ("complete", "accepted")) == ("done", None)
+    assert PR.classify(done, ("incomplete", "pending")) == (
+        "stop", ("plan_drift", {"leavesAllAccepted": True, "rootContainer": ["incomplete", "pending"]}))
+    assert PR.classify({"a": st(ready=True)}, ("complete", "accepted"))[1][0] == "plan_drift"
+    assert PR.classify({"a": st(ready=True)}, ("incomplete", "pending")) == ("next", "a")
+
+
 def test_the_claim_check_pins_node_content_and_predecessor_artifacts():
     check = PR.make_claim_check("n", "v", 3, {"p": "art"})
     good = {"nodeId": "n", "contentRevision": 3, "contentSnapshot": {"value": "v"},
