@@ -45,7 +45,7 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-014 | — | Operator task runner v0 for a real task spec (CA012 first) | implementation-gap | pilot-blocker | Hekate / claude-hekate (plan 040) | closed (bounded operator runner v0, final source `30279d8`; root acceptance msg 1731) |
 | HK-ISSUE-015 | — | An interrupted pre-launch dispatch cannot be reconciled or continued | implementation-gap | unattended-blocker | Hekate + PlanStore + journal / unassigned | open (design not ready; root msg 2127) |
 | HK-ISSUE-016 | B5 (2120) | Run records do not name the Hekate source that executed them | implementation-gap | deferred | Hekate / claude-hekate | closed (bounded host-observed metadata only, source `c0d4094`; root acceptance msg 2168) |
-| HK-ISSUE-017 | — | `resolve()` releases intents recorded after the terminal resolution | defect | deferred | journal / unassigned | open |
+| HK-ISSUE-017 | — | `resolve()` releases intents recorded after the terminal resolution | defect | deferred | journal / claude-hekate | closed (new resolves + legacy uncompacted guard only, source `274e71f`; root acceptance msg 2284) |
 
 ## Entries
 
@@ -294,7 +294,14 @@ No nodes are created and no separate database is used until that migration is de
 - **Observed (fact, root msg 2252):** `ModelJournal.resolve` and `DurableJournal.resolve` accept a stream whose LAST `operator_resolution` is terminal, then set `outstanding = []` for EVERY reservation, including intents appended AFTER that resolution record (appends stay allowed until `resolve()`). Compaction can later replace those records with a summary, hiding the unanswered intent.
 - **Current mitigation (not a fix):** `handoff.pending_effects` (pending-effects fix, branch `test/pending-effects-resolved-regression`) lists only pre-resolution intents as `closed:<decision>` and REFUSES (`pending_unlistable`) a resolved stream with an intent after the resolution, so the listing never hides it. `resolve()` itself is unchanged.
 - **Next action:** a separate increment making `resolve()` consistent with the terminal prefix (e.g. refuse resolution while an intent after the terminal resolution is unanswered), plus a compaction guard. Not in the pending-effects patch.
-- **Closure (V&V):** reviewed source and tests covering resolve and compaction for post-resolution intents.
+- **Implemented (`fix/hk017-resolve-final`: `e0afbe8` → `274e71f`, pins `ab81845`):**
+  - one FIFO pairing over the whole prefix (`evidence.unanswered_intents`), shared by `handoff.pending_effects` and `evidence.final_resolution`;
+  - model and durable `resolve()` refuse `resolution_not_final` (bounded ids, exact count, no write) while an intent after the terminal resolution is unanswered; the no-terminal refusal and the confirmed-finish branch are unchanged;
+  - legacy rows already resolved that way are retained with their records by time compaction (model and durable) and by pressure eviction (model and durable `_plan_room`); with only such data left, admission still fails closed (`global_cap`); `compact()` reports them as `retained_unsafe`.
+- **Review:** root reviews 2262/2263 (contract), 2280 (R1: model pressure guard), final V&V msg 2284; frozen-module pins recorded as `REVISED_HK017` with prior hashes as provenance.
+- **Tests:** `test_resolve_final` 16, `test_pending_effects_resolved` 15, `test_pilot_dryrun` 29, plus the focused e2a/e2b/e2c/e2d/e2e/export/consumer/pilot suites; full default suite at the pinned revision `ab81845`: 1193 passed, 1 skipped (opt-in interop_live), 1 FAILED, `test_replay_revision::test_both_frozen_bundles_pass_under_the_declared_revision_and_stay_byte_unchanged` (the frozen supplement bundle pins `handoff.py` `1e9036f6…`; it passes at `521d33e` and fails from the pending-effects fix `9778b7e` on, so it is NOT caused by HK-017; root decision pending). Log `D:/hekate-coordinator/diagnostics/hk017/full/full.log`.
+- **Limits:** this does NOT recover records that were already compacted before the fix, and it does not repair legacy unsafe rows (they stay resolved and retained until an operator acts). No vocabulary, schema, policy or caller change.
+- **Closure (V&V):** reviewed source and tests covering resolve and compaction for post-resolution intents. **CLOSED (root msg 2284)** for new resolves and the legacy uncompacted guard only.
 
 ## External references (owned elsewhere; not HK issues)
 
