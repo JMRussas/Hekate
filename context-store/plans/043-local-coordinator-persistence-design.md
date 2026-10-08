@@ -1,6 +1,6 @@
 # Plan 043 — local development coordinator: persistence and operator capability (P2 DESIGN ONLY)
 
-**Status: proposal for root review (2026-10-08; direction from root msg 1800).**
+**Status: proposal for root review (2026-10-07; direction from root msg 1800).**
 - No code, no schema activation and no writes to any live database.
 - **Scope: the LOCAL development coordinator only.** This records a local-only decision. The broader production questions stay open in 028 / HK-ISSUE-009 / 010 / 011 and are not decided here.
 

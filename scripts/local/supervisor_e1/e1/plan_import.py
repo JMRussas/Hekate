@@ -38,6 +38,7 @@ KEY = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 PENDING = "task-spec.v0 pending"
 SPEC_REF = re.compile(r"^task-spec\.v0 sha256=([0-9a-f]{64}) path=(\S.{0,398})$")
+RECIPE_REF = re.compile(r"^task-recipe\.v0 sha256=([0-9a-f]{64}) path=(\S.{0,398})$")
 NS = uuid.UUID("6b1e7a50-6f0e-4f7a-9a52-3b0c2e1f0d42")          # plan-import.v0 namespace (fixed)
 
 
@@ -54,6 +55,7 @@ class NodeDecl:
     spec_path: str | None
     spec_sha256: str | None
     after: tuple[str, ...]
+    kind: str | None = None                  # "spec" | "recipe" (D3 v1) | None (pending)
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,23 @@ class ImportedPlan:
 
 def spec_value(path: str | None, sha: str | None) -> str:
     return PENDING if path is None else f"task-spec.v0 sha256={sha} path={path}"
+
+
+def node_value(n: NodeDecl) -> str:
+    if n.kind == "recipe":
+        return f"task-recipe.v0 sha256={n.spec_sha256} path={n.spec_path}"
+    return spec_value(n.spec_path, n.spec_sha256)
+
+
+def parse_node_ref(value: Any) -> tuple[str, str, str] | None:
+    """("spec" | "recipe", sha256, path), or None when pending. Anything else is not a plan-run node."""
+    if value == PENDING:
+        return None
+    for kind, rx in (("spec", SPEC_REF), ("recipe", RECIPE_REF)):
+        m = rx.fullmatch(value) if isinstance(value, str) else None
+        if m:
+            return kind, m.group(1), m.group(2)
+    raise ImportRefused("node_value_not_a_spec_ref", value if isinstance(value, str) else type(value).__name__)
 
 
 def parse_spec_value(value: Any) -> tuple[str, str] | None:
@@ -132,20 +151,24 @@ def parse(raw: bytes) -> ImportDoc:
             raise ImportRefused("import_value", f"nodes[{i}].key")
         if not isinstance(n["name"], str) or not 1 <= len(n["name"]) <= 200:
             raise ImportRefused("import_value", f"nodes[{i}].name")
-        spec = n["spec"]
-        if spec is None:
-            path = sha = None
+        spec, kind = n["spec"], "spec"
+        if isinstance(spec, dict) and set(spec) == {"recipe"}:          # D3 v1: a successor recipe
+            spec, kind = spec["recipe"], "recipe"
+        if spec is None and kind == "spec":
+            path = sha = kind = None
         elif isinstance(spec, dict) and set(spec) == {"path", "sha256"}:
             path = _abs(spec["path"], f"nodes[{i}].spec.path")
             if not isinstance(spec["sha256"], str) or not HEX64.fullmatch(spec["sha256"]):
                 raise ImportRefused("import_value", f"nodes[{i}].spec.sha256")
             sha = spec["sha256"]
         else:
-            raise ImportRefused("import_shape", f"nodes[{i}].spec must be null or exactly {{path, sha256}}")
+            raise ImportRefused("import_shape", f"nodes[{i}].spec must be null, {{path, sha256}} or {{recipe: {{path, sha256}}}}")
         after = n["after"]
         if not isinstance(after, list) or not all(isinstance(a, str) for a in after) or len(set(after)) != len(after):
             raise ImportRefused("import_value", f"nodes[{i}].after must be a list of distinct keys")
-        decls.append(NodeDecl(n["key"], n["name"], path, sha, tuple(after)))
+        if kind == "recipe" and len(after) != 1:
+            raise ImportRefused("import_value", f"nodes[{i}]: a recipe node is LINEAR: exactly one predecessor (D3 v1)")
+        decls.append(NodeDecl(n["key"], n["name"], path, sha, tuple(after), kind))
     keys = [n.key for n in decls]
     if len(set(keys)) != len(keys):
         raise ImportRefused("import_value", "duplicate node key")
@@ -172,7 +195,14 @@ def parse(raw: bytes) -> ImportDoc:
 
 def validate(doc: ImportDoc) -> dict[str, T.TaskSpec]:
     """Every declared spec, loaded and hash-checked (before any write)."""
-    return {n.key: load_spec(n.spec_path, n.spec_sha256) for n in doc.nodes if n.spec_path is not None}
+    from e1 import successor as S
+    for n in doc.nodes:
+        if n.kind == "recipe":
+            try:
+                S.load_recipe(n.spec_path, n.spec_sha256)
+            except S.SuccessorStop as e:
+                raise ImportRefused("recipe_invalid", {"node": n.key, "code": e.code, "detail": e.detail}) from None
+    return {n.key: load_spec(n.spec_path, n.spec_sha256) for n in doc.nodes if n.kind == "spec"}
 
 
 def identities(doc: ImportDoc, project_id: str) -> ImportedPlan:
@@ -225,7 +255,7 @@ def import_plan(setup, project_id: str, raw: bytes) -> ImportedPlan:
         got = by_id.get(plan.node_ids[n.key])
         if got is not None and not (got.get("parentId") == plan.root and got.get("nodeType") == "task" and got.get("name") == n.name
                                     and got.get("siblingOrder") == order and got.get("contentAttributes") == {}
-                                    and got.get("contentRevision") == 1 and got.get("value") == spec_value(n.spec_path, n.spec_sha256)):
+                                    and got.get("contentRevision") == 1 and got.get("value") == node_value(n)):
             raise ImportRefused("import_conflict", {"node": n.key})
     for order, n in enumerate(doc.nodes):
         if plan.node_ids[n.key] in by_id:
@@ -233,7 +263,7 @@ def import_plan(setup, project_id: str, raw: bytes) -> ImportedPlan:
         rev = _ok(setup.plan(plan.root), "plan")
         root_rev = next(x["stateRevision"] for x in rev["nodes"] if x["id"] == plan.root)
         _ok(setup.add_child(plan.root, plan.node_ids[n.key], n.name, order, _op(doc, f"n-{n.key}"), root_rev,
-                            value=spec_value(n.spec_path, n.spec_sha256)), "add_child")
+                            value=node_value(n)), "add_child")
         applied.append(f"node:{n.key}")
     for n in doc.nodes:
         for a in n.after:

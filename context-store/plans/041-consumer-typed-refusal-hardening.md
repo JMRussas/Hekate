@@ -1,6 +1,6 @@
 # Plan 041 — reference consumer typed-refusal hardening (HK-ISSUE-001 + HK-ISSUE-002)
 
-**Status: accepted and closed (2026-10-08; root msg 1754).** HK-ISSUE-001 and HK-ISSUE-002 are closed.
+**Status: accepted and closed (2026-10-07; root msg 1754).** HK-ISSUE-001 and HK-ISSUE-002 are closed.
 - **Source:** commit `7d62c68c6d873adca8dfa44a53eac415481ec8fd`, `e1/consumer.py` `aea15fa4…`.
 - **Reviews:** ChatAgent Claude's independent review (msg 1752) accepted it with no blockers, after its own direct probes and its own `replay_revision` run. Root accepted it after reading the consumer diff and `replay_revision` (msg 1754).
 - **Full default suite on these sources:** 991 passed, 1 skipped (the opt-in live npm check), log sha256 `8272d481…5810`.

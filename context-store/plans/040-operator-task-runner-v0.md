@@ -1,6 +1,6 @@
 # Plan 040 — operator task runner v0 (supervised-task-spec.v0)
 
-**Status: accepted and closed for the bounded v0 (2026-10-08; root msg 1731, HK-ISSUE-014).**
+**Status: accepted and closed for the bounded v0 (2026-10-07; root msg 1731, HK-ISSUE-014).**
 - **Final source:** `30279d83a5814a641e3ba06c1da67645a9fe0d3a` on `feat/operator-task-runner`, from `4d61d3e`.
 - **Reviews:**
   - independent review by ChatAgent Claude of `78e029b` (msg 1671) and of the npm fix `f4f1e3c` (msg 1695);
@@ -103,7 +103,7 @@ Decision order. **uncertain** means the run stops for an operator, with no decis
    - The result is written to `<out>/verify-evidence.json`, with the sha256 of both original files, the bound receipt, the clone's `core.longpaths`, and the report.
    - The original files are only read; `originalOutcome` is recorded as unchanged and is never relabelled.
 
-## 3b. The first real CA012 pilot (2026-10-08) and what it does and does not show
+## 3b. The first real CA012 pilot (2026-10-07) and what it does and does not show
 
 **Outcome in one place:**
 - **Original pilot** `pilot-b9cdfd1dc5b0`: `needs_operator` / `review_uncertain`, with no review (PlanStore) decision recorded. It **stays that way**; its `run.json` (`b6feaeb7…`) and `evidence.json` (`a2789f8c…`) are unchanged.

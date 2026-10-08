@@ -152,6 +152,43 @@ def make_claim_check(nid: str, value: str, content_revision: int, preds: dict[st
     return check
 
 
+def integration_dir(run_root: Path, key: str) -> Path:
+    return Path(run_root) / f"{key}.integration"
+
+
+def spec_ran(plan: PI.ImportedPlan, run_root: Path, key: str, value: str) -> TR.T.TaskSpec:
+    """The frozen spec a node RAN with: its pinned spec, or (a recipe node) the resolved spec of its integration,
+    whose provenance must name the same recipe pin."""
+    kind, sha, path = PI.parse_node_ref(value)
+    if kind == "spec":
+        return PI.load_spec(path, sha)
+    out = integration_dir(run_root, key)
+    prov = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
+    spec = TR.T.load(out / "spec.resolved.json")
+    if prov.get("recipeSha256") != sha or prov.get("resolvedSpecSha256") != spec.sha256:
+        raise _Stop("predecessor_provenance", {"node": key})
+    return spec
+
+
+def materialize_successor(plan: PI.ImportedPlan, run_root: Path, key: str, sha: str, path: str,
+                          state: dict[str, dict[str, Any]]) -> TR.T.TaskSpec:
+    """Recipe -> pinned/tamper-checked inputs -> the predecessor bound to its own run -> the owned integration base
+    -> the resolved frozen spec. Every failure is a typed stop BEFORE any clone of the node run root or any claim."""
+    from e1 import successor as S
+    (pk,) = plan.after[key]
+    p = state[pk]
+    try:
+        recipe = S.load_recipe(path, sha)
+        if p["acceptance"] != "accepted" or not isinstance(p["artifactRef"], str):
+            raise S.SuccessorStop("predecessor_not_accepted", {"predecessor": pk})
+        pred = S.bind_predecessor(Path(run_root) / pk, p["artifactRef"], spec_ran(plan, run_root, pk, p["value"]))
+        return S.materialize(recipe, sha, pred, p["artifactRef"], integration_dir(run_root, key), f"plan/{plan.root[:8]}/{key}")
+    except S.SuccessorStop as e:
+        raise _Stop(e.code, {"node": key, "detail": e.detail}) from None
+    except PI.ImportRefused as e:
+        raise _Stop("predecessor_spec", {"node": key, "code": e.code}) from None
+
+
 def _write_log(run_root: Path, result: PlanRunResult) -> Path:
     n = 1
     while (run_root / PLAN_RUN_LOG.format(n=n)).exists():
@@ -183,14 +220,21 @@ def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, execut
             s = state[key]
             step = NodeStep(key, s["nodeId"], "stopped")
             result.steps.append(step)
-            ref = PI.parse_spec_value(s["value"])
+            ref = PI.parse_node_ref(s["value"])
             if ref is None:
                 raise _Stop("spec_pending", {"node": key})
-            sha, path = ref
-            try:
-                spec = PI.load_spec(path, sha)
-            except PI.ImportRefused as e:
-                raise _Stop("spec_mismatch", {"node": key, "code": e.code, "detail": e.detail}) from None
+            kind, sha, path = ref
+            node_root = run_root / key
+            if kind == "spec":
+                try:
+                    spec = PI.load_spec(path, sha)
+                except PI.ImportRefused as e:
+                    raise _Stop("spec_mismatch", {"node": key, "code": e.code, "detail": e.detail}) from None
+            else:
+                # D3 v1: derive the base from the ONE accepted predecessor, with no operator step (plan 044)
+                if node_root.exists() or integration_dir(run_root, key).exists():
+                    raise _Stop("node_run_root_exists", {"node": key, "path": str(node_root)})
+                spec = materialize_successor(plan, run_root, key, sha, path, state)
             base, source = spec.doc["source"]["taskBaseCommit"], spec.doc["source"]["repo"]
             preds = {}
             for pk in plan.after[key]:
@@ -198,7 +242,6 @@ def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, execut
                 if not (state[pk]["acceptance"] == "accepted" and isinstance(art, str) and is_ancestor(source, art, base)):
                     raise _Stop("base_not_chained", {"node": key, "predecessor": pk, "artifactRef": art, "taskBaseCommit": base})
                 preds[state[pk]["nodeId"]] = art
-            node_root = run_root / key
             step.run_root = str(node_root)
             if node_root.exists():
                 raise _Stop("node_run_root_exists", {"node": key, "path": str(node_root)})

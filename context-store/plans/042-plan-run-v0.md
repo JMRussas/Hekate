@@ -1,6 +1,6 @@
 # Plan 042 — plan-run v0: drive dependent task nodes of an imported plan (P1, offline)
 
-**Status: implemented, pending independent review (2026-10-08).**
+**Status: implemented, pending independent review (2026-10-07).**
 - **Branch:** `feat/plan-run-v0` from `d6642f0`. GO: root msg 1793, P1 offline only; scope note msg 1806.
 - **Design:** ChatAgent msg 1786 and Hekate msg 1789.
 - **Test scope:** disposable harness database, fake CLI, fake node tools, temporary repos. No model, no live database.
