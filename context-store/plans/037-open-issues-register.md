@@ -42,7 +42,7 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-011 | D-3..D-6, 028 OQ3–6 | Remaining production questions (028 OQ3–OQ6) | decision | deferred | root lead | open |
 | HK-ISSUE-012 | — | A prior-attempt decision blocks the fix round's review | implementation-gap | pilot-blocker | journal derivations / claude-hekate | closed (plan 038 rev 2; root acceptance msg 1479) |
 | HK-ISSUE-013 | — | A real run's run.json says `dryRun: true` | defect | deferred | Hekate / claude-hekate (export producer slice) | closed (future runs: host-declared executionKind; root acceptance msg 1602) |
-| HK-ISSUE-014 | — | Operator task runner v0 for a real task spec (CA012 first) | implementation-gap | pilot-blocker | Hekate / claude-hekate (plan 040) | implemented, pending independent review |
+| HK-ISSUE-014 | — | Operator task runner v0 for a real task spec (CA012 first) | implementation-gap | pilot-blocker | Hekate / claude-hekate (plan 040) | closed (bounded operator runner v0, final source `30279d8`; root acceptance msg 1731) |
 
 ## Entries
 
@@ -235,22 +235,28 @@ No nodes are created and no separate database is used until that migration is de
 
 ### HK-ISSUE-014 — Operator task runner v0 for a real task spec (CA012 first)
 - **Gap:** the supervised pilot ran only a disposable toy task. A real task needs a closed spec, an owned clone, pinned dependencies, a proven baseline and a spec-driven verifier (GO msg 1632; spec frozen at `b919504a…`, msgs 1636/1650).
-- **Implemented (not yet accepted):** plan 040.
-  - Code: `e1/task_spec.py`, `e1/task_runner.py`, the optional `prepare` hook in `e1/cli_worker.py`, and `run_bounded(merge=False)` in `e1/pilot_real.py`.
-  - Branch: `feat/operator-task-runner`.
-  - Pre-freeze review fixes F1–F5 (msgs 1659/1660) and the 1653 requirements are in.
-- **Real runs so far:**
-  - Preflight-1 was refused at `deps_install_failed`: the operator's npm cache was stripped. Fixed: scoped npm env, msgs 1675–1695.
-  - Preflight-2 passed: 15 cases, 14 failed (msg 1699).
-  - The one claude-cli pilot produced artifact `a7fd2ec…` and then **stopped before verification**: `review_uncertain` / `verify_worktree_failed`, caused by Windows MAX_PATH (msgs 1702–1704). Fix: a clone-local `core.longpaths` and the git stderr in evidence.
-  - Option 1 (root msg 1704): one verifier-only re-check of the same artifact, with no new model run. The original outcome stays `needs_operator`.
-- **Scope note (msg 1710):** acceptance by the spec's verifier (oracle + tsc) is narrower than full-repo regressions. ChatAgent's full suite on the artifact found three integration-only items: the route inventory (45 → 46), an HTTP test timeout, and a Prettier wrap. They are reported separately as integration evidence.
-- **Not claimed:** OS isolation; a verified pilot result (pending the verifier-only re-check); integration.
-- **Closure (V&V):**
-  1. Independent review of the frozen source.
-  2. Root acceptance.
-  3. A root-GO'd real CA012 preflight with recorded evidence.
-  - The real worker run is a separate GO and is not part of this closure.
+- **Implemented:** plan 040.
+  - Code: `e1/task_spec.py`, `e1/task_runner.py` (`plan` / `preflight` / `run` / `verify`), the optional `prepare` hook in `e1/cli_worker.py`, and `run_bounded(merge=False)` in `e1/pilot_real.py`.
+  - Branch `feat/operator-task-runner`: `78e029b` → `2890849` → `f4f1e3c` → `40657a9` → `2e43016` → **`30279d83a5814a641e3ba06c1da67645a9fe0d3a`** (final).
+  - Review fixes: F1–F5 (msgs 1659/1660); the 1653 requirements; the npm cache and config scoping (1675–1695); the long paths, git stderr and verifier-only re-check (1702–1726).
+- **Real runs:**
+  - **Preflight-1:** refused at `deps_install_failed`, because the operator's npm cache was stripped. Its evidence is preserved (`a0b21d60…`).
+  - **Preflight-2:** passed, 15 cases with 14 failed (`9296e902…`); ChatAgent independently checked it, 25/25 (msg 1699).
+  - **The one claude-cli pilot** `pilot-b9cdfd1dc5b0` (Sonnet): produced artifact `a7fd2ec…` (3 allowlisted files) and then **stopped before verification**, `needs_operator` / `review_uncertain` / `verify_worktree_failed`, because of Windows MAX_PATH.
+  - **One verifier-only re-check** of that artifact under `30279d8` (msg 1729): **accepted**, `all_steps_pass`. Evidence: `reverify-1/verify-evidence.json`, sha256 `3c05d6cd87e9014f21a89682b91e51dfcfe187cbb5ec4fc6d7280d2dabb23331`.
+- **Interpretation (msg 1731):**
+  - The **original pilot remains `needs_operator`**, with no PlanStore decision; its raw review view was not preserved.
+  - The **accepted result is the artifact re-verification** using the recorded binding. It is **not** an accepted original pilot, and not a replay of the original review.
+- **Scope:**
+  - Verifier acceptance covers the spec's steps (oracle + `tsc`) only.
+  - Full-repo integration quality is separate: ChatAgent's integration commit fixes the route inventory, an HTTP test timeout and a Prettier wrap. Root reports ChatAgent's full suite at 2171 passed / 9 skipped, plus lint and docs checks.
+- **Not claimed:** OS isolation; a real fix round; cost capture; integration of this branch (root's).
+- **Closure (V&V):** all three listed criteria are met.
+  1. Independent review of the frozen source: ChatAgent msgs 1671 and 1695; root's final review of `30279d8`, msg 1726.
+  2. Root acceptance: msg 1731.
+  3. A root-GO'd real CA012 preflight with recorded evidence: preflight-2.
+  - Full default suite on `30279d8`: 933 passed, 1 skipped.
+- **CLOSED (root acceptance, msg 1731)** for the bounded operator runner v0 only.
 
 ## External references (owned elsewhere; not HK issues)
 

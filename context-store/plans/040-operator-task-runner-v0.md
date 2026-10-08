@@ -1,6 +1,15 @@
 # Plan 040 — operator task runner v0 (supervised-task-spec.v0)
 
-**Status: implemented, pending independent review (2026-10-07).** Branch `feat/operator-task-runner` from `4d61d3e`. GO: bridge msg 1632. Spec shape: frozen at msg 1636/1650. Pre-freeze review fixes: msgs 1659/1660 (F1–F5) and 1653. **No real npm, preflight or model run has happened.** The real CA012 worker run needs a separate root GO after review.
+**Status: accepted and closed for the bounded v0 (2026-10-08; root msg 1731, HK-ISSUE-014).**
+- **Final source:** `30279d83a5814a641e3ba06c1da67645a9fe0d3a` on `feat/operator-task-runner`, from `4d61d3e`.
+- **Reviews:**
+  - independent review by ChatAgent Claude of `78e029b` (msg 1671) and of the npm fix `f4f1e3c` (msg 1695);
+  - root's independent final review of `30279d8` (msg 1726), standing in for the blocked ChatAgent reviewer on that last gate.
+- **Full default suite on `30279d8`:** 933 passed, 1 skipped (the opt-in live npm check), in 375.85 s.
+- **Real runs:** a failed and a passing preflight; one supervised claude-cli run, which stopped before verification; and one verifier-only re-check of its artifact, which was accepted. See §3b.
+- **GO trail:** 1632 (implement), 1673 (preflight-1), 1679 (preflight-2 and the pilot, conditional), 1704 (the verifier-only option), 1726 (final review and execution).
+- **Spec:** frozen at msgs 1636/1650.
+- **Integration** into the primary branch is root's, not this plan's.
 
 This runner drives the **existing** pilot (`e1/pilot.py`), the real-worker adapter (`e1/cli_worker.py`) and the verifier pattern from `e1/pilot_real.py` from **one closed task spec**. It is not a second engine and has no workflow DSL. Every command is a literal argv whose program is the hash-pinned Node. The first spec is ChatAgent CA012, `tests/fixtures/ca012-spec-v0.json`, sha256 `b919504a353bbc21c730caedbbab244c2e457e2ef2d249c5456d91b60c322d4e`.
 
@@ -96,6 +105,19 @@ Decision order. **uncertain** means the run stops for an operator, with no decis
 
 ## 3b. The first real CA012 pilot (2026-10-08) and what it does and does not show
 
+**Outcome in one place:**
+- **Original pilot** `pilot-b9cdfd1dc5b0`: `needs_operator` / `review_uncertain`, with no review (PlanStore) decision recorded. It **stays that way**; its `run.json` (`b6feaeb7…`) and `evidence.json` (`a2789f8c…`) are unchanged.
+- **Artifact re-verification** (`reverify-1/verify-evidence.json`, sha256 `3c05d6cd87e9014f21a89682b91e51dfcfe187cbb5ec4fc6d7280d2dabb23331`, msg 1729): artifact `a7fd2ec7225e480af20c581844663ffb7853be48` was **accepted** (`all_steps_pass`).
+  - It ran under the reviewed `30279d8`, after the operator set `core.longpaths=true` in the owned clone only.
+  - All 7 binding checks passed.
+  - Fresh dependencies, the oracle (exactly the 15 declared cases, all passed) and `tsc` all passed, and the tree was clean.
+- **What the re-verification is and is not:**
+  - It accepts the **artifact**, not the original pilot: it is an artifact re-verification using the recorded binding.
+  - The raw review view was not preserved, so this is not a replay or recovery of the original review decision.
+- **Integration quality is separate.** ChatAgent's integration commit fixes C1–C3, and root reports ChatAgent's full suite at 2171 passed / 9 skipped, plus lint and docs checks (msg 1731). That is ChatAgent's evidence, not this verifier's.
+
+**Detail:**
+
 - **The run** (root GO 1679; ChatAgent 1689/1695/1699): preflight-2 passed (15 cases, 14 failed). The real claude-cli worker (Sonnet) produced artifact `a7fd2ec7225e480af20c581844663ffb7853be48`, three allowlisted files, +57/−3. The run then **stopped before verification**: `needs_operator` / `review_uncertain` / `verify_worktree_failed`, caused by MAX_PATH (§2). No decision was recorded and nothing was retried. The original `run.json` and `evidence.json` keep that outcome, and it is never relabelled.
 - **The verifier's scope is narrower than integration.**
   - Acceptance means the spec's steps passed: the oracle files and `tsc`.
@@ -112,6 +134,11 @@ Decision order. **uncertain** means the run stops for an operator, with no decis
 - The lockfile pins what is installed; `prefer-offline` may fetch from the registry (the network fallback is authorized, msg 1632).
 - Merged output is kept only for non-report steps; the oracle and the baseline split stdout from stderr.
 - v0 allows only `M` of existing regular files: no adds, deletes, renames or mode changes.
+- **The verifier's scope is the spec's steps** (CA012: the oracle and `tsc`). Acceptance is not a full-repo regression or integration check; a v1 candidate is a declared regression step (§3b).
+- **npm needs the operator's warm cache** (`npm_config_cache`, required and fail-closed). npm's builtin `npmrc` beside the pinned CLI is recorded by hash, not pinned by the spec.
+- **`verify` supports exactly one stop:** `verify_worktree_failed` after a passed binding. It never replays a review view or changes a stopped run's outcome.
+- **Not exercised for real:** a fix round (round 2), and cost capture.
+- **Windows long paths** rely on the owned clone's local `core.longpaths=true`. A clone made before `40657a9` needs the recorded operator action (§3b).
 
 ## 5. Tests (offline)
 
