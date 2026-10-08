@@ -210,6 +210,48 @@ elif scenario == "big_line":
     sys.stdout.write("x" * (3 << 20) + "\n")
     sys.stdout.flush()
     time.sleep(60)
+elif scenario in ("trace", "trace_long_err"):
+    # The attempt trace (root GO 2441): a real-shaped conversation (assistant text, private thinking, a tool call and
+    # its result) with stderr lines INTERLEAVED in time with stdout, so the retained order can be checked.
+    def err(text):
+        sys.stderr.write(text)
+        sys.stderr.flush()
+        time.sleep(0.3)                                  # let the supervisor's readers observe this before the next write
+    init()
+    time.sleep(0.3)
+    err("warn: first stderr line\n")
+    emit({"type": "assistant", "message": {"role": "assistant", "model": "fake-runtime-model-1", "content": [
+        {"type": "thinking", "thinking": "PRIVATE-REASONING-SHOULD-NOT-BE-RETAINED", "signature": "sig"},
+        {"type": "text", "text": "I will write hello.txt.\n" + act({"kind": "worker_ack", "seq": 1})}]}})
+    time.sleep(0.3)
+    emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tu_1", "name": "Write",
+                                                        "input": {"file_path": "hello.txt", "content": "hello\n"}}]}})
+    edit()
+    emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "File written"}]}})
+    emit({"type": "item.completed", "item": {"id": "r1", "type": "reasoning", "text": "PRIVATE-CODEX-REASONING"}})
+    time.sleep(0.3)
+    if scenario == "trace_long_err":
+        err("L" * (300 << 10) + "\n")                  # one stderr line longer than the 256 KiB per-line cut
+    err("partial stderr without newline at the end")
+    say(act({"kind": "worker_progress", "seq": 2, "checkpointId": 1, "evidence": "wrote hello.txt"}))
+    result(total_cost_usd=0.01, num_turns=2, duration_ms=5)
+elif scenario == "trace_blank_flood":
+    # root review 2452 R1: a flood of EMPTY stderr lines must still stop at the retention cap
+    init()
+    say(act({"kind": "worker_ack", "seq": 1}))
+    sys.stderr.write("\n" * 200_000)
+    sys.stderr.flush()
+    edit()
+    result()
+elif scenario == "trace_surrogate":
+    # root review 2452 R2: thinking (dropped) next to VISIBLE text holding a lone-surrogate JSON escape (kept)
+    init()
+    sys.stdout.write('{"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "PRIVATE"}, '
+                     '{"type": "text", "text": "odd \\ud800 char\\n' + act({"kind": "worker_ack", "seq": 1}).replace('"', '\\"')
+                     + '"}]}}\n')
+    sys.stdout.flush()
+    edit()
+    result()
 elif scenario == "stderr_flood":
     init()
     say(act({"kind": "worker_ack", "seq": 1}))

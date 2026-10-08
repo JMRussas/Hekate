@@ -111,11 +111,13 @@ class RealParams:
     test_command: str = "python -B -m unittest -q"   # the worker's auto-approved test run: no bytecode files
 
 
-def adapter_config(params: RealParams, *, repo: Path, base_sha: str, run_id: str, run_dir: Path) -> W.CliConfig:
+def adapter_config(params: RealParams, *, repo: Path, base_sha: str, run_id: str, run_dir: Path,
+                   execution_kind: str = "claude-cli") -> W.CliConfig:
     return W.CliConfig(command=params.executable, repo=repo, base_sha=base_sha, run_id=run_id, run_dir=run_dir,
                        model=params.model, max_budget_usd=params.max_budget_usd, max_turns=params.max_turns,
                        total_timeout_s=params.total_timeout_s, first_output_timeout_s=params.first_output_timeout_s,
-                       inactivity_timeout_s=params.inactivity_timeout_s, test_command=params.test_command)
+                       inactivity_timeout_s=params.inactivity_timeout_s, test_command=params.test_command,
+                       execution_kind=execution_kind)
 
 
 def validate_params(params: RealParams) -> None:
@@ -397,7 +399,7 @@ def run(params: RealParams, run_root: Path, *, setup, client, aj, project_id: st
             return P.WorkReport("failed", reason="executable_hash_mismatch")
         if "w" not in holder:
             holder["w"] = W.CliWorker(adapter_config(params, repo=repo, base_sha=base, run_id=cfgp.run_id,
-                                                     run_dir=resolved.run_dir.resolve()))
+                                                     run_dir=resolved.run_dir.resolve(), execution_kind=execution_kind))
         return holder["w"](order)
 
     verifier = Verifier(repo, base, lambda: resolved.run_dir.resolve())

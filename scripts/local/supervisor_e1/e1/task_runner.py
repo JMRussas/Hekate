@@ -602,7 +602,7 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
             return P.WorkReport("failed", reason="executable_hash_mismatch")
         if "w" not in holder:
             cfg = R.adapter_config(params, repo=repo, base_sha=d["source"]["taskBaseCommit"], run_id=cfgp.run_id,
-                                   run_dir=resolved.run_dir.resolve())
+                                   run_dir=resolved.run_dir.resolve(), execution_kind=execution_kind)
             # the worker's OWN dependencies, installed after `worktree add` and before launch (the prepare hook)
             holder["w"] = W.CliWorker(W.CliConfig(**{**cfg.__dict__, "prepare": lambda wt: install_deps(spec, wt, root)}))
         return holder["w"](order)

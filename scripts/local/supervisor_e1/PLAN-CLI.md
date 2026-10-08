@@ -53,6 +53,12 @@ The last JSON object printed reports the result:
 - each node's final work, acceptance, blockers and artifact, from PlanStore's own view;
 - the `plan-run-N.json` log path.
 
+Each round also keeps its **attempt trace** in the pilot run dir (plan 046): `attempt-rN.prompt.txt` (the exact prompt
+bytes) and `attempt-rN.trace.jsonl` (the worker's stdout and stderr lines in receipt order, within the existing output
+caps, with private reasoning dropped). `launch_intent` names both files before spawn; `exited` and
+`evidence.json` `adapter.<round>.trace` carry their final bytes, sha256 and `complete`. The trace is evidence for
+viewing only: acceptance still comes from the verifier.
+
 Exit codes: `0` all_done, `1` needs_operator (or an error after the harness started), `2` refused before any effect.
 
 - A harness that cannot start (for example, port 5108 in use) gives `harness_unavailable`, exit 1.

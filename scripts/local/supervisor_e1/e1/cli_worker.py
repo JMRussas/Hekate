@@ -94,6 +94,7 @@ class CliConfig:
     # HEAD check and BEFORE launch_intent, e.g. to install the worker's own dependencies. Any exception is a
     # typed `prepare_failed`: nothing is journaled and nothing is spawned. None (the default) = unchanged.
     prepare: Callable[[Path], None] | None = None
+    execution_kind: str = "claude-cli"   # labels the attempt trace only (P.EXECUTION_KINDS); never changes behaviour
 
 
 def _int(v: Any, lo: int, hi: int) -> bool:
@@ -135,6 +136,8 @@ def validate(cfg: CliConfig) -> None:
         raise CliRefused("config_restricted")
     if not RUN_ID.fullmatch(cfg.committer.replace("-", "")):
         raise CliRefused("config_committer")
+    if cfg.execution_kind not in P.EXECUTION_KINDS:
+        raise CliRefused("config_execution_kind")
 
 
 def build_command(cfg: CliConfig) -> list[str]:
@@ -203,7 +206,7 @@ def tree_kill(proc: subprocess.Popen, wait_s: int) -> bool:
 _EOF = object()
 
 
-def _read_stdout(stream, q: queue.Queue, line_max: int) -> None:
+def _read_stdout(stream, q: queue.Queue, line_max: int, trace: "AttemptTrace | None" = None) -> None:
     try:
         while True:
             line = stream.readline(line_max + 1)
@@ -214,8 +217,12 @@ def _read_stdout(stream, q: queue.Queue, line_max: int) -> None:
                     rest = stream.readline(line_max + 1)
                     if not rest or rest.endswith(b"\n"):
                         break
+                if trace is not None:
+                    trace.note("stdout_line_over_cap")
                 q.put(("overflow", len(line)))
                 continue
+            if trace is not None:                             # receipt order, before the supervisor consumes it
+                trace.stdout_line(line)
             q.put(("line", line))
     except (OSError, ValueError):
         pass
@@ -231,12 +238,14 @@ class _Stderr:
     total: int = 0
 
 
-def _read_stderr(stream, acc: _Stderr) -> None:
+def _read_stderr(stream, acc: _Stderr, trace: "AttemptTrace | None" = None) -> None:
     try:
         while True:
-            chunk = stream.read(65536)
+            chunk = stream.read1(65536) if hasattr(stream, "read1") else stream.read(65536)
             if not chunk:
                 break
+            if trace is not None:
+                trace.stderr_chunk(chunk)
             acc.digest.update(chunk)
             acc.total += len(chunk)
             room = acc.keep - len(acc.kept)
@@ -244,6 +253,191 @@ def _read_stderr(stream, acc: _Stderr) -> None:
                 acc.kept += chunk[:room]
     except (OSError, ValueError):
         pass
+
+
+# --- the attempt trace (root GO 2441; contract trace-contract-001 rev 2) --------------------------------------
+
+TRACE_VERSION = "hekate-attempt-trace.v0"
+TRACE_LINE_CUT = 256 << 10           # a retained stderr line longer than this is cut (stdout lines are bounded by stdout_line_max)
+REASONING_BLOCKS = ("thinking", "redacted_thinking")
+
+
+def trace_names(round_: int) -> tuple[str, str]:
+    """The round's trace files, RELATIVE to the pilot run dir: (prompt, trace)."""
+    return f"attempt-r{round_}.prompt.txt", f"attempt-r{round_}.trace.jsonl"
+
+
+def redact_reasoning(event: Any) -> tuple[Any, bool]:
+    """Drop private reasoning before retention: Claude assistant `thinking` / `redacted_thinking` content blocks and
+    Codex `reasoning` items (their text). Everything else is kept as the CLI emitted it."""
+    if not isinstance(event, dict):
+        return event, False
+    msg = event.get("message")
+    if event.get("type") == "assistant" and isinstance(msg, dict) and isinstance(msg.get("content"), list):
+        kept = [b for b in msg["content"] if not (isinstance(b, dict) and b.get("type") in REASONING_BLOCKS)]
+        if len(kept) != len(msg["content"]):
+            return {**event, "message": {**msg, "content": kept}}, True
+    item = event.get("item")
+    if isinstance(item, dict) and item.get("type") == "reasoning":
+        return {**event, "item": {k: v for k, v in item.items() if k in ("id", "type")}}, True
+    return event, False
+
+
+class AttemptTrace:
+    """One round's retained conversation: the exact prompt bytes, and ONE ordered JSONL file of what the worker
+    printed on stdout and stderr, in receipt order, plus fixed supervisor notes. Records are
+    {seq, tMs, stream: stdout|stderr|hekate, text, cut, redacted}. Retention uses the adapter's EXISTING caps
+    (stdout_lines_max / stdout_bytes_max, stderr_keep); a cap hit is one `hekate` note, never silent. The retained
+    hash describes exactly the retained file bytes, unlike the full-stream stderr digest. Thread-safe; every write is
+    flushed; after close() further writes are ignored so the final hash always matches the file."""
+
+    def __init__(self, cfg: CliConfig, round_: int):
+        self.run_dir = cfg.run_dir
+        self.prompt_name, self.trace_name = trace_names(round_)
+        self.kind = cfg.execution_kind
+        self.caps = {"stdout_lines": cfg.stdout_lines_max, "stdout_bytes": cfg.stdout_bytes_max, "stderr_bytes": cfg.stderr_keep}
+        self.lock = threading.Lock()
+        self.t0 = time.monotonic()
+        self.seq = 0
+        self.digest = hashlib.sha256()
+        self.bytes = 0
+        self.stdout_lines = self.stdout_bytes = self.stderr_raw = 0
+        self.capped: set[str] = set()
+        self.pending = bytearray()           # a stderr partial line
+        self.skipping = False                # inside an over-long stderr line, after its cut record
+        self.prompt_meta: dict[str, Any] | None = None
+        self.final: dict[str, Any] | None = None
+        self.f = None
+
+    def ref(self) -> dict[str, Any]:
+        """The launch_intent block, written BEFORE spawn so a live, killed or aborted attempt can be found."""
+        return {"version": TRACE_VERSION, "executionKind": self.kind, "runDir": str(self.run_dir),
+                "prompt": self.prompt_name, "trace": self.trace_name}
+
+    def open(self, prompt: bytes) -> None:
+        """Create both files exclusively (an existing file is never overwritten) and write the prompt bytes."""
+        with open(self.run_dir / self.prompt_name, "xb") as p:
+            p.write(prompt)
+        self.prompt_meta = {"bytes": len(prompt), "sha256": hashlib.sha256(prompt).hexdigest()}
+        self.f = open(self.run_dir / self.trace_name, "xb")
+
+    def start(self) -> None:
+        self.t0 = time.monotonic()           # tMs counts from the spawn
+
+    def _write(self, stream: str, text: str, cut: bool = False, redacted: bool = False) -> None:
+        """Append one record. JSON with ASCII escapes is lossless for ANY Python text (a lone surrogate decoded from a
+        worker's JSON escape included), so encoding cannot fail. After any write failure nothing more is written:
+        the digest then still describes a prefix the supervisor wrote, and the trace is reported incomplete."""
+        if self.f is None or self.final is not None or "write_error" in self.capped:
+            return
+        rec = {"seq": self.seq, "tMs": int((time.monotonic() - self.t0) * 1000), "stream": stream, "text": text,
+               "cut": cut, "redacted": redacted}
+        try:
+            b = (json.dumps(rec, ensure_ascii=True) + "\n").encode("ascii")
+            self.f.write(b)
+            self.f.flush()
+        except Exception:  # noqa: BLE001 -- retention must never stop the worker's protocol processing
+            self.capped.add("write_error")
+            return
+        self.seq += 1
+        self.bytes += len(b)
+        self.digest.update(b)
+
+    def note(self, text: str) -> None:
+        with self.lock:
+            self._write("hekate", text)
+
+    def _cap(self, name: str) -> None:
+        if name not in self.capped:
+            self.capped.add(name)
+            self._write("hekate", f"{name}_cap_reached")
+
+    def stdout_line(self, raw: bytes) -> None:
+        """Called from the stdout reader BEFORE the line is queued for the supervisor: it never raises."""
+        try:
+            line = raw.rstrip(b"\r\n")
+            text, redacted = line.decode("utf-8", errors="replace"), False
+            try:
+                event = json.loads(line.decode("utf-8", errors="strict"))
+            except (ValueError, UnicodeDecodeError, RecursionError):
+                event = None
+            if event is not None:
+                event, redacted = redact_reasoning(event)
+                if redacted:
+                    text = json.dumps(event, ensure_ascii=True)
+            with self.lock:
+                if "stdout" in self.capped:
+                    return
+                if self.stdout_lines + 1 > self.caps["stdout_lines"] or self.stdout_bytes + len(raw) > self.caps["stdout_bytes"]:
+                    self._cap("stdout")
+                    return
+                self.stdout_lines += 1
+                self.stdout_bytes += len(raw)
+                self._write("stdout", text, redacted=redacted)
+        except Exception:  # noqa: BLE001
+            self.capped.add("write_error")
+
+    def _stderr_line(self, line: bytes, cut: bool) -> None:
+        self._write("stderr", line.rstrip(b"\r").decode("utf-8", errors="replace"), cut=cut)
+
+    def stderr_chunk(self, chunk: bytes) -> None:
+        """Split arbitrary stderr chunks into lines (a partial line waits for the next chunk). Retention is bounded at
+        INTAKE by stderr_keep RAW bytes, delimiters included, so even a flood of empty lines stops at the cap: the
+        bounded prefix is kept (a partial line at the cap as one `cut` record) plus one cap note. A line longer than
+        TRACE_LINE_CUT is retained once, cut, and the rest of it up to its newline is skipped. Never raises."""
+        with self.lock:
+            try:
+                if "stderr" in self.capped:
+                    return
+                take = chunk[:max(0, self.caps["stderr_bytes"] - self.stderr_raw)]
+                self.stderr_raw += len(take)
+                data = take
+                while data:
+                    i = data.find(b"\n")
+                    if i < 0:                                        # an unterminated partial line
+                        if not self.skipping:
+                            self.pending += data
+                            if len(self.pending) > TRACE_LINE_CUT:
+                                self._stderr_line(bytes(self.pending[:TRACE_LINE_CUT]), True)
+                                self.pending.clear()
+                                self.skipping = True
+                        break
+                    seg, data = data[:i], data[i + 1:]
+                    if self.skipping:                                # the newline that ends an already cut line
+                        self.skipping = False
+                        continue
+                    whole = bytes(self.pending) + seg
+                    self.pending.clear()
+                    self._stderr_line(whole[:TRACE_LINE_CUT], len(whole) > TRACE_LINE_CUT)
+                if len(take) < len(chunk):
+                    if self.pending and not self.skipping:
+                        self._stderr_line(bytes(self.pending), True)
+                    self.pending.clear()
+                    self._cap("stderr")
+            except Exception:  # noqa: BLE001
+                self.capped.add("write_error")
+
+    def close(self, *, complete: bool, notes: tuple[str, ...] = ()) -> dict[str, Any] | None:
+        """Flush a partial stderr line, write the closing notes, close the file and freeze the final metadata. A
+        write failure is reported (writeError) and makes the trace incomplete: it can never be verified as whole."""
+        with self.lock:
+            if self.final is not None or self.f is None:
+                return self.final
+            if self.pending and not self.skipping:
+                self._stderr_line(bytes(self.pending), False)
+            self.pending.clear()
+            for n in notes:
+                self._write("hekate", n)
+            try:
+                self.f.close()
+            except Exception:  # noqa: BLE001
+                self.capped.add("write_error")
+            failed = "write_error" in self.capped
+            self.final = {"prompt": dict(self.prompt_meta or {}),
+                          "trace": {"bytes": self.bytes, "sha256": self.digest.hexdigest(), "records": self.seq,
+                                    "capped": bool(self.capped - {"write_error"}), "writeError": failed},
+                          "complete": complete and not failed}
+            return self.final
 
 
 # --- worker-authored acts ----------------------------------------------------------------------------------
@@ -355,6 +549,7 @@ class RunEvidence:
     results: list[str] = field(default_factory=list)     # one class per terminal `result` event
     reported_usage: dict[str, Any] | None = None         # CLI-REPORTED cost/turns/duration of the FIRST result event; not metered
     setup_error: dict[str, Any] | None = None            # a failed worktree add / HEAD check: step, rc, bounded stderr
+    trace: dict[str, Any] | None = None                  # the attempt trace: launch ref plus final retained-file metadata
 
 
 class CliWorker:
@@ -397,26 +592,41 @@ class CliWorker:
                 return P.WorkReport("failed", reason="prepare_failed")
 
         cmd = build_command(cfg)
-        # The intent is durable BEFORE the process can exist.
-        order.journal("launch_intent", {"runId": cfg.run_id, "round": order.round, "command": " ".join(cmd)[:1024],
-                                        "worktreeRef": str(wt)[:512], "baseRef": cfg.base_sha, "budget": cfg.max_budget_usd,
-                                        "maxTurns": cfg.max_turns, "timeoutS": cfg.total_timeout_s})
+        prompt = self.prompt(order).encode("utf-8")
+        trace = AttemptTrace(cfg, order.round)
+        try:
+            trace.open(prompt)                    # the exact stdin bytes; files are never overwritten
+        except OSError:
+            return P.WorkReport("failed", reason="trace_setup_failed")
+        ev.trace = {"ref": trace.ref(), "final": None}
+        # The intent is durable BEFORE the process can exist; it names the trace files so a live, killed or
+        # aborted attempt can be found even when no `exited` record is ever written.
+        try:
+            order.journal("launch_intent", {"runId": cfg.run_id, "round": order.round, "command": " ".join(cmd)[:1024],
+                                            "worktreeRef": str(wt)[:512], "baseRef": cfg.base_sha, "budget": cfg.max_budget_usd,
+                                            "maxTurns": cfg.max_turns, "timeoutS": cfg.total_timeout_s, "trace": trace.ref()})
+        except BaseException:
+            ev.trace["final"] = trace.close(complete=False, notes=("trace_incomplete:launch_intent_failed",))
+            raise
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        trace.start()
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(wt),
                                     env=worker_env(), creationflags=flags, start_new_session=(sys.platform != "win32"))
         except OSError:
-            order.journal("exited", {"code": None, "reason": "spawn_failed"})
+            ev.trace["final"] = trace.close(complete=True, notes=("spawn_failed",))
+            order.journal("exited", {"code": None, "reason": "spawn_failed", "trace": ev.trace["final"]})
             return P.WorkReport("failed", reason="spawn_failed")
         ev.pid = proc.pid
-        ctx: dict[str, Any] = {"threads": [], "queue": None}
+        ctx: dict[str, Any] = {"threads": [], "queue": None, "trace": trace, "prompt": prompt}
         try:
             order.journal("launched", {"pid": proc.pid, "round": order.round, "observedBy": "supervisor"})   # spawn != ACK
             status, reason = self._supervise(proc, order, ev, ctx)
         except BaseException:
             # A callback (journal / act / delivered) or the supervisor itself failed while the worker may still
             # be alive: never leave it running unsupervised (review finding 6, msg 1561). Kill the tree, drain
-            # and join the helpers, then re-raise. No `exited` record: the journal is what failed.
+            # and join the helpers, then re-raise. No `exited` record: the journal is what failed. The trace is
+            # still finalized (complete=false) into the round evidence where possible.
             self._abort(proc, ev, ctx)
             raise
         if status != "ok":
@@ -443,6 +653,12 @@ class CliWorker:
             ev.drained = not any(t.is_alive() for t in ctx["threads"])
         except BaseException:  # noqa: BLE001 -- the original exception is the one re-raised
             pass
+        trace = ctx.get("trace")
+        if trace is not None and ev.trace is not None:
+            try:
+                ev.trace["final"] = trace.close(complete=False, notes=("killed:supervisor_error", "trace_incomplete:supervisor_error"))
+            except BaseException:  # noqa: BLE001 -- best effort; the original exception is the one re-raised
+                pass
 
     def _supervise(self, proc: subprocess.Popen, order: P.WorkOrder, ev: RunEvidence,
                    ctx: dict[str, Any] | None = None) -> tuple[str, str | None]:
@@ -454,18 +670,20 @@ class CliWorker:
         q: queue.Queue = queue.Queue(maxsize=1024)
         err = _Stderr(cfg.stderr_keep)
         wrote = {"done": False, "error": False}
+        trace: AttemptTrace | None = ctx.get("trace")
+        prompt = ctx.get("prompt") or self.prompt(order).encode("utf-8")
 
         def write_prompt() -> None:
             try:
-                proc.stdin.write(self.prompt(order).encode("utf-8"))
+                proc.stdin.write(prompt)
                 proc.stdin.close()
                 wrote["done"] = True
             except (OSError, ValueError):
                 wrote["error"] = True
 
         t_in = threading.Thread(target=write_prompt, daemon=True)
-        t_out = threading.Thread(target=_read_stdout, args=(proc.stdout, q, cfg.stdout_line_max), daemon=True)
-        t_err = threading.Thread(target=_read_stderr, args=(proc.stderr, err), daemon=True)
+        t_out = threading.Thread(target=_read_stdout, args=(proc.stdout, q, cfg.stdout_line_max, trace), daemon=True)
+        t_err = threading.Thread(target=_read_stderr, args=(proc.stderr, err, trace), daemon=True)
         ctx["queue"] = q
         for t in (t_in, t_out, t_err):
             ctx["threads"].append(t)
@@ -557,10 +775,17 @@ class CliWorker:
         ev.exit_code = proc.returncode
         ev.stderr_sha256, ev.stderr_bytes = err.digest.hexdigest(), err.total
         ev.stderr_head = bytes(err.kept[:512]).decode("utf-8", errors="replace")
-        order.journal("exited", {"code": proc.returncode, "reason": kill_reason or "exit", "killVerified": verified,
-                                 "drained": threads_done, "promptDelivered": delivered, "stdoutLines": ev.stdout_lines,
-                                 "stderrBytes": err.total, "stderrSha256": ev.stderr_sha256, "results": list(ev.results),
-                                 "requestedModel": cfg.model, "reportedModels": list(ev.reported_models)})
+        exited = {"code": proc.returncode, "reason": kill_reason or "exit", "killVerified": verified,
+                  "drained": threads_done, "promptDelivered": delivered, "stdoutLines": ev.stdout_lines,
+                  "stderrBytes": err.total, "stderrSha256": ev.stderr_sha256, "results": list(ev.results),
+                  "requestedModel": cfg.model, "reportedModels": list(ev.reported_models)}
+        if trace is not None and ev.trace is not None:
+            # Frozen BEFORE the record, so the journal's hash is the retained file's; a reader still alive after an
+            # undrained join cannot change the file afterwards (writes after close are ignored).
+            notes = ((f"killed:{kill_reason}",) if kill_reason else ()) + (f"exit:{proc.returncode}",)
+            ev.trace["final"] = trace.close(complete=True, notes=notes)
+            exited["trace"] = ev.trace["final"]
+        order.journal("exited", exited)
         if not verified or not threads_done:
             return "unknown", "kill_unconfirmed" if not verified else "not_drained"
         if kill_reason == "prompt_not_delivered" or not delivered:
