@@ -18,8 +18,11 @@ CONTRACT (frozen by root review 2311):
   are unanswered; an invalid or non-terminal LAST resolution closes nothing and never revives an earlier one); a
   RESOLVED stream follows evidence.final_resolution (legacy post-resolution intents stay visible as
   post_terminal_unknown).
-- Effects are never "none": answered -> observed_outcome_semantics_only (unknown if the answering record is degraded),
-  closed -> operator_asserted_not_attested, everything else -> unknown. A released reservation never implies no effects.
+- Effects are never "none": answered -> observed_outcome_semantics_only, closed -> operator_asserted_not_attested,
+  everything else -> unknown; a degraded intent record OR a degraded answer always gives unknown (root 2316 R2).
+- Typed refusal covers arbitrary Python objects (root 2316 R1): non-string dict keys at any level, bools as ints,
+  non-finite or out-of-range numbers (no math.isfinite on huge ints) and strings with lone surrogates (not UTF-8
+  representable) all refuse input_schema; no TypeError/OverflowError/UnicodeEncodeError escapes. A released reservation never implies no effects.
 - complete = at least one stream observed AND every stream listed (compacted or unlistable streams cannot be complete).
 - Output canonical JSON over 1 MiB refuses the WHOLE projection; the sha256 is returned beside the body, never inside.
 """
@@ -67,8 +70,9 @@ def _schema(cond: bool, detail: str) -> None:
 
 def _keys(obj: Any, required: set[str], optional: set[str], where: str) -> None:
     _schema(isinstance(obj, dict), f"{where} must be an object")
+    _schema(all(isinstance(k, str) for k in obj), f"{where} has a non-string key")          # before any sorting/formatting
     got = set(obj)
-    _schema(required <= got and got <= required | optional, f"{where} keys {sorted(got)}")
+    _schema(required <= got and got <= required | optional, f"{where} has unexpected or missing keys")
 
 
 def _int(v: Any, lo: int, hi: int, where: str) -> int:
@@ -76,9 +80,29 @@ def _int(v: Any, lo: int, hi: int, where: str) -> int:
     return v
 
 
+def _encodable(v: str) -> bool:
+    try:
+        v.encode("utf-8")                                 # a lone surrogate cannot be represented in the canonical output
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _str(v: Any, pattern: re.Pattern, where: str) -> str:
-    _schema(isinstance(v, str) and bool(pattern.fullmatch(v)), f"{where} has an invalid value")
+    _schema(isinstance(v, str) and _encodable(v) and bool(pattern.fullmatch(v)), f"{where} has an invalid value")
     return v
+
+
+def _nonneg_number(v: Any, where: str) -> None:
+    """A finite, non-negative number. Ints are bounded (math.isfinite overflows on huge ints); floats must be finite."""
+    if isinstance(v, bool):
+        _schema(False, f"{where} must be a number")
+    elif isinstance(v, int):
+        _schema(0 <= v <= 2**63 - 1, f"{where} out of range")
+    elif isinstance(v, float):
+        _schema(math.isfinite(v) and v >= 0, f"{where} must be finite and non-negative")
+    else:
+        _schema(False, f"{where} must be a number")
 
 
 def _fields(kind: str, f: Any, where: str) -> dict[str, Any]:
@@ -117,7 +141,7 @@ def _validate(obs: Any) -> dict[str, Any]:
         _str(s["headHash"], HEX64, f"{w}.headHash")
         ra = s["resolvedAt"]
         if ra is not None:
-            _schema(isinstance(ra, (int, float)) and not isinstance(ra, bool) and math.isfinite(ra) and ra >= 0, f"{w}.resolvedAt")
+            _nonneg_number(ra, f"{w}.resolvedAt")
         if (ra is None) != (s["state"] == "active"):
             raise ProjectionRefused("input_state", f"{w}: resolvedAt must be null exactly when active")
         _schema(isinstance(s["outstanding"], list) and len(s["outstanding"]) <= per_stream, f"{w}.outstanding")
@@ -220,13 +244,13 @@ def _project_stream(writer: str, s: dict[str, Any]) -> dict[str, Any]:
             post_terminal = {r.seq for r, rest in paired if rest and r.seq > closing.seq}
     intents = []
     for r, rest in paired:
+        degraded = r.degraded or any(a.degraded for a in answers[r.seq])      # the intent OR an answer lost its payload
         if not rest:
-            degraded = any(a.degraded for a in answers[r.seq])
             status, effects = "answered", "unknown" if degraded else "observed_outcome_semantics_only"
         elif r.seq in post_terminal:
             status, effects = "post_terminal_unknown", "unknown"
         elif closing is not None and r.seq < closing.seq:
-            status, effects = f"closed:{closing.payload['decision']}", "operator_asserted_not_attested"
+            status, effects = f"closed:{closing.payload['decision']}", "unknown" if degraded else "operator_asserted_not_attested"
         else:
             status, effects = "open_unknown", "unknown"
         intents.append({"id": f"{r.kind}@{r.seq}", "kind": r.kind, "seq": r.seq, "status": status, "awaiting": list(rest),

@@ -223,3 +223,40 @@ def test_no_status_or_effect_ever_asserts_no_effects():
                        for i in s["intents"])
         text = RM.project(o)[0].decode()
         assert text.count("no_effects") == text.count("abandoned_no_effects")   # only the echoed decision name
+
+
+# --- root review 2316: typed refusal for arbitrary Python objects; degraded intents --------------------------------
+
+def _resolved_with(value):
+    def fn(o):
+        o["streams"][0].update(state="resolved", resolvedAt=value, outstanding=[])
+    return fn
+
+
+@pytest.mark.parametrize("fn", [
+    lambda o: o.update({1: "x"}),                                                        # top-level int key
+    lambda o: o["writer"].update({("a",): 1}),                                          # tuple key
+    lambda o: o["streams"][0].update({None: 1}),                                        # None key in a stream
+    lambda o: o["streams"][0]["records"][0].update({2.5: 1}),                           # float key in a record
+    lambda o: o["streams"][0]["records"][4]["fields"].update({3: True}),                # int key in fields
+    lambda o: o["streams"][0]["records"][4]["fields"].update({b"decision": "x"}),       # bytes key
+    _resolved_with(10 ** 400),                                                          # huge int: no OverflowError
+    _resolved_with(float("inf")),
+    _resolved_with(-1),
+    _resolved_with("5"),
+    lambda o: o["streams"][0].update(root="r\ud800"),                                   # lone surrogate in an id
+    lambda o: o["writer"].update(id="w\udfff"),
+    lambda o: o["streams"][0]["records"][4]["fields"].update(reconciliationRef="r\ud800"),
+    lambda o: o["streams"][0]["records"][0].update(kind=["claim_intent"]),              # unhashable where a kind goes
+    lambda o: o["streams"][0].update(outstanding=[[["dispatch_outcome"]]]),
+])
+def test_arbitrary_python_objects_refuse_typed_never_raise_other_errors(fn):
+    assert mutate(fn) == "input_schema"
+
+
+def test_a_degraded_intent_with_clean_answers_has_unknown_effects():
+    p = proj(stream([("claim_intent", {"invalidPayload": True}), ("claimed", {})]))
+    assert statuses(p) == [("claim_intent@1", "answered", "unknown")]
+    q = proj(stream(PRE[:3] + [("dispatch_intent", {"invalidPayload": True}), ("operator_resolution", TERMINAL)],
+                    state="resolved"))
+    assert statuses(q)[-1] == ("dispatch_intent@4", "closed:abandoned_no_effects", "unknown")
