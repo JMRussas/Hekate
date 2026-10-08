@@ -9,6 +9,12 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8"]
+# Optional: the read-only planning-role runtime (e1/role_worker.py). Not needed by any other e1 module.
+roles = [
+    "langchain-core>=1.0,<2",
+    "langgraph>=1.0,<2",
+    "pydantic>=2.7,<3",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
