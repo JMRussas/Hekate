@@ -148,3 +148,38 @@ export interface EventPageView {
   historyStartsAtSeq: number | null;
   historyBackfilled: boolean;
 }
+
+// Attempt trace (trace contract v0, rev 2): one page of an attempt's retained worker output.
+// status says what is known about the attempt's trace, never whether a process is alive;
+// acceptance is only ever the node's recorded decision, never derived from a trace.
+
+export const TRACE_STATUSES = ['not_captured', 'running', 'exited', 'unfinished', 'missing'] as const;
+export const TRACE_REASONS = ['no_trace_block', 'no_claim_receipt', 'journal_compacted'] as const;
+export const TRACE_INTEGRITY = ['verified', 'unverified', 'none'] as const;
+export const TRACE_STREAMS = ['stdout', 'stderr', 'hekate'] as const;
+
+export interface TraceRecordView {
+  seq: number;
+  tMs: number;
+  stream: string;
+  text: string;
+  cut: boolean;
+  redacted: boolean;
+}
+
+export interface AttemptTracePageView {
+  contractVersion: string;
+  nodeId: string;
+  attemptId: string;
+  attemptEpoch: number;
+  claimKey: string | null;
+  status: string;
+  reason: string | null;
+  integrity: string;
+  executionKind: string | null;
+  exit: { code: number | null; killReason: string | null } | null;
+  prompt: { text: string; bytes: number } | null;
+  records: TraceRecordView[];
+  nextAfterSeq: number | null;
+  capped: boolean;
+}
