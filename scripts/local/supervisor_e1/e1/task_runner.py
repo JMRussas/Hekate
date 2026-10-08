@@ -574,6 +574,8 @@ def verify_only(spec: T.TaskSpec, run_root: Path, pilot_dir: Path, out: Path, *,
         "prior_review_binds_round": (prior.get("round"), prior.get("artifactRef"), prior.get("viewDigest"),
                                      prior.get("candidateDigest"), prior.get("decision"))
                                     == (last["round"], art, last["view_digest"], last["candidate_digest"], "uncertain"),
+        # diffRecords is written only AFTER the original view/candidate/artifact binding passed and the raw diff was read
+        "prior_review_passed_binding": isinstance(prior.get("diffRecords"), list) and bool(prior["diffRecords"]),
         "receipt_binds_artifact": len(captured) == 1 and captured[0].get("artifactRef") == art
                                   and captured[0].get("parentRef") == spec.doc["source"]["taskBaseCommit"]
                                   and captured[0].get("runRef") == ref,
@@ -592,6 +594,12 @@ def verify_only(spec: T.TaskSpec, run_root: Path, pilot_dir: Path, out: Path, *,
 
     SpecVerifier(spec, repo, lambda: out, run_root).check_artifact(art, last["round"], rep, verdict)
     record = {"mode": "verifier-only", "rootGo": root_go, "specSha256": spec.sha256, "preflightOk": True,
+              "label": "artifact re-verification using the recorded binding; NOT a replay or recovery of the original "
+                       "review (H1/PlanStore) decision",
+              "trustBasis": "the original verifier's preserved report, which passed the view/candidate/artifact binding and "
+                            "read the raw diff before it stopped uncertain; the run's result_captured receipt and run-owned "
+                            "ref; and this re-check's own parent, diff, oracle-blob, deps and step checks on the artifact. "
+                            "The raw review view bytes were not preserved and were not re-parsed or re-created.",
               "bound": {"pilotDir": str(pilot_dir), "runJsonSha256": hashlib.sha256(run_raw).hexdigest(),
                         "evidenceJsonSha256": hashlib.sha256(ev_raw).hexdigest(), "runId": run["runId"], "claimKey": last["claim_key"],
                         "artifactRef": art, "runRef": ref, "viewDigest": last["view_digest"], "candidateDigest": last["candidate_digest"],

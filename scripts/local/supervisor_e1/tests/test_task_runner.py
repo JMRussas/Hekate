@@ -633,7 +633,8 @@ def stopped(taskrun, monkeypatch):
     go, f = taskrun
     real = TR.SpecVerifier.check_artifact
 
-    def no_worktree(self, art, rnd, rep, verdict):
+    def no_worktree(self, art, rnd, rep, verdict):                 # as the CA012 pilot: binding and diff passed first
+        rep["diffRecords"] = [["100644", "100644", "M", "src/value.txt"]]
         rep["gitStderr"] = "fatal: simulated: Filename too long"
         return verdict("uncertain", "verify_worktree_failed")
     monkeypatch.setattr(TR.SpecVerifier, "check_artifact", no_worktree)
@@ -651,6 +652,7 @@ def test_verify_only_rechecks_the_same_artifact_freshly_and_never_touches_the_or
     before = {n: (pilot / n).read_bytes() for n in ("run.json", "evidence.json")}
     rec = TR.verify_only(spec, tmp_path / "rr", pilot, tmp_path / "rr" / "reverify-1", root_go="test-only")
     assert (rec["decision"], rec["why"]) == ("accepted", "all_steps_pass") and rec["mode"] == "verifier-only"
+    assert "NOT a replay" in rec["label"] and "were not preserved" in rec["trustBasis"]          # msg 1714: honest label
     b = rec["bound"]
     assert b["artifactRef"] == res.rounds[0].artifact_ref and all(b["checks"].values())
     assert b["runJsonSha256"] == hashlib.sha256(before["run.json"]).hexdigest()
@@ -679,6 +681,24 @@ def test_verify_only_refuses_a_broken_binding_before_any_effect(stopped, tmp_pat
     assert e.value.code == "verify_binding_failed" and e.value.detail["prior_review_binds_round"] is False
     assert not (tmp_path / "rr" / "reverify-x").exists()
     assert refusal(TR.verify_only, spec, tmp_path / "rr", pilot, tmp_path / "elsewhere", root_go="x") == "verify_paths_not_in_run_root"
+
+
+def test_verify_only_refuses_when_the_original_review_stopped_before_its_binding(stopped, tmp_path):
+    """No recorded diff = the original never passed the view binding: there is nothing to re-verify against."""
+    res, ev, f = stopped
+    spec = TR.T.load(tmp_path / "spec.json")
+    pilot = Path(ev["runDir"])
+    copy = tmp_path / "rr" / "pilot-early-stop"
+    copy.mkdir()
+    (copy / "run.json").write_bytes((pilot / "run.json").read_bytes())
+    e2 = json.loads((pilot / "evidence.json").read_text(encoding="utf-8"))
+    del e2["verifier"][-1]["diffRecords"]
+    e2["verifier"][-1]["why"] = "view_unverifiable"
+    (copy / "evidence.json").write_text(json.dumps(e2), encoding="utf-8")
+    with pytest.raises(TR.PreflightRefused) as e:
+        TR.verify_only(spec, tmp_path / "rr", copy, tmp_path / "rr" / "reverify-y", root_go="x")
+    assert e.value.code == "verify_binding_failed" and e.value.detail["prior_review_passed_binding"] is False
+    assert not (tmp_path / "rr" / "reverify-y").exists()
 
 
 def test_verify_only_refuses_a_run_that_already_has_a_decision(taskrun, tmp_path):

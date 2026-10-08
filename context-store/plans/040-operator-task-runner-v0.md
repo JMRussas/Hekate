@@ -86,7 +86,9 @@ Decision order. **uncertain** means the run stops for an operator, with no decis
    - the prior verifier report binds the same round, artifact, view digest and candidate digest, and its decision was `uncertain`;
    - exactly one `result_captured` receipt binds the artifact, the parent and the run-owned ref;
    - the ref resolves to the artifact.
+   - The prior report also carries the recorded raw diff, which is written only after the original view binding passed.
    Any failure gives `verify_binding_failed`, with the check map.
+   - **Label (msg 1714):** this is an **artifact re-verification using the recorded binding**. It is not a replay or recovery of the original review (H1/PlanStore) decision. The raw review view bytes were not preserved and are neither re-parsed nor re-created. The evidence states this in `label` and `trustBasis`.
 2. **The re-check.** It runs the same post-binding checks as the pilot's verifier (`SpecVerifier.check_artifact`). The worktree and fresh dependencies go under the new `--out` directory, and every step runs.
 3. **Output.**
    - The result is written to `<out>/verify-evidence.json`, with the sha256 of both original files, the bound receipt, the clone's `core.longpaths`, and the report.
