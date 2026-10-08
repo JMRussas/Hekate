@@ -2,7 +2,9 @@
 
 observe() records, BEFORE a run's first effect, which Hekate source the runner process reports for itself:
 the git HEAD and dirty state of the supervisor directory, and the sha256 of each loaded `e1.*` module's
-source file. It never raises: every failure is a bounded error field, and nothing here changes a run's
+source file. Expected operational failures (git missing, failing, timing out or over its output cap; an
+unresolvable or unreadable module file) are recorded as bounded error fields. Anything unexpected propagates
+to the caller's backstop (task_runner.record_provenance), which records it; nothing here changes a run's
 outcome, refusal or spend.
 
 LIMITS (what this is NOT):
@@ -19,67 +21,76 @@ from __future__ import annotations
 
 import hashlib
 import platform
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterable
 
+from e1 import cli_worker as W
+from e1 import pilot_real as R
+
 SCHEMA = "hekate-run-provenance.v0"
 LABEL = "host-observed, not authenticated: on-disk bytes at observation, not loaded bytecode; not a no-spawn proof"
 SCOPE = "scripts/local/supervisor_e1"
 GIT_TIMEOUT_S = 20
 DIRTY_MAX = 32
-ERR_TAIL = 512
+ERR_TAIL = 512                  # stderr bytes kept from a failed git call
+GIT_OUT_CAP = 64 * 1024         # stdout bytes a git call may produce; more -> capture_overflow, result unknown
 MODULES_MAX = 64
 MODULE_BYTES_MAX = 1 << 20      # 1 MiB per module file
 MODULE_ERRORS_MAX = 16
 REQUIRED = ("e1/cli_worker.py", "e1/pilot.py", "e1/durable.py", "e1/acts_durable.py")   # absent -> not_loaded
 
-Runner = Callable[..., subprocess.CompletedProcess]
+Runner = Callable[..., R.Bounded]        # pilot_real.run_bounded: streamed, prefix-capped, tree-killed on timeout
 
 
-def _git_failure(step: str, p: subprocess.CompletedProcess | None, e: BaseException | None = None) -> dict[str, Any]:
-    err = (p.stderr or "") if p is not None else ""
-    return {"step": step, "rc": p.returncode if p is not None else None, "type": type(e).__name__ if e else None,
-            "stderr": err[-ERR_TAIL:]}
+def _git_failure(step: str, b: R.Bounded | None, typ: str | None = None) -> dict[str, Any]:
+    err = b.err_head.decode("utf-8", errors="replace") if b is not None else ""
+    return {"step": step, "rc": b.rc if b is not None else None, "type": typ, "stderr": err,
+            "stderrBytes": b.err_total if b is not None else 0, "stdoutBytes": b.total if b is not None else 0}
 
 
-def observe_git(src_dir: Path, *, env: dict[str, str] | None = None, run: Runner = subprocess.run) -> dict[str, Any]:
-    """HEAD of the repo holding src_dir and its dirty state within SCOPE; failures are recorded, never raised."""
+def observe_git(src_dir: Path, *, env: dict[str, str] | None = None, run: Runner = R.run_bounded) -> dict[str, Any]:
+    """HEAD of the repo holding src_dir and its dirty state within SCOPE. Every git call is streamed with its
+    stdout capped at GIT_OUT_CAP and stderr at ERR_TAIL bytes, under GIT_TIMEOUT_S. A failure, timeout, undrained
+    reader or over-cap output is recorded and leaves that result UNKNOWN (null), never clean or partial."""
     out: dict[str, Any] = {"toplevel": None, "head": None, "scope": SCOPE, "dirty": None, "dirtyPaths": [],
                            "dirtyPathsTruncated": False, "error": None}
 
-    def git(step: str, *args: str) -> subprocess.CompletedProcess | None:
+    def git(step: str, *args: str) -> str | None:
         try:
-            p = run(["git", "-C", str(src_dir), *args], capture_output=True, text=True, timeout=GIT_TIMEOUT_S, env=env)
-        except (OSError, subprocess.SubprocessError) as e:
-            out["error"] = _git_failure(step, None, e)
+            b = run(["git", "-C", str(src_dir), *args], cwd=Path(src_dir), timeout_s=GIT_TIMEOUT_S, keep=GIT_OUT_CAP,
+                    env=env if env is not None else W.git_env(), merge=False, err_keep=ERR_TAIL)
+        except (OSError, ValueError) as e:               # git missing, or an unusable directory
+            out["error"] = _git_failure(step, None, type(e).__name__)
             return None
-        if p.returncode != 0:
-            out["error"] = _git_failure(step, p)
+        typ = ("TimeoutExpired" if b.timed_out else "not_drained" if not b.drained
+               else "capture_overflow" if b.total > GIT_OUT_CAP else None)
+        if typ is not None or b.rc != 0:
+            out["error"] = _git_failure(step, b, typ)
             return None
-        return p
+        return b.head.decode("utf-8", errors="replace")    # complete: total <= cap; non-UTF-8 bytes become U+FFFD
 
     top = git("rev-parse", "rev-parse", "--show-toplevel", "HEAD")
     if top is None:
         return out
-    lines = top.stdout.splitlines()
+    lines = top.splitlines()
     head = lines[1].strip() if len(lines) == 2 else ""
     if len(head) != 40 or any(c not in "0123456789abcdef" for c in head):
-        out["error"] = {"step": "rev-parse", "rc": top.returncode, "type": None, "stderr": "unexpected rev-parse output"}
+        out["error"] = {"step": "rev-parse", "rc": 0, "type": "unexpected_output", "stderr": "", "stderrBytes": 0,
+                        "stdoutBytes": len(top)}
         return out
     out["toplevel"], out["head"] = lines[0].strip(), head
     st = git("status", "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--", f":(top){SCOPE}")
     if st is None:
         return out
-    paths, fields = [], iter(st.stdout.split("\0"))
+    paths, fields = [], iter(st.split("\0"))
     for e in fields:
         if len(e) > 3:
             paths.append(e[3:])                         # repo-relative (porcelain -z)
-            if e[0] in "RC":
-                next(fields, None)                     # a rename/copy entry is followed by its source path
+            if "R" in e[:2] or "C" in e[:2]:
+                next(fields, None)                     # a rename/copy (either XY column) is followed by its source path
     out["dirty"] = bool(paths)
     out["dirtyPaths"], out["dirtyPathsTruncated"] = paths[:DIRTY_MAX], len(paths) > DIRTY_MAX
     return out
@@ -95,11 +106,14 @@ def observe_modules(src_dir: Path, modules: Iterable[ModuleType]) -> dict[str, A
         f = getattr(m, "__file__", None)
         if not f:
             continue
-        p = Path(f).resolve()
         try:
+            p = Path(f).resolve()
             found.append((p.relative_to(root).as_posix(), p))
         except ValueError:
             continue                                   # not part of the supervisor source
+        except (OSError, RuntimeError, TypeError) as e:
+            errors.append({"module": str(f)[-200:], "type": type(e).__name__})   # an unresolvable module path
+            continue
     found.sort()
     for rel, p in found[:MODULES_MAX]:
         try:
@@ -119,7 +133,7 @@ def observe_modules(src_dir: Path, modules: Iterable[ModuleType]) -> dict[str, A
 
 
 def observe(src_dir: Path, modules: Iterable[ModuleType], *, env: dict[str, str] | None = None,
-            run: Runner = subprocess.run) -> dict[str, Any]:
+            run: Runner = R.run_bounded) -> dict[str, Any]:
     """The whole record. src_dir is the supervisor directory (the parent of the e1 package)."""
     return {"schema": SCHEMA, "label": LABEL, "observedAtUtc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "python": python_info(), "git": observe_git(src_dir, env=env, run=run),

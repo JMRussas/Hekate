@@ -856,3 +856,13 @@ def test_an_existing_provenance_file_is_never_overwritten(tmp_path):
     prov2, f2, errs2 = TR.record_provenance(tmp_path, "abc123")
     assert errs2 == [{"part": "provenanceFile", "type": "exists"}] and f2 == {"provenanceFile": None, "provenanceSha256": None}
     assert prov2 is not None and Path(f["provenanceFile"]).read_bytes() == before
+
+
+def test_a_git_capture_overflow_leaves_provenance_unknown_and_the_run_unchanged(taskrun, monkeypatch):
+    go, _ = taskrun
+    monkeypatch.setattr(TR.PV, "GIT_OUT_CAP", 8)                 # the REAL rev-parse output exceeds it
+    res, ev = go("value_ok")
+    assert (res.outcome, len(res.rounds)) == ("accepted", 1) and launches(ev) == 1
+    g = ev["provenance"]["git"]
+    assert (g["head"], g["dirty"], g["error"]["type"]) == (None, None, "capture_overflow") and g["error"]["stdoutBytes"] > 8
+    assert ev["provenanceSha256"] and ev["errors"] == []          # the observation (with its error) was still persisted

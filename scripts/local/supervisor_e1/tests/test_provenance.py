@@ -1,4 +1,4 @@
-"""Runner-source provenance (e1/provenance.py; HK-ISSUE-016, root msgs 2135/2144): host-observed, never raises."""
+"""Runner-source provenance (e1/provenance.py; HK-ISSUE-016, root msgs 2135/2144/2157): host-observed, bounded."""
 
 import hashlib
 import subprocess
@@ -6,9 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from e1 import cli_worker as W
+from e1 import pilot_real as R
 from e1 import provenance as PV
 
 SCOPE = PV.SCOPE
+NUL = "\0"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -32,6 +34,10 @@ def make_src(tmp_path: Path, names=("cli_worker", "pilot", "durable", "acts_dura
     return repo, src, mods
 
 
+def bounded(rc=0, out=b"", err=b"", *, timed_out=False, drained=True) -> R.Bounded:
+    return R.Bounded(rc, timed_out, True, drained, out, len(out), "", err, len(err), "")
+
+
 def test_a_clean_tree_records_head_no_dirt_and_the_module_hashes(tmp_path):
     repo, src, mods = make_src(tmp_path)
     rec = PV.observe(src, mods, env=W.git_env())
@@ -44,7 +50,7 @@ def test_a_clean_tree_records_head_no_dirt_and_the_module_hashes(tmp_path):
     assert rec["python"]["version"].count(".") == 2 and rec["python"]["implementation"]
 
 
-def test_dirty_lists_modified_untracked_and_both_ends_of_a_staged_rename_only_in_scope(tmp_path):
+def test_dirty_lists_modified_untracked_and_a_staged_rename_only_in_scope(tmp_path):
     repo, src, mods = make_src(tmp_path)
     (src / "e1" / "pilot.py").write_text("# changed\n", encoding="utf-8")
     (src / "e1" / "new.py").write_text("# new\n", encoding="utf-8")
@@ -55,24 +61,53 @@ def test_dirty_lists_modified_untracked_and_both_ends_of_a_staged_rename_only_in
     assert sorted(g["dirtyPaths"]) == sorted([f"{SCOPE}/e1/pilot.py", f"{SCOPE}/e1/new.py", f"{SCOPE}/e1/durable2.py"])
 
 
+def test_rename_or_copy_in_either_column_skips_its_source_path(tmp_path):
+    status = NUL.join(["R  new1", "old1", " C new2", "old2", "?? u.txt", ""]).encode()
+    outs = iter([bounded(0, f"{tmp_path}\n{'a' * 40}\n".encode()), bounded(0, status)])
+    g = PV.observe_git(tmp_path, run=lambda *a, **kw: next(outs))
+    assert (g["dirty"], g["dirtyPaths"], g["error"]) == (True, ["new1", "new2", "u.txt"], None)
+
+
 def test_not_a_git_repo_is_recorded_not_raised(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
     g = PV.observe_git(plain, env=W.git_env())
     assert (g["head"], g["dirty"], g["toplevel"]) == (None, None, None)
-    assert g["error"]["step"] == "rev-parse" and g["error"]["rc"] not in (0, None) and "not a git repository" in g["error"]["stderr"]
+    e = g["error"]
+    assert (e["step"], e["type"]) == ("rev-parse", None) and e["rc"] not in (0, None) and "not a git repository" in e["stderr"]
 
 
-def test_git_unavailable_or_hung_is_recorded_with_its_type(tmp_path):
+def test_git_unavailable_hung_or_undrained_is_recorded_with_its_type(tmp_path):
     def missing(*a, **kw):
         raise FileNotFoundError("git")
 
     def hung(*a, **kw):
-        assert kw["timeout"] == PV.GIT_TIMEOUT_S <= 30
-        raise subprocess.TimeoutExpired(a[0], kw["timeout"])
-    for run, typ in ((missing, "FileNotFoundError"), (hung, "TimeoutExpired")):
+        assert kw["timeout_s"] == PV.GIT_TIMEOUT_S <= 30 and kw["keep"] == PV.GIT_OUT_CAP and kw["err_keep"] == PV.ERR_TAIL
+        return bounded(None, timed_out=True)
+    g = PV.observe_git(tmp_path, run=missing)
+    assert g["head"] is None and (g["error"]["rc"], g["error"]["type"]) == (None, "FileNotFoundError")
+    for run, typ in ((hung, "TimeoutExpired"), (lambda *a, **kw: bounded(0, drained=False), "not_drained")):
         g = PV.observe_git(tmp_path, run=run)
-        assert g["head"] is None and g["error"] == {"step": "rev-parse", "rc": None, "type": typ, "stderr": ""}
+        assert (g["head"], g["dirty"], g["error"]["step"], g["error"]["type"]) == (None, None, "rev-parse", typ)
+
+
+def test_status_over_the_capture_cap_is_unknown_never_clean_or_partial(tmp_path, monkeypatch):
+    # a REAL git child whose status output exceeds the cap: the capture stays bounded and dirty is unknown
+    repo, src, mods = make_src(tmp_path)
+    for i in range(200):
+        (src / f"untracked-file-with-a-long-name-{i:04}.txt").write_text("u\n", encoding="utf-8")
+    monkeypatch.setattr(PV, "GIT_OUT_CAP", 1024)
+    kept = []
+
+    def spy(*a, **kw):
+        b = R.run_bounded(*a, **kw)
+        kept.append((len(b.head), b.total))
+        return b
+    g = PV.observe_git(src, env=W.git_env(), run=spy)
+    assert g["head"] == git(repo, "rev-parse", "HEAD")                       # rev-parse fit under the cap
+    assert (g["dirty"], g["dirtyPaths"]) == (None, [])                       # unknown: not False, not a partial list
+    assert g["error"]["step"] == "status" and g["error"]["type"] == "capture_overflow" and g["error"]["stdoutBytes"] > 1024
+    assert all(head <= 1024 for head, _ in kept) and kept[-1][1] > 1024      # the RETAINED output stayed bounded
 
 
 def test_bounds_on_dirty_paths_stderr_and_modules(tmp_path):
@@ -82,10 +117,8 @@ def test_bounds_on_dirty_paths_stderr_and_modules(tmp_path):
     g = PV.observe_git(src, env=W.git_env())
     assert len(g["dirtyPaths"]) == PV.DIRTY_MAX and g["dirtyPathsTruncated"] is True
 
-    def failing(*a, **kw):
-        return subprocess.CompletedProcess(a[0], 128, "", "x" * 2000 + "fatal: why")
-    err = PV.observe_git(tmp_path, run=failing)["error"]
-    assert len(err["stderr"]) == PV.ERR_TAIL and err["stderr"].endswith("fatal: why")
+    err = PV.observe_git(tmp_path, run=lambda *a, **kw: bounded(128, err=b"x" * kw["err_keep"]))["error"]
+    assert err["rc"] == 128 and len(err["stderr"]) == PV.ERR_TAIL
 
     many = []
     for i in range(PV.MODULES_MAX + 5):
@@ -96,19 +129,20 @@ def test_bounds_on_dirty_paths_stderr_and_modules(tmp_path):
     assert len(rec["modules"]) == PV.MODULES_MAX and rec["modulesTruncated"] is True
 
 
-def test_oversized_unreadable_foreign_and_missing_required_modules(tmp_path):
+def test_oversized_unreadable_unresolvable_foreign_and_missing_required_modules(tmp_path):
     repo, src, mods = make_src(tmp_path, names=("cli_worker", "pilot", "durable"))       # acts_durable not loaded
     big = src / "e1" / "big.py"
     big.write_bytes(b"#" * (PV.MODULE_BYTES_MAX + 1))
     gone = SimpleNamespace(__file__=str(src / "e1" / "gone.py"))                         # unreadable (absent)
+    weird = SimpleNamespace(__file__=12345)                                              # unresolvable: recorded
     foreign = SimpleNamespace(__file__=str(tmp_path / "elsewhere.py"))                   # outside src: ignored
     builtin = SimpleNamespace()                                                          # no __file__: ignored
-    rec = PV.observe_modules(src, [*mods, SimpleNamespace(__file__=str(big)), gone, foreign, builtin])
-    assert "e1/big.py" not in rec["modules"] and "e1/gone.py" not in rec["modules"]
+    rec = PV.observe_modules(src, [*mods, SimpleNamespace(__file__=str(big)), gone, weird, foreign, builtin])
+    assert set(rec["modules"]) == {"e1/cli_worker.py", "e1/pilot.py", "e1/durable.py"}
     assert {"module": "e1/big.py", "type": "too_large"} in rec["moduleErrors"]
     assert {"module": "e1/gone.py", "type": "FileNotFoundError"} in rec["moduleErrors"]
+    assert {"module": "12345", "type": "TypeError"} in rec["moduleErrors"]
     assert {"module": "e1/acts_durable.py", "type": "not_loaded"} in rec["moduleErrors"]
-    assert set(rec["modules"]) == {"e1/cli_worker.py", "e1/pilot.py", "e1/durable.py"}
 
 
 def test_the_real_runner_observes_its_own_loaded_modules():
