@@ -17,10 +17,12 @@ Guarantees:
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import math
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, TypedDict
@@ -28,6 +30,7 @@ from typing import Any, Mapping, TypedDict
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
+from langsmith import tracing_context
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 ROLE_DEFINITION_SCHEMA = "hekate-role-definition.v1"
@@ -36,9 +39,10 @@ RESULT_SCHEMA = "hekate-role-result.v1"
 
 MAX_SAFE_INT = 2**53 - 1
 MAX_JSON_DEPTH = 32
-ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$")
-ROLE_ID = re.compile(r"^[a-z][a-z0-9\-]{0,63}$")
-MODEL_IDENTITY = re.compile(r"^[A-Za-z0-9._:/\-\[\]]{1,128}$")
+ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}")             # always used with fullmatch
+ROLE_ID = re.compile(r"[a-z][a-z0-9\-]{0,63}")
+MODEL_IDENTITY = re.compile(r"[A-Za-z0-9._:/\-\[\]]{1,128}")
+UUID_TEXT = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 MAX_INSTRUCTIONS_CHARS = 8000
 MAX_LIMIT_BYTES = 1_000_000
 MAX_DEADLINE_SECONDS = 600.0
@@ -138,8 +142,12 @@ class RoleConfig:
     deadline_seconds: float
 
     def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Raise RoleError(config_invalid) unless every field is valid. Also re-run by `run_role` before any model call."""
         bad = RoleError(CONFIG_INVALID)
-        if type(self.id) is not str or not ROLE_ID.match(self.id):
+        if type(self.id) is not str or not ROLE_ID.fullmatch(self.id):
             raise bad
         if not is_int(self.version) or not 1 <= self.version <= MAX_SAFE_INT:
             raise bad
@@ -149,11 +157,14 @@ class RoleConfig:
             self.instructions.encode("utf-8")
         except UnicodeEncodeError:
             raise bad from None
-        if type(self.binding_id) is not str or not ID.match(self.binding_id):
+        if type(self.binding_id) is not str or not ID.fullmatch(self.binding_id):
             raise bad
-        if type(self.allowed_bindings) is not tuple or not self.allowed_bindings or len(set(self.allowed_bindings)) != len(self.allowed_bindings):
+        if type(self.allowed_bindings) is not tuple or not self.allowed_bindings:
             raise bad
-        if any(type(b) is not str or not ID.match(b) for b in self.allowed_bindings) or self.binding_id not in self.allowed_bindings:
+        # every element is checked BEFORE any set/hash operation, so an unhashable entry is a typed refusal
+        if any(type(b) is not str or not ID.fullmatch(b) for b in self.allowed_bindings):
+            raise bad
+        if len(set(self.allowed_bindings)) != len(self.allowed_bindings) or self.binding_id not in self.allowed_bindings:
             raise bad
         for limit in (self.max_input_bytes, self.max_output_bytes):
             if not is_int(limit) or not 1 <= limit <= MAX_LIMIT_BYTES:
@@ -228,10 +239,17 @@ class Correlation:
         if not isinstance(raw, Mapping) or set(raw) != CORRELATION_KEYS:
             raise RoleError(INPUT_INVALID)
         ids = [raw["rootId"], raw["taskId"], raw["attemptId"]]
-        if any(type(i) is not str or not ID.match(i) for i in ids):
+        if any(type(i) is not str for i in ids):
             raise RoleError(INPUT_INVALID)
+        if not UUID_TEXT.fullmatch(ids[0]) or not UUID_TEXT.fullmatch(ids[1]) or not ID.fullmatch(ids[2]):
+            raise RoleError(INPUT_INVALID)
+        try:
+            if str(uuid.UUID(ids[0])) != ids[0] or str(uuid.UUID(ids[1])) != ids[1]:
+                raise RoleError(INPUT_INVALID)
+        except ValueError:
+            raise RoleError(INPUT_INVALID) from None
         nums = [raw["epoch"], raw["contentRevision"]]
-        if any(not is_int(n) or not 0 <= n <= MAX_SAFE_INT for n in nums):
+        if any(not is_int(n) or not 1 <= n <= MAX_SAFE_INT for n in nums):
             raise RoleError(INPUT_INVALID)
         at = raw["observedAt"]
         if type(at) is not str or len(at) > 64:
@@ -260,7 +278,7 @@ def validate_snapshot(snapshot: Any, max_bytes: int) -> tuple[bytes, frozenset[s
         raise RoleError(INPUT_INVALID)
     ids: list[str] = []
     for item in evidence:
-        if type(item) is not dict or type(item.get("id")) is not str or not ID.match(item["id"]):
+        if type(item) is not dict or type(item.get("id")) is not str or not ID.fullmatch(item["id"]):
             raise RoleError(INPUT_INVALID)
         ids.append(item["id"])
     if len(set(ids)) != len(ids):
@@ -371,8 +389,16 @@ class RoleMetadata:
 class RoleResult:
     status: str                       # "completed" (validated output) or "failed"
     failure_code: str | None
-    output: dict[str, Any] | None
+    _output: dict[str, Any] | None    # private authoritative copy; read it through `output`
     metadata: RoleMetadata
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_output", copy.deepcopy(self._output))
+
+    @property
+    def output(self) -> dict[str, Any] | None:
+        """A fresh deep copy on every read: mutating it cannot change the result or its `metadata.result_hash`."""
+        return copy.deepcopy(self._output)
 
     @property
     def review_status(self) -> str:
@@ -437,10 +463,19 @@ async def run_role(
     `binding_id` optionally overrides the role's binding and must be in `role.allowed_bindings`. `model_identity` is
     the host's own record of the concrete model behind the binding (optional, validated, metadata only).
 
+    An invalid `role` raises `RoleError(config_invalid)`; every other pre-model refusal is a failed result.
+
     The deadline is cooperative: on expiry the awaiting task is cancelled, which stops our wait and asks the model
-    object to stop; it cannot prove the external provider stopped work. External cancellation of the caller propagates
-    as `asyncio.CancelledError`; it is never turned into a result.
+    object to stop; it cannot prove the external provider stopped work. A result that arrives after expiry (e.g. from
+    a provider that swallowed the cancellation) is still `deadline_exceeded`. External cancellation of the caller
+    propagates as `asyncio.CancelledError`; it is never turned into a result.
+
+    LangSmith auto-tracing is disabled around the graph run. A host-injected model keeps whatever external behavior it
+    has itself (its own callbacks, proxies, provider logging); that is the host's responsibility.
     """
+    if not isinstance(role, RoleConfig):
+        raise RoleError(CONFIG_INVALID)
+    role.validate()                       # raises RoleError(config_invalid) before anything else happens
     requested = role.binding_id if binding_id is None else binding_id
     meta = dict(requested_binding=requested if type(requested) is str else None, model_identity=None,
                 role_id=role.id, role_version=role.version, role_hash=role.definition_hash,
@@ -455,7 +490,7 @@ async def run_role(
         if type(requested) is not str or requested not in role.allowed_bindings:
             raise RoleError(BINDING_NOT_ALLOWED)
         if model_identity is not None:
-            if type(model_identity) is not str or not MODEL_IDENTITY.match(model_identity):
+            if type(model_identity) is not str or not MODEL_IDENTITY.fullmatch(model_identity):
                 raise RoleError(CONFIG_INVALID)
             meta["model_identity"] = model_identity
         corr = Correlation.from_mapping(correlation)
@@ -471,14 +506,19 @@ async def run_role(
         "evidence_ids": evidence_ids,
     }
     graph = build_graph(model)
+    deadline = asyncio.timeout(role.deadline_seconds)
     try:
-        async with asyncio.timeout(role.deadline_seconds):
-            final = await graph.ainvoke(state)
+        # ambient LANGSMITH_TRACING must not export the evidence or model blocks, whatever the environment says
+        with tracing_context(enabled=False):
+            async with deadline:
+                final = await graph.ainvoke(state)
     except TimeoutError:
         return failed(DEADLINE_EXCEEDED)
     except Exception:
         return failed(UNAVAILABLE)
 
+    if deadline.expired():                # a provider that swallowed the cancellation must not deliver a late result
+        return failed(DEADLINE_EXCEEDED)
     if "failure" in final:
         return failed(final["failure"])
     output = final["output"]

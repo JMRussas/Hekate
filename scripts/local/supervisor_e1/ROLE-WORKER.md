@@ -31,10 +31,23 @@ result = await run_role(
 
 - `snapshot`: JSON object (`dict/list/str/int/float/bool/None` only; ints within +-2^53-1, finite floats, depth <= 32,
   canonical size <= `max_input_bytes`) with an `evidence` list of objects, each with a unique `id`.
-- `correlation`: exactly `rootId, taskId, attemptId` (ids `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`), `epoch,
-  contentRevision` (non-bool ints, 0..2^53-1) and `observedAt` (RFC 3339 with offset: when the *source* was observed).
-- Invalid config raises `RoleError(config_invalid)` at `RoleConfig` construction. Invalid binding/input/correlation
-  returns a failed result **before** the model is called.
+- `correlation`: exactly these keys, all matched with full-string matching (a trailing newline is rejected):
+  - `rootId`, `taskId`: canonical lowercase hyphenated UUID text (`8-4-4-4-12` hex);
+  - `attemptId`: `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}` (not necessarily a UUID);
+  - `epoch`, `contentRevision`: non-bool ints, **1..2^53-1** (0 and negatives are rejected);
+  - `observedAt`: RFC 3339 with offset (when the *source* was observed).
+- Invalid config raises `RoleError(config_invalid)` at `RoleConfig` construction, and `run_role` re-validates the role
+  (and raises the same typed error for a non-`RoleConfig` or a role mutated past construction) before anything else.
+  Invalid model object/identity, binding, snapshot or correlation returns a failed result **before** the model is called.
+  Binding entries are element-validated before any set/hash operation, so unhashable entries are `config_invalid`.
+
+## Direct CLI vs native role
+
+This module is a library function, not a CLI and not a managed attempt. There is no direct command line that runs a
+role; a host calls `run_role`. A direct/ad-hoc call produces a `RoleResult` only: nothing is recorded, no attempt, trace
+or PlanStore row exists, and `completed` still means "validated output, review pending". A *native* (managed) role run
+is one whose host supplies real UUID root/task ids, a real attempt id, positive epoch/revision and records the result;
+that wiring belongs to the next task, not here.
 
 ## Role vs binding
 
@@ -78,7 +91,16 @@ if completed), correlation, observation time.
 - Exactly one model call; no retry. (A model object may retry internally; configure the host's model not to.)
 - The deadline and external cancellation are **cooperative**: the awaiting task is cancelled and the model object is
   asked to stop, but this cannot prove the external provider stopped or did not bill. Deadline gives
-  `deadline_exceeded`; external cancellation propagates as `asyncio.CancelledError`.
+  `deadline_exceeded`; external cancellation propagates as `asyncio.CancelledError`. The timeout object's `expired()` is
+  also checked, so a provider that swallows the cancellation and returns later still yields `deadline_exceeded`, never
+  its late output. No process or request is promised to stop.
+- `RoleResult.output` returns a fresh deep copy on every read (dict-like access preserved); mutating it cannot change the
+  result or invalidate `metadata.result_hash`. The snapshot is captured as canonical bytes before the call, so later host
+  mutation of the original object changes neither the model input nor `snapshot_hash`.
+- LangSmith auto-tracing (`LANGSMITH_TRACING` etc. in the inherited environment) is disabled around the graph/model call
+  with `langsmith.tracing_context(enabled=False)` (`langsmith` is declared in the `roles` group). A host-injected model
+  keeps its own external behavior (its callbacks, proxies, provider-side logging, retries); the host is responsible
+  for those, and for not enabling tracing on the model object itself.
 - Citations prove only that ids exist in the snapshot, not that the claims are true. The snapshot is a past
   observation and proves nothing about current liveness.
 - Roles never write state. The next task connects managed attempts/traces and PlanStore recording; PlanStore

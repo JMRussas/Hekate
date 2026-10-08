@@ -13,6 +13,7 @@ dev = ["pytest>=8"]
 roles = [
     "langchain-core>=1.0,<2",
     "langgraph>=1.0,<2",
+    "langsmith>=0.3,<1",
     "pydantic>=2.7,<3",
 ]
 
