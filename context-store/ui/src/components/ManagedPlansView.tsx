@@ -19,6 +19,7 @@ import { isStale, useRequestSlot, type RequestSlot } from '../planContract/reque
 import type { PlanListItem, PlanView } from '../planContract/types';
 import AttemptsPanel from './managed/AttemptsPanel';
 import AttemptTrace from './managed/AttemptTrace';
+import TaskNavigator from './managed/TaskNavigator';
 import DependencyMap from './managed/DependencyMap';
 import EventsTimeline from './managed/EventsTimeline';
 import { EMPTY_EVENTS, type EventsState } from './managed/eventsState';
@@ -83,7 +84,7 @@ async function loadTrace(
   }
 }
 
-export default function ManagedPlansView() {
+export default function ManagedPlansView({ taskMode = false }: { taskMode?: boolean }) {
   const listSlot = useRequestSlot();
   const planSlot = useRequestSlot();
   const planEventsSlot = useRequestSlot();
@@ -117,9 +118,11 @@ export default function ManagedPlansView() {
 
   // Initial load from a timer callback (state is only ever set asynchronously, never in the effect body).
   useEffect(() => {
-    const t = setTimeout(() => void loadList(null), 0);
+    const t = setTimeout(() => {
+      if (!taskMode) void loadList(null);
+    }, 0);
     return () => clearTimeout(t);
-  }, [loadList]);
+  }, [loadList, taskMode]);
 
   /** Refresh starts a new chain everywhere: every slot is cancelled and the selection cleared. */
   const refresh = () => {
@@ -135,7 +138,7 @@ export default function ManagedPlansView() {
     void loadList(null);
   };
 
-  const selectPlan = (item: PlanListItem) => {
+  const selectPlan = (item: PlanListItem, initialNodeId?: string, showHistory = false, initialAttemptId?: string | null) => {
     planSlot.cancel();
     planEventsSlot.cancel();
     nodeEventsSlot.cancel();
@@ -148,6 +151,7 @@ export default function ManagedPlansView() {
       return;
     }
     setPlan({ status: 'loading', item });
+    if (taskMode) setTab(showHistory ? 'history' : 'tree');
     setPlanEvents({ ...EMPTY_EVENTS, status: 'loading' });
     const g = planSlot.begin();
     void (async () => {
@@ -164,6 +168,11 @@ export default function ManagedPlansView() {
           return;
         }
         setPlan(previous => g.isCurrent() ? { status: 'ok', item, plan: view } : previous);
+        if (initialNodeId && view.readiness.leaves.some(leaf => leaf.nodeId === initialNodeId)) {
+          setNodeId(initialNodeId);
+          void loadEvents(nodeEventsSlot, (c, eg) => getNodeEvents(initialNodeId, c, eg), null, setNodeEvents);
+          if (initialAttemptId) void loadTrace(traceSlot, initialNodeId, initialAttemptId, null, setTrace);
+        }
       } catch (e) {
         if (isStale(e, g)) return;
         setPlan(previous => g.isCurrent() ? { status: 'error', item, error: toError(e), details: [] } : previous);
@@ -187,9 +196,20 @@ export default function ManagedPlansView() {
 
   const nameOf = (id: string) => (plan.status === 'ok' ? plan.plan.nodes.find(n => n.id === id)?.name : null) ?? id;
 
+  const conversation = nodeId !== null && trace.attemptId !== null && (
+    <section data-testid="trace-workspace" className="mt-4 border-t border-slate-700 pt-3 text-sm">
+      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">
+        Attempt trace · {nameOf(nodeId)}
+      </div>
+      <AttemptTrace key={trace.attemptId} state={trace}
+        onReload={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, null, setTrace)}
+        onMore={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, trace.lastSeq, setTrace)} />
+    </section>
+  );
+
   return (
     <div data-testid="managed-plans" className="flex-1 flex overflow-hidden text-slate-200">
-      <aside className="w-72 border-r border-slate-700 bg-slate-800/50 flex flex-col">
+      {!taskMode && <aside className="w-72 border-r border-slate-700 bg-slate-800/50 flex flex-col">
         <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700">
           <span className="text-sm font-semibold">Managed plans</span>
           <button data-testid="managed-refresh" onClick={refresh} className="text-xs text-blue-400 hover:text-blue-300">Refresh</button>
@@ -228,10 +248,26 @@ export default function ManagedPlansView() {
               className="w-full p-2 text-xs text-blue-400 hover:text-blue-300">Load more</button>
           )}
         </div>
-      </aside>
+      </aside>}
 
-      <main className="flex-1 overflow-auto p-4">
-        {plan.status === 'none' && <div className="text-sm text-slate-500">Select a managed plan. This view is read-only.</div>}
+      <main className="flex-1 min-w-0 overflow-auto p-4">
+        {taskMode && (
+          <TaskNavigator
+            focused={plan.status !== 'none'}
+            onSelect={selectPlan}
+            onReset={() => {
+              planSlot.cancel();
+              planEventsSlot.cancel();
+              nodeEventsSlot.cancel();
+              clearTrace();
+              setPlan({ status: 'none' });
+              setNodeId(null);
+              setPlanEvents(EMPTY_EVENTS);
+              setNodeEvents(EMPTY_EVENTS);
+            }}
+          />
+        )}
+        {plan.status === 'none' && <div className="text-sm text-slate-500">{taskMode ? 'Select a task to inspect its plan, attempts and conversation.' : 'Select a managed plan. This view is read-only.'}</div>}
         {plan.status === 'loading' && <div data-testid="managed-plan-loading" className="text-sm text-slate-500">Loading plan…</div>}
         {plan.status === 'unsupported' && (
           <div data-testid="managed-plan-unsupported" className="text-sm text-amber-400">
@@ -253,6 +289,7 @@ export default function ManagedPlansView() {
                     className={`px-3 py-1 text-xs rounded ${tab === t ? 'bg-slate-600' : 'bg-slate-800 text-slate-400'}`}>{t}</button>
                 ))}
               </div>
+              {taskMode && conversation}
               {tab === 'tree' && <PlanTree plan={plan.plan} selectedId={nodeId} onSelect={selectNode} />}
               {tab === 'map' && (
                 <div className="overflow-auto">
@@ -267,17 +304,7 @@ export default function ManagedPlansView() {
                 <EventsTimeline testId="plan-events" state={planEvents} nameOf={nameOf}
                   onLoadMore={() => void loadEvents(planEventsSlot, (c, g) => getPlanEvents(plan.plan.rootId, c, g), planEvents.nextCursorText, setPlanEvents)} />
               )}
-              {/* The selected attempt's conversation gets the wide central column; its selector stays in the node sidebar. */}
-              {nodeId !== null && trace.attemptId !== null && (
-                <section data-testid="trace-workspace" className="mt-4 border-t border-slate-700 pt-3 text-sm">
-                  <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">
-                    Attempt trace · {nameOf(nodeId)}
-                  </div>
-                  <AttemptTrace key={trace.attemptId} state={trace}
-                    onReload={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, null, setTrace)}
-                    onMore={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, trace.lastSeq, setTrace)} />
-                </section>
-              )}
+              {!taskMode && conversation}
             </div>
             {nodeId !== null && (
               <div className="w-96 flex-shrink-0 border-l border-slate-700 pl-4">

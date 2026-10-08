@@ -291,8 +291,8 @@ function checkTrace(v: unknown, nodeId: string, attemptId: string, afterSeq: num
 
 // --- endpoints (GET only) -----------------------------------------------------
 
-export async function listPlans(afterRootId: string | null, req: RequestGuard): Promise<PlanListPage> {
-  const q = new URLSearchParams({ limit: '100' });
+export async function listPlans(afterRootId: string | null, req: RequestGuard, limit = 100): Promise<PlanListPage> {
+  const q = new URLSearchParams({ limit: String(limit) });
   if (afterRootId) q.set('afterRootId', afterRootId);
   return checkListPage((await getChecked(`/plans?${q}`, req)).value);
 }

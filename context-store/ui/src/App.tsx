@@ -1,6 +1,6 @@
 // App — top-level layout with view switcher
 //
-// Views: Chat (three-panel conversation) | Workspace (node browser + scoped chat)
+// Views: Chat | Workspace | Tasks (filtered catalog and history) | Plans (tree/map browser)
 //
 // Per-conversation state: each conversation keeps its own messages, threads, stats,
 // debug log, and streaming status in a Map. Switching conversations changes which
@@ -37,7 +37,7 @@ import {
 } from './api';
 
 type RightTab = 'stats' | 'debug' | 'planner';
-type AppView = 'chat' | 'workspace' | 'plans';
+type AppView = 'chat' | 'workspace' | 'plans' | 'tasks';
 
 // Per-conversation cached state — streams write here even when another conversation is displayed
 interface ConversationState {
@@ -330,6 +330,12 @@ export default function App() {
               Workspace
             </button>
             <button
+              onClick={() => setAppView('tasks')}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${appView === 'tasks' ? 'bg-slate-600 text-slate-100' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              Tasks
+            </button>
+            <button
               onClick={() => setAppView('plans')}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                 appView === 'plans'
@@ -380,8 +386,8 @@ export default function App() {
 
       {/* View content */}
       <div className="flex-1 flex overflow-hidden">
-        {appView === 'plans' ? (
-          <ManagedPlansView />
+        {appView === 'plans' || appView === 'tasks' ? (
+          <ManagedPlansView key={appView} taskMode={appView === 'tasks'} />
         ) : appView === 'workspace' ? (
           <WorkspacePanel />
         ) : (
