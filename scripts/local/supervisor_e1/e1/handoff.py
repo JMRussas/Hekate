@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from e1 import acts as A
-from e1.evidence import INTENTS, Record, is_terminal_resolution
+from e1.evidence import Record, is_terminal_resolution, unanswered_intents
 
 POLICY = "handoff.v0"
 ENVELOPE = "handoff-envelope.v0"
@@ -75,14 +75,7 @@ def pending_effects(records: list[Record], corrupt: str | None, outstanding: lis
     Raises if the list cannot be built (a corrupt stream hides what may be pending)."""
     if corrupt:
         raise Refused("pending_unlistable", corrupt)
-    open_: list[tuple[Record, list[str]]] = []
-    for r in records:
-        if r.kind in INTENTS:
-            open_.append((r, list(INTENTS[r.kind])))
-        for o in open_:
-            if r.kind in o[1]:
-                o[1].remove(r.kind)
-                break
+    open_ = unanswered_intents(records)                     # the shared FIFO pairing (HK-ISSUE-017)
     resolutions = [r for r in records if r.kind == "operator_resolution"]
     closing = resolutions[-1] if resolutions and is_terminal_resolution(resolutions[-1:]) else None
     closed = {r.seq for r, rest in open_ if rest and closing is not None and r.seq < closing.seq}

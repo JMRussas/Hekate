@@ -354,8 +354,13 @@ class ModelJournal:
         s = self.streams[(root, claim_key)]
         if s.resolved_at is not None:
             return
-        if not (is_confirmed_finish(s.records) and planstore_decided and not s.outstanding) and not is_terminal_resolution(s.records):
+        finished = is_confirmed_finish(s.records) and planstore_decided and not s.outstanding
+        if not finished and not is_terminal_resolution(s.records):
             raise JournalRefused("unresolved_outstanding", "needs a confirmed finish + decision, or a terminal operator resolution")
+        if not finished:
+            f = final_resolution(s.records)
+            if f.problem == "resolution_not_final":
+                raise JournalRefused("resolution_not_final", f"{f.after_count}: {','.join(f.after_ids)}")
         s.resolved_at = self.now
         s.reserved, s.fault_reserved, s.outstanding = 0, 0, []
 
@@ -375,9 +380,9 @@ class ModelJournal:
 
     def compact(self) -> None:
         """Resolved streams older than D become summaries; summaries older than R are dropped.
-        Unresolved streams are never touched."""
+        Unresolved streams are never touched, nor are legacy unsafe resolved ones (HK-ISSUE-017): kept with records."""
         for s in list(self.streams.values()):
-            if s.resolved_at is None:
+            if s.resolved_at is None or (s.summary is None and unsafe_resolved(s.records)):
                 continue
             age = self.now - s.resolved_at
             if s.summary is None and age >= self.bounds.compact_after:
@@ -388,6 +393,49 @@ class ModelJournal:
     def prefix(self, root: str, claim_key: str, n: int) -> list[Record]:
         """The first n records of a stream: a simulated crash keeps only these (conceptual)."""
         return list(self.streams[(root, claim_key)].records[:n])
+
+
+def unanswered_intents(records: list[Record]) -> list[tuple[Record, list[str]]]:
+    """Every intent whose reserved terminals are not all recorded, with the terminals still awaited. FIFO pairing over
+    the WHOLE prefix: each terminal record answers the FIRST open intent still awaiting its kind (the single
+    implementation shared by handoff.pending_effects and final_resolution; HK-ISSUE-017)."""
+    open_: list[tuple[Record, list[str]]] = []
+    for r in records:
+        if r.kind in INTENTS:
+            open_.append((r, list(INTENTS[r.kind])))
+        for o in open_:
+            if r.kind in o[1]:
+                o[1].remove(r.kind)
+                break
+    return [(r, rest) for r, rest in open_ if rest]
+
+
+FINAL_IDS_MAX = 8
+
+
+@dataclass(frozen=True)
+class FinalResolution:
+    problem: str | None               # None | "no_terminal_resolution" | "resolution_not_final"
+    after_ids: tuple[str, ...] = ()   # "<kind>@<seq>" of unanswered intents AFTER the terminal resolution (first 8)
+    after_count: int = 0
+
+
+def final_resolution(records: list[Record]) -> FinalResolution:
+    """Whether the stream's LAST operator_resolution is terminal (is_terminal_resolution, unchanged) and FINAL: no intent
+    recorded after it is unanswered. A terminal resolution closes only the intents recorded BEFORE it (HK-ISSUE-017)."""
+    if not is_terminal_resolution(records):
+        return FinalResolution("no_terminal_resolution")
+    t = [r for r in records if r.kind == "operator_resolution"][-1]
+    after = [f"{r.kind}@{r.seq}" for r, _ in unanswered_intents(records) if r.seq > t.seq]
+    if after:
+        return FinalResolution("resolution_not_final", tuple(after[:FINAL_IDS_MAX]), len(after))
+    return FinalResolution(None)
+
+
+def unsafe_resolved(records: list[Record]) -> bool:
+    """A stream resolved by a terminal resolution that was NOT final (written before HK-ISSUE-017's resolve guard):
+    compaction must retain its records, never summarize or evict them."""
+    return final_resolution(records).problem == "resolution_not_final"
 
 
 def is_confirmed_finish(records: list[Record]) -> bool:

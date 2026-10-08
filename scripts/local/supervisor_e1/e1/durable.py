@@ -38,7 +38,8 @@ from psycopg.types.json import Jsonb
 
 from e1.evidence import (AT_REPR_MAX, FAULT_RESERVE, INTENTS, KINDS, MAX_AT, MAX_SEQ, RECORD_MAX_BYTES, RESERVE_KINDS,
                          TERMINALS, Bounds, JournalRefused, ModelJournal, Record, Stream, _check_payload, _fallback_text,
-                         encoded_size, is_confirmed_finish, is_terminal_resolution, worst_reserved_record_size)
+                         encoded_size, final_resolution, is_confirmed_finish, is_terminal_resolution, unsafe_resolved,
+                         worst_reserved_record_size)
 
 SCHEMA_SQL = Path(__file__).with_name("journal_schema.sql")
 VERSION = 1
@@ -670,6 +671,8 @@ class DurableJournal:
             records, bad = read_stream_records(cur, st["root"], st["claim_key"], st, g["per_stream"])
             if bad:
                 continue                                 # corrupt streams are retained, never evicted
+            if unsafe_resolved(records):
+                continue                                 # HK-ISSUE-017 legacy: an unanswered post-resolution intent is retained
             summary = self._summary(st, records)
             sb = summary_budget(summary, st["head_hash"])
             c += 1 - st["count"]
@@ -725,8 +728,13 @@ class DurableJournal:
                 records, bad = read_stream_records(cur, root, claim_key, s, g["per_stream"])
                 if bad:
                     raise JournalRefused("corrupt", bad)
-                if not (is_confirmed_finish(records) and planstore_decided and not s["outstanding"]) and not is_terminal_resolution(records):
+                finished = is_confirmed_finish(records) and planstore_decided and not s["outstanding"]
+                if not finished and not is_terminal_resolution(records):
                     raise JournalRefused("unresolved_outstanding", "needs a confirmed finish + decision, or a terminal operator resolution")
+                if not finished:
+                    f = final_resolution(records)               # HK-ISSUE-017: a terminal resolution closes only earlier intents
+                    if f.problem == "resolution_not_final":
+                        raise JournalRefused("resolution_not_final", f"{f.after_count}: {','.join(f.after_ids)}")
                 release = s["reserved"] * BUDGET_RECORD_MAX
                 cur.execute("UPDATE supervisor_journal.streams SET state = 'resolved', resolved_at = %s, count = count - reserved, "
                             "bytes = bytes - %s, reserved = 0, fault_reserved = 0, outstanding = '[]'::jsonb "
@@ -749,6 +757,7 @@ def compact(dsn: str, now: float) -> dict[str, int]:
     if not _valid_clock(now):
         raise JournalRefused("clock")
     retained: list[tuple[str, str, str]] = []
+    unsafe: list[tuple[str, str, str]] = []
     with connect(dsn) as conn, conn.cursor() as cur:
         g = cur.execute("SELECT * FROM supervisor_journal.global_usage WHERE id = 1 FOR UPDATE").fetchone()
         cur.execute("SELECT set_config('supervisor_journal.now', %s, true)", (json.dumps(now),))
@@ -758,6 +767,8 @@ def compact(dsn: str, now: float) -> dict[str, int]:
             records, bad = read_stream_records(cur, st["root"], st["claim_key"], st, g["per_stream"])
             if bad:
                 retained.append((st["root"], st["claim_key"], bad))
+            elif unsafe_resolved(records):
+                unsafe.append((st["root"], st["claim_key"], "resolution_not_final"))      # HK-ISSUE-017 legacy: retained
             else:
                 plan.append(("compact", st, DurableJournal._summary(st, records)))
         for st in cur.execute("SELECT * FROM supervisor_journal.streams WHERE state = 'compacted' AND %s - resolved_at >= %s "
@@ -769,6 +780,10 @@ def compact(dsn: str, now: float) -> dict[str, int]:
                 plan.append(("drop", st, None))
         DurableJournal._apply_room(cur, plan, mode="on")
         conn.commit()
-    # Corrupt streams are RETAINED with explicit evidence of why; nothing about them is dropped.
-    return {"compacted": sum(1 for p in plan if p[0] == "compact"), "dropped": sum(1 for p in plan if p[0] == "drop"),
-            "retained_corrupt": retained}
+    # Corrupt streams are RETAINED with explicit evidence of why; nothing about them is dropped. Legacy unsafe resolved
+    # streams (HK-ISSUE-017) are retained too; the key appears only when there are some, so existing results are unchanged.
+    out = {"compacted": sum(1 for p in plan if p[0] == "compact"), "dropped": sum(1 for p in plan if p[0] == "drop"),
+           "retained_corrupt": retained}
+    if unsafe:
+        out["retained_unsafe"] = unsafe
+    return out

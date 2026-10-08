@@ -73,8 +73,11 @@ def test_an_intent_after_the_terminal_resolution_stays_unknown_before_resolve():
 
 
 def test_an_intent_after_the_terminal_resolution_released_by_resolve_refuses():
-    records, outstanding = stream(NOTIFY)                                # resolve() released the post-resolution intent too
-    assert outstanding == []
+    # HK-ISSUE-017: resolve() now REFUSES this stream (resolution_not_final), so the unsafe state can only be a LEGACY
+    # row written by the pre-fix resolve(). Build it exactly as that resolve() left it; the listing still refuses it.
+    records, outstanding = stream(NOTIFY, resolve=False)
+    assert outstanding != []
+    outstanding = []                                                     # what the pre-fix resolve() released
     with pytest.raises(H.Refused) as e:
         H.pending_effects(records, None, outstanding)
     assert e.value.code == "pending_unlistable"
