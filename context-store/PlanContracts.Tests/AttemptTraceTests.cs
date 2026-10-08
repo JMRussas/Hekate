@@ -59,6 +59,11 @@ public sealed class AttemptTraceTests : IDisposable
         var killed = AttemptTrace.ParseExited("""{"code":null,"reason":"inactivity"}""");
         Assert.Equal((null, new TraceExit(null, "inactivity"), null), killed);
         Assert.NotNull(AttemptTrace.ParseExited("""{"code":1,"reason":"exit","trace":{"complete":"yes"}}""").Error);
+        // Capture writes an empty prompt block when the prompt was never written; the final is then incomplete.
+        var noPrompt = AttemptTrace.ParseExited("""{"code":null,"reason":"spawn_failed","trace":{"complete":false,"prompt":{},"trace":{"bytes":40,"sha256":"cc","records":1,"capped":false,"writeError":false}}}""");
+        Assert.Null(noPrompt.Error);
+        Assert.False(noPrompt.Final!.Complete);
+        Assert.NotNull(AttemptTrace.ParseExited("""{"code":0,"reason":"exit","trace":{"complete":true,"prompt":{},"trace":{"bytes":1,"sha256":"c","records":1,"capped":false,"writeError":false}}}""").Error);
     }
 
     // --- confinement ------------------------------------------------------------

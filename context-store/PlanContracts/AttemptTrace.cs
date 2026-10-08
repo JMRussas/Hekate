@@ -109,16 +109,18 @@ public static class AttemptTrace
             var reason = Str(d, "reason");
             var exit = new TraceExit(code, reason is null or "exit" ? null : reason);
             if (!d.TryGetProperty("trace", out var t)) return (null, exit, null);
-            if (t.ValueKind != JsonValueKind.Object
+            if (t.ValueKind != JsonValueKind.Object || Bool(t, "complete") is not bool complete
                 || !t.TryGetProperty("prompt", out var p) || p.ValueKind != JsonValueKind.Object
                 || !t.TryGetProperty("trace", out var f) || f.ValueKind != JsonValueKind.Object
-                || Bool(t, "complete") is not bool complete
-                || Long(p, "bytes") is not long pb || Str(p, "sha256") is not string ps
-                || Long(f, "bytes") is not long tb || Str(f, "sha256") is not string ts
-                || Long(f, "records") is not long recs || Bool(f, "capped") is not bool capped
-                || Bool(f, "writeError") is not bool writeError)
+                || Bool(f, "capped") is not bool capped || Bool(f, "writeError") is not bool writeError)
                 return (null, exit, "exited trace block is malformed.");
-            return (new TraceFinal(complete, pb, ps, tb, ts, recs, capped, writeError), exit, null);
+            // An incomplete final is never verified, so its sizes and hashes may be absent (e.g. the
+            // prompt was never written: capture records an empty prompt block). A complete one needs all.
+            if (Long(p, "bytes") is long pb && Str(p, "sha256") is string ps && Long(f, "bytes") is long tb
+                && Str(f, "sha256") is string ts && Long(f, "records") is long recs)
+                return (new TraceFinal(complete, pb, ps, tb, ts, recs, capped, writeError), exit, null);
+            if (complete) return (null, exit, "exited trace block is complete but lacks its sizes or hashes.");
+            return (new TraceFinal(false, -1, "", -1, "", -1, capped, writeError), exit, null);
         }
         catch (JsonException) { return (null, null, "exited data is not valid JSON."); }
     }
