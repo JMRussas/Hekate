@@ -1,6 +1,6 @@
 # Plan 043 — local development coordinator: persistence and operator acts (P2 DESIGN, revision 2)
 
-**Status: revised design for root review (2026-10-07; root msgs 1800, 1837, 1873).**
+**Status: revision 3, the design accepted for source implementation with disposable tests (2026-10-07; root msgs 1800, 1837, 1873, 1878).**
 - No code, no schema activation and no writes to any live database. Implementation needs a separate GO after D3.
 - **Scope: the LOCAL development coordinator only.** This records a local decision. The production questions stay open in 028 / HK-ISSUE-009 / 010 / 011.
 
@@ -10,20 +10,26 @@
 - Route A already reads PlanStore tables under the project lock (`acts_durable.py:60-80, 147`).
 - The target is a **new dedicated local development database and project**: never an existing populated database, never a production selection.
 
-**Initialization (honest about transactions).** The existing installers each open their own connection and transaction (`durable.install` `durable.py:188`, `install_acts` `acts_durable.py:46`, `install_handoff` `handoff_durable.py:35`). So initialization is **not** one transaction, and v1 does not claim it is. Instead:
-1. **Guard before any write:**
-   - the server is loopback;
-   - the database name equals an operator-typed `--target-db`;
-   - the database has **no** `supervisor_journal` schema;
-   - the PlanStore schema is present;
-   - the configured project row exists.
-   A populated or partially initialized database is refused.
-2. **Run the three installers in order.** `journal_schema.sql` uses plain `CREATE SCHEMA`, so a re-run fails rather than silently half-applying.
-3. **Verify complete before ANY dispatch.** On every coordinator start, the expected tables and functions are present and the recorded bounds equal the configured `E2C_BOUNDS`. Anything missing or mismatched is **refused** and named; there is no repair and no migration.
-   - A failed initialization leaves a database that step 3 refuses. The documented recovery is to drop that dedicated database and create a new one. There is no uninstall command.
+**Initialization: the coordinator CREATES its own database; it never adopts one (root msg 1878).** "No journal yet, and PlanStore and the project exist" does not prove that a database is new and dedicated, because an existing populated app database can satisfy it. So:
+
+1. **Create, never adopt.** This reuses the harness pattern (`e1/harness.py`):
+   - Use the single owned `hekate-local` container, selected by its compose and workspace labels and published on loopback.
+   - `createdb` a NEW database under a guarded, purpose-specific name, `hekate_coord_<utcstamp>_<hex>`. Creation fails if the name exists.
+   - In the SAME step, write a marker table `hekate_local_coordinator(marker, purpose, project_id, created_at)` with one row, where the marker is a fresh random token.
+   - Write a **locator file** in the coordinator's local state directory: `{db, marker, projectId, apiPort}`, created exclusively.
+2. **Initialize** that database: the PlanStore schema (via the Api, as the harness does), the project row, then the three journal installers in order.
+   - The installers each own their connection (`durable.py:188`, `acts_durable.py:46`, `handoff_durable.py:35`), so this is **not** one transaction, and nothing claims it is.
+3. **Open, on every start.** Read the locator, then verify before ANY dispatch:
+   - the database exists, and its marker row equals the locator's marker and project;
+   - the PlanStore and journal tables and functions are all present;
+   - the recorded bounds equal `E2C_BOUNDS`.
+   Anything else is **refused** and named. A database without that marker, any database not named by the locator, and partial or mismatched schemas are all refused. There is no repair and no migration.
+4. **Recovery from a failed initialization:** the operator drops that coordinator-owned database and deletes its locator, then creates a new one. There is no uninstall command and no general installer.
+5. **Unlike the harness, `stop()` never drops** the coordinator database. Tests use disposable coordinator databases (created and dropped by the test) until a separate GO activates a dedicated one.
 
 ## 2. Time across process restart and reboot
 
+- **Scope of the claims (root msg 1878):** monotonic values are compared only within one process (one epoch). Across restarts, only recorded UTC values are compared, and only as a sanity stop, never to compute durations.
 - **Recorded times are wall-clock UTC** (`datetime.now(timezone.utc)`), written into each journal record. Intervals inside ONE process (timeouts, heartbeats) use `time.monotonic()`.
 - **Monotonic values are never persisted or compared across processes.** They reset on reboot and are meaningless across process lifetimes.
 - **On start**, the coordinator reads the latest recorded UTC across streams. A current UTC earlier than it (a backwards clock), or later by an implausible gap (configured, e.g. more than 7 days), is a **stop for the operator**, never an automatic adjustment.
