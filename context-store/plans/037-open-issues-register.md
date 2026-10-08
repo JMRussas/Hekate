@@ -46,8 +46,20 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-015 | — | An interrupted pre-launch dispatch cannot be reconciled or continued | implementation-gap | unattended-blocker | Hekate + PlanStore + journal / unassigned | open (design not ready; root msg 2127) |
 | HK-ISSUE-016 | B5 (2120) | Run records do not name the Hekate source that executed them | implementation-gap | deferred | Hekate / claude-hekate | closed (bounded host-observed metadata only, source `c0d4094`; root acceptance msg 2168) |
 | HK-ISSUE-017 | — | `resolve()` releases intents recorded after the terminal resolution | defect | deferred | journal / claude-hekate | closed (new resolves + legacy uncompacted guard only, source `274e71f`; root acceptance msg 2284) |
+| HK-ISSUE-018 | — | Planning role candidate accepts invalid correlation and leaks an untyped config error | defect | pilot-blocker | Hekate / supervised Hermes worker + lead review | closed (bounded role runtime, `633e31a`) |
+| HK-ISSUE-019 | — | Role evidence omits content revision and conflates operation keys with claim linkage | defect | pilot-blocker | Hekate / supervised Hermes worker + lead review | closed (manifest primitives, `633e31a`) |
+| HK-ISSUE-020 | — | Native role trace metadata and cancellation mismatch | defect | pilot-blocker | Hekate / supervised Odin worker + lead review | closed (native role supervisor, `33feddc`) |
 
 ## Entries
+
+### HK-ISSUE-020 — Native role attempt had incompatible exit metadata and swallowed provider cancellation
+
+- **Kind / status:** defect / closed for the bounded native role supervisor at `33feddc`.
+- **Observed:** candidate `c8105eb` wrote exit metadata incompatible with the maintained trace reader, allowed missing or boolean content revisions, and wrapped provider cancellation as failure. Independent review rejected the attempt; the failed tests and candidate remain preserved.
+- **Expected:** exact current content identity before model execution, trace metadata matching the existing API contract, and cancellation propagation that leaves review unaccepted.
+- **Fix / verification:** corrected exit schema, revision validation and cancellation handling. The reviewed selection passed 372 cases with one Windows symlink capability skip. A real one-turn Claude CLI role run produced API `integrity: verified` and the human UI displayed the native trace; lead verified exact manifest bytes and recorded acceptance.
+- **Evidence / owner:** `D:/hekate-coordinator/runs/managed-role-wiring-001/`, `managed-role-wiring-002/` and `role-live-001/`; Hekate / supervised Odin worker and Codex lead. Hekate task `c2fd26d1-4643-561d-9601-6866e3810727`, accepted attempt epoch 2.
+- **Limit:** rehearsal used host-injected role configuration. Persisted role assignments for generic task dispatch and unattended recovery remain follow-up work.
 
 ### HK-ISSUE-018 — Planning role candidate accepted invalid correlation and leaked an untyped config error
 
