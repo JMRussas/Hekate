@@ -247,7 +247,8 @@ class ModelJournal:
             plan.append(("drop", st))
             if fits():
                 return plan
-        for st in sorted((x for x in self.streams.values() if x.resolved_at is not None and x.summary is None),
+        for st in sorted((x for x in self.streams.values() if x.resolved_at is not None and x.summary is None
+                          and not unsafe_resolved(x.records)),             # HK-ISSUE-017 legacy: retained, never evicted
                          key=lambda x: x.resolved_at or 0):
             summary = self._summary_text(st)
             c += 1 - st.count()

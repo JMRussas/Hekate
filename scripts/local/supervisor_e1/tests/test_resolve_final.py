@@ -140,6 +140,28 @@ def test_model_time_compaction_retains_a_legacy_unsafe_stream_and_compacts_a_saf
     assert m.streams[("root-2", CK)].summary is not None and m.streams[("root-2", CK)].records == []
 
 
+def test_model_pressure_eviction_never_compacts_a_legacy_unsafe_stream_and_fails_closed():
+    m = ModelJournal("w#1", Bounds(per_stream=16, unresolved_streams=64, global_records=48, global_bytes=1 << 20), now=1.0)
+    feed(m.append, "unsafe", PRE + [("operator_resolution", TERMINAL), ("notify_intent", {"n": 1})])
+    unsafe = m.streams[("unsafe", CK)]
+    legacy_resolve_model(m, unsafe)
+    feed(m.append, "safe", PRE + [("operator_resolution", TERMINAL)])
+    m.resolve("safe", CK)
+    kept = ([(r.seq, r.kind) for r in unsafe.records], unsafe.count(), unsafe.nbytes(), unsafe.summary)
+    code = None
+    for i in range(64):                                                  # new live work until admission fails
+        try:
+            m.append(f"live-{i}", CK, "claim_intent", {"attemptId": f"a{i}"})
+        except JournalRefused as e:
+            code = e.code
+            break
+    assert code == "global_cap"                                           # fail closed: no eligible room left
+    safe = m.streams.get(("safe", CK))
+    assert safe is None or safe.summary is not None                       # the safe resolved stream was evicted for room
+    assert ([(r.seq, r.kind) for r in unsafe.records], unsafe.count(), unsafe.nbytes(), unsafe.summary) == kept
+    assert m.streams[("unsafe", CK)] is unsafe                            # the unsafe stream kept every record
+
+
 # --- resolvers and compaction: durable (owned disposable journal DB) ---------------------------------------------------
 
 def durable_stream(dj, root, *after, resolution=TERMINAL):
