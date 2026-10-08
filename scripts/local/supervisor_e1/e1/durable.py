@@ -271,6 +271,64 @@ def operator_takeover(dsn: str, writer: str, reconciliation_ref: str, now: float
     return new
 
 
+@dataclass(frozen=True)
+class TakeoverResult:
+    epoch: int
+    replayed: bool
+
+
+def operator_takeover_guarded(dsn: str, writer: str, reconciliation_ref: str, expected_epoch: int, now: float,
+                              *, fault: Callable[[str], None] | None = None) -> TakeoverResult:
+    """OPERATOR act (HK-ISSUE-015 M1 primitive; root msgs 2204/2207/2209): an idempotent, epoch-guarded takeover.
+
+    ONE transaction, taking the same locks in the same order as every journal mutation and as operator_takeover
+    (global_usage, then the writer's writer_usage row, both FOR UPDATE), so it serializes with legacy takeovers,
+    appends, stream creation and resolve. Under those locks:
+    - a takeovers row already bound to (writer, ref) from expected_epoch with the epoch still at its to_epoch is a
+      REPLAY: (to_epoch, replayed=True), nothing written. Bound from another epoch -> takeover_ref_bound_elsewhere;
+      the epoch moved on since -> epoch_moved_after_takeover; several legacy rows with that ref ->
+      takeover_ref_ambiguous (legacy audit rows are never rewritten);
+    - otherwise the epoch must equal expected_epoch (CAS) or it refuses epoch_moved_foreign; then it bumps and
+      appends the audit row exactly like operator_takeover.
+    Every refusal writes nothing. A caller that lost the outcome re-invokes with identical arguments and gets the
+    replay or the CAS, never a second bump.
+
+    It proves ONLY epoch/ref idempotency. It does NOT approve or bind the writer's stream manifest and is NOT a
+    reconciliation: a future reconcile step must bind the permitted stream manifest atomically itself.
+    `fault` is a TEST hook called with "after_commit" once the bump has committed."""
+    if not isinstance(reconciliation_ref, str) or not reconciliation_ref.strip():
+        raise JournalRefused("takeover", "a reconciliationRef is required")
+    if not _valid_clock(now):
+        raise JournalRefused("clock")
+    if isinstance(expected_epoch, bool) or not isinstance(expected_epoch, int) or not 1 <= expected_epoch < 2**63 - 1:
+        raise JournalRefused("takeover_expected_epoch")
+    with connect(dsn) as conn:
+        conn.execute("SELECT 1 FROM supervisor_journal.global_usage WHERE id = 1 FOR UPDATE")
+        row = conn.execute("SELECT epoch FROM supervisor_journal.writer_usage WHERE writer_id = %s FOR UPDATE", (writer,)).fetchone()
+        if row is None:
+            raise JournalRefused("takeover_unknown_writer")
+        current = row["epoch"]
+        bound = conn.execute("SELECT from_epoch, to_epoch FROM supervisor_journal.takeovers WHERE writer_id = %s AND "
+                             "reconciliation_ref = %s ORDER BY id LIMIT 2", (writer, reconciliation_ref)).fetchall()
+        if len(bound) > 1:
+            raise JournalRefused("takeover_ref_ambiguous")
+        if bound:
+            if bound[0]["from_epoch"] != expected_epoch:
+                raise JournalRefused("takeover_ref_bound_elsewhere", f"bound from {bound[0]['from_epoch']}, expected {expected_epoch}")
+            if current != bound[0]["to_epoch"]:
+                raise JournalRefused("epoch_moved_after_takeover", f"took over to {bound[0]['to_epoch']}, now {current}")
+            return TakeoverResult(current, True)
+        if current != expected_epoch:
+            raise JournalRefused("epoch_moved_foreign", f"expected {expected_epoch}, now {current}")
+        conn.execute("UPDATE supervisor_journal.writer_usage SET epoch = %s WHERE writer_id = %s", (current + 1, writer))
+        conn.execute("INSERT INTO supervisor_journal.takeovers (writer_id, from_epoch, to_epoch, reconciliation_ref, at_json) "
+                     "VALUES (%s, %s, %s, %s, %s)", (writer, current, current + 1, reconciliation_ref, json.dumps(now)))
+        conn.commit()
+    if fault is not None:
+        fault("after_commit")
+    return TakeoverResult(current + 1, False)
+
+
 def audit_counters(dsn: str) -> list[str]:
     """Recompute every counter from the rows (test assertion helper). Empty when consistent."""
     problems: list[str] = []
