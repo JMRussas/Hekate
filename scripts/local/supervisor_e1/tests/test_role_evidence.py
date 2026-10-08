@@ -12,14 +12,16 @@ from e1 import role_evidence as RE
 HEX = "a" * 64
 IDENT = {
     "planRoot": "11111111-1111-4111-8111-111111111111", "taskId": "22222222-2222-4222-8222-222222222222",
-    "runId": "run-1", "attemptId": "att-1", "epoch": 3, "stateRevision": 7, "claimKey": None, "operationKey": None,
+    "runId": "run-1", "attemptId": "att-1", "epoch": 3, "stateRevision": 7, "contentRevision": 4,
+    "claimKey": None, "operationKey": None,
     "role": {"id": "reviewer", "version": "1", "definitionSha256": HEX},
     "binding": {"binding": "unknown", "provider": "unknown", "model": "unknown"},
     "limits": {"timeoutSeconds": 600, "maxTurns": 0},
     "source": {"revision": "abc123", "snapshotSha256": "b" * 64},
     "reviewerRefs": ["rev-1"], "linkage": "unlinked",
 }
-EXPECTED = {k: IDENT[k] for k in ("planRoot", "taskId", "runId", "attemptId", "epoch", "stateRevision")}
+EXPECTED = {k: IDENT[k] for k in ("planRoot", "taskId", "runId", "attemptId", "epoch", "stateRevision",
+                                              "contentRevision")}
 BUDGET = {"max_file_bytes": 1024, "max_total_bytes": 4096}
 
 
@@ -72,7 +74,11 @@ def test_wrong_expected_identity_and_digest():
     assert verify(built, expected={**EXPECTED, "attemptId": "att-2"}).code == "identity_mismatch"
     assert verify(built, expected={**EXPECTED, "epoch": 4}).code == "identity_mismatch"
     assert verify(built, expected={**EXPECTED, "claimKey": "ck-1"}).code == "identity_mismatch"
+    assert verify(built, expected={**EXPECTED, "contentRevision": 5}).code == "identity_mismatch"
     assert verify(built, expected={"planRoot": EXPECTED["planRoot"]}).code == "expected"
+    no_content = {k: v for k, v in EXPECTED.items() if k != "contentRevision"}
+    assert verify(built, expected=no_content).code == "expected"
+    assert verify(built, expected={**no_content, "epoch": 4}).code == "expected"
     assert verify(built, expected_digest="c" * 64).code == "digest"
 
 
@@ -131,6 +137,8 @@ def test_case_collision_and_nonstring_names():
 
 
 @pytest.mark.parametrize("key,val", [("epoch", True), ("epoch", 0), ("epoch", 1.0), ("stateRevision", -1),
+                                     ("contentRevision", True), ("contentRevision", 0), ("contentRevision", -1),
+                                     ("contentRevision", 2**53), ("epoch", 2**53), ("stateRevision", 2**53),
                                      ("epoch", float("nan")), ("linkage", "native"), ("planRoot", "not-a-uuid"),
                                      ("limits", {"a": True}), ("limits", {"a": float("nan")}), ("limits", {1: 1}),
                                      ("role", {"id": "r", "version": "1"}), ("claimKey", 5)])
@@ -143,6 +151,28 @@ def test_unlinked_cannot_name_claim_but_host_asserted_can():
     refused("identity", build, ident={**IDENT, "claimKey": "ck-1"})
     ok = build(ident={**IDENT, "linkage": "host_asserted", "claimKey": "ck-1", "operationKey": "op-1"})
     assert verify(ok, expected={**EXPECTED, "claimKey": "ck-1", "linkage": "host_asserted"}).ok
+
+
+def test_unlinked_may_carry_operation_key_but_never_claim_key():
+    built = build(ident={**IDENT, "operationKey": "manual-1"})
+    m = built.manifest()["identity"]
+    assert (m["linkage"], m["claimKey"], m["operationKey"]) == ("unlinked", None, "manual-1")
+    assert verify(built, expected={**EXPECTED, "operationKey": "manual-1", "linkage": "unlinked"}).ok
+    assert verify(built, expected={**EXPECTED, "operationKey": "manual-2"}).code == "identity_mismatch"
+    assert verify(built, expected={**EXPECTED, "claimKey": "ck-1"}).code == "identity_mismatch"
+    assert verify(built, expected={**EXPECTED, "claimKey": "ck-1", "linkage": "unlinked"}).code == "identity"
+    refused("identity", build, ident={**IDENT, "claimKey": "ck-1", "operationKey": "manual-1"})
+    forged = json.loads(built.body)
+    forged["identity"]["claimKey"] = "ck-1"
+    body = json.dumps(forged, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    assert RE.verify_manifest(body, {"out.txt": b"hello"}, expected=EXPECTED, **BUDGET).code == "identity"
+
+
+def test_integer_boundary_is_safe_javascript_integer():
+    assert RE._MAX_INT == 9007199254740991
+    top = {**IDENT, "epoch": 2**53 - 1, "stateRevision": 2**53 - 1, "contentRevision": 2**53 - 1}
+    built = build(ident=top)
+    assert verify(built, expected={k: top[k] for k in EXPECTED}).ok
 
 
 def test_missing_identity_field_and_bad_payload_types():

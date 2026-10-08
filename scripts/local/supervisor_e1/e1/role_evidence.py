@@ -29,7 +29,7 @@ MAX_FILE_CEILING = 16 * 1024 * 1024
 MAX_TOTAL_CEILING = 64 * 1024 * 1024
 ACCESS = ("restricted_raw", "review_export")
 LINKAGE = ("unlinked", "host_asserted")
-_MAX_INT = 2**53
+_MAX_INT = 2**53 - 1  # largest safe JS integer
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}", re.ASCII)
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.ASCII)
 _SHA = re.compile(r"[0-9a-f]{64}", re.ASCII)
@@ -136,20 +136,20 @@ def _linkage(v: Any) -> str:
 # "unknown" is an explicit, allowed value wherever the host cannot attest binding/provider/model.
 _IDENTITY: dict[str, Any] = {
     "planRoot": _uuid, "taskId": _uuid, "runId": _id, "attemptId": _id,
-    "epoch": _int, "stateRevision": _int, "claimKey": _opt_id, "operationKey": _opt_id,
+    "epoch": _int, "stateRevision": _int, "contentRevision": _int, "claimKey": _opt_id, "operationKey": _opt_id,
     "role": lambda v: _obj(v, {"id": _id, "version": _id, "definitionSha256": _sha}),
     "binding": lambda v: _obj(v, {"binding": _id, "provider": _id, "model": _id}),
     "limits": _limits,
     "source": lambda v: _obj(v, {"revision": _id, "snapshotSha256": _sha}),
     "reviewerRefs": _refs, "linkage": _linkage,
 }
-_REQUIRED_EXPECTED = ("planRoot", "taskId", "runId", "attemptId", "epoch", "stateRevision")
+_REQUIRED_EXPECTED = ("planRoot", "taskId", "runId", "attemptId", "epoch", "stateRevision", "contentRevision")
 
 
 def _identity(v: Any, *, partial: bool = False) -> dict[str, Any]:
     out = _obj(v, _IDENTITY, partial=partial)
-    if out.get("linkage") == "unlinked" and (out.get("claimKey") is not None or out.get("operationKey") is not None):
-        raise _fail("identity")  # an unlinked stream has no claim receipt to name
+    if out.get("linkage") == "unlinked" and out.get("claimKey") is not None:
+        raise _fail("identity")  # an unlinked stream has no claim receipt; operationKey is only a correlation label
     return out
 
 
@@ -265,8 +265,8 @@ def verify_manifest(body: bytes, payloads: Mapping[str, bytes], *, expected: Map
                     max_total_bytes: int, expected_digest: str | None = None) -> VerifyResult:
     """Check schema, caller-expected identity, exact membership, lengths and hashes. Never raises on bad input.
 
-    `expected` must name at least planRoot, taskId, runId, attemptId, epoch and stateRevision (other identity keys are
-    compared when present), so the manifest is checked against what the CALLER expects and not against itself.
+    `expected` must name at least planRoot, taskId, runId, attemptId, epoch, stateRevision and contentRevision (other
+    identity keys are compared when present; epoch is the attempt epoch, never a content revision), so the manifest is checked against what the CALLER expects and not against itself.
     """
     try:
         _budgets(max_file_bytes, max_total_bytes)

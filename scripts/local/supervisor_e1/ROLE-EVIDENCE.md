@@ -18,12 +18,15 @@ result = verify_manifest(body, {"stdout.txt": data}, expected={...}, max_file_by
 ```
 
 Identity fields (all required, exact keys, unknown fields refused): `planRoot`, `taskId` (lowercase UUIDs), `runId`,
-`attemptId`, `epoch` (positive content revision), `stateRevision` (positive), `claimKey`/`operationKey` (id or `null`),
+`attemptId`, `epoch` (positive attempt epoch), `stateRevision` and `contentRevision` (positive; distinct from the
+attempt epoch, which is never used as a content revision), integers in `1..2**53-1` (safe JS range),
+`claimKey`/`operationKey` (id or `null`),
 `role{id,version,definitionSha256}`, `binding{binding,provider,model}` (`"unknown"` where the host cannot attest),
 `limits` (<=16 non-negative int counters), `source{revision,snapshotSha256}`, `reviewerRefs` (<=8 ids), `linkage`.
 
-`linkage` is `unlinked` (e.g. direct CLI streams without claim receipts; claim/operation keys must be `null`) or
-`host_asserted`. Native trace linkage is never claimed. Task/attempt identity is correlation data only and grants no
+`linkage` is `unlinked` (e.g. direct CLI streams without claim receipts; `claimKey` must be `null`) or
+`host_asserted`. `operationKey` is operation correlation (e.g. a manual transition), allowed on unlinked attempts; a
+`claimKey` names a native trace claim receipt, which an unlinked attempt does not have, so it is refused there. Native trace linkage is never claimed. Task/attempt identity is correlation data only and grants no
 authority; the manifest says `authority: none`.
 
 Payload entries carry name, content type, purpose, access (`restricted_raw` | `review_export`), byte count, sha256.
@@ -39,7 +42,7 @@ real ints (no bool/float/NaN) and mapping keys must be strings. Inputs are never
 
 Checks, in order: budgets, expected identity shape, payload names/sizes, manifest size, strict parse (duplicate keys,
 NaN, unknown fields, wrong schema refused), canonical re-encoding equality, optional expected digest, expected identity
-(`expected` must name planRoot, taskId, runId, attemptId, epoch, stateRevision; other keys compared when given), exact
+(`expected` must name planRoot, taskId, runId, attemptId, epoch, stateRevision, contentRevision; other keys compared when given), exact
 membership (missing and extra refused), lengths, then sha256. Failures are fixed codes plus at most a validated payload
 name; no content appears in errors.
 
