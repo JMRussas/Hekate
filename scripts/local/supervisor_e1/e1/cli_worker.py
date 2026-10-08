@@ -1,4 +1,7 @@
 """HK-ISSUE-007: a REAL Claude Code CLI worker adapter for the pilot driver (e1/pilot.py `Worker`).
+Plan 048 adds a second backend, `codex exec --json` (CliConfig.backend="codex"): the same owned worktree, prompt,
+worker-authored acts, timeouts, tree kill, supervisor commit and attempt trace; only the argv, the event parsing and
+the recorded terms differ (see codex_command, codex_act_lines, codex_terminal, codex_usage, codex_worker_terms).
 TEST-SCOPED: exercised with a fake CLI (tests/fake_cli.py); a real model run is a separate, reviewed
 step and is never started automatically.
 
@@ -52,6 +55,8 @@ BUDGET = re.compile(r"^(0|[1-9][0-9]{0,2})\.[0-9]{2}$")           # dollars as a
 TEST_COMMAND = re.compile(r"^[A-Za-z0-9 ._/:=\-]{1,200}$")          # no shell metacharacters
 SAFE_TOOLS = ("Read", "Glob", "Grep", "Edit", "Write")
 PERMISSION_MODES = ("acceptEdits", "default", "plan")
+BACKENDS = ("claude", "codex")
+BACKEND_KINDS = {"claude": ("claude-cli", "fake-cli"), "codex": ("codex-cli", "fake-cli")}
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
 ACT_PREFIX = "HEKATE-ACT "
 ZERO_OID = "0" * 40
@@ -95,6 +100,9 @@ class CliConfig:
     # typed `prepare_failed`: nothing is journaled and nothing is spawned. None (the default) = unchanged.
     prepare: Callable[[Path], None] | None = None
     execution_kind: str = "claude-cli"   # labels the attempt trace only (P.EXECUTION_KINDS); never changes behaviour
+    # The worker CLI (plan 048): "claude" (default, unchanged) or "codex" (`codex exec --json`). For codex, `model` may
+    # be None = the CLI's own default (requested nothing, reported nothing); the $/turn bounds are NOT enforced by it.
+    backend: str = "claude"
 
 
 def _int(v: Any, lo: int, hi: int) -> bool:
@@ -112,7 +120,9 @@ def validate(cfg: CliConfig) -> None:
         raise CliRefused("config_run_id")
     if not (isinstance(cfg.run_dir, Path) and cfg.run_dir.is_absolute() and cfg.run_dir.is_dir()):
         raise CliRefused("config_run_dir")
-    if not (isinstance(cfg.model, str) and MODEL.fullmatch(cfg.model)):
+    if cfg.backend not in BACKENDS:
+        raise CliRefused("config_backend")
+    if not ((isinstance(cfg.model, str) and MODEL.fullmatch(cfg.model)) or (cfg.backend == "codex" and cfg.model is None)):
         raise CliRefused("config_model")
     if not (isinstance(cfg.max_budget_usd, str) and BUDGET.fullmatch(cfg.max_budget_usd) and cfg.max_budget_usd != "0.00"):
         raise CliRefused("config_budget", "an explicit budget like '1.50' (> 0) is required")
@@ -136,8 +146,19 @@ def validate(cfg: CliConfig) -> None:
         raise CliRefused("config_restricted")
     if not RUN_ID.fullmatch(cfg.committer.replace("-", "")):
         raise CliRefused("config_committer")
-    if cfg.execution_kind not in P.EXECUTION_KINDS:
+    if cfg.execution_kind not in P.EXECUTION_KINDS or cfg.execution_kind not in BACKEND_KINDS[cfg.backend]:
         raise CliRefused("config_execution_kind")
+
+
+def codex_command(cfg: CliConfig, workdir: Path) -> list[str]:
+    """`codex exec` argv (plan 048, exactly the arguments proven by smoke-004 plus a writable workspace for the edit). The
+    prompt goes to stdin (`-`). The user's config.toml (its MCP servers and credentials) is NOT loaded, nor are user
+    execpolicy rules; approvals never prompt; the unelevated Windows sandbox confines writes to the worktree. Unlike
+    Claude's Bash(<test_command>) allowlist, the sandbox lets the worker run ANY shell command inside the workspace.
+    Never --dangerously-bypass-approvals-and-sandbox, --approve-for-me or codex's own --worktree."""
+    return [*map(str, cfg.command), "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+            "--sandbox", "workspace-write", "--color", "never", "-C", str(workdir), "-c", 'approval_policy="never"',
+            "-c", 'windows.sandbox="unelevated"', *(["-m", cfg.model] if cfg.model else []), "-"]
 
 
 def build_command(cfg: CliConfig) -> list[str]:
@@ -157,10 +178,27 @@ def build_command(cfg: CliConfig) -> list[str]:
             "--no-session-persistence", "--tools", ",".join(exposed), "--allowedTools", *approved]
 
 
-def worker_env() -> dict[str, str]:
+def command_for(cfg: CliConfig, workdir: Path) -> list[str]:
+    return codex_command(cfg, workdir) if cfg.backend == "codex" else build_command(cfg)
+
+
+def windows_apps_dir() -> str | None:
+    base = os.environ.get("LOCALAPPDATA")
+    return os.path.normcase(os.path.normpath(os.path.join(base, "Microsoft", "WindowsApps"))) if base else None
+
+
+def worker_env(backend: str = "claude") -> dict[str, str]:
     """The allowlisted environment plus CONTROLLED values: no bytecode files from any Python the worker
-    (or its test command) runs, so a test run cannot leave __pycache__ in the diff (msg 1545)."""
-    return {**{k: os.environ[k] for k in ENV_ALLOW if k in os.environ}, "PYTHONDONTWRITEBYTECODE": "1"}
+    (or its test command) runs, so a test run cannot leave __pycache__ in the diff (msg 1545). For codex ONLY, the
+    exact %LOCALAPPDATA%\\Microsoft\\WindowsApps PATH entry is dropped: its pwsh.exe app-execution alias cannot start under
+    the unelevated sandbox's restricted token, and without it Codex falls back to System32 Windows PowerShell
+    (smokes 003/004, diag-002)."""
+    env = {**{k: os.environ[k] for k in ENV_ALLOW if k in os.environ}, "PYTHONDONTWRITEBYTECODE": "1"}
+    target = windows_apps_dir()
+    if backend == "codex" and target and "PATH" in env:
+        env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
+                                      if not p or os.path.normcase(os.path.normpath(p)) != target)
+    return env
 
 
 def git_env() -> dict[str, str]:
@@ -526,6 +564,56 @@ def reported_usage(event: dict[str, Any]) -> dict[str, Any]:
             "duration_ms": count(event.get("duration_ms"))}
 
 
+# --- codex exec --json events (plan 048; shapes from smoke-004) -------------------------------------------------
+
+CODEX_USAGE_LABEL = "cli-reported tokens, not metered; no cost, turns or duration reported"
+CODEX_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens")
+
+
+def codex_act_lines(event: dict[str, Any]) -> list[str]:
+    """`HEKATE-ACT` payloads from the worker's OWN messages only: item.completed with item.type agent_message. Command
+    output (command_execution aggregated_output), file changes and anything else never count."""
+    item = event.get("item")
+    if event.get("type") != "item.completed" or not isinstance(item, dict) or item.get("type") != "agent_message":
+        return []
+    text = item.get("text")
+    return [ln[len(ACT_PREFIX):] for ln in text.splitlines() if ln.startswith(ACT_PREFIX)] if isinstance(text, str) else []
+
+
+def codex_terminal(event: dict[str, Any]) -> str | None:
+    """The class of a terminal codex event, else None. `turn.completed` only means the TURN ENDED ("success" here only
+    permits the supervisor's capture checks; acceptance stays the verifier's). `turn.failed` or a top-level `error`
+    event is an error."""
+    t = event.get("type")
+    if t == "turn.completed":
+        return "success"
+    if t == "turn.failed":
+        return "error:turn_failed"
+    if t == "error":
+        return "error:error"
+    return None
+
+
+def codex_usage(event: dict[str, Any]) -> dict[str, Any]:
+    """Token counts from a turn.completed `usage` (each independently null unless an int >= 0, not bool). Codex reports no
+    cost, turn count or duration, so those stay null."""
+    u = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+    tokens = {k: (u.get(k) if isinstance(u.get(k), int) and not isinstance(u.get(k), bool) and u.get(k) >= 0 else None)
+              for k in CODEX_TOKEN_FIELDS}
+    return {"label": CODEX_USAGE_LABEL, "total_cost_usd": None, "num_turns": None, "duration_ms": None, "tokens": tokens}
+
+
+def codex_worker_terms(cfg: CliConfig) -> dict[str, Any]:
+    """The truthful terms of a codex launch (root GO 2469): which model was requested (None = the CLI default; codex
+    reports no model), that the $ budget and turn limit are NOT enforced by the CLI (only the supervisor's timeouts and
+    output caps are), that usage is tokens only, and the shell scope. Nothing about billing is inferred."""
+    return {"backend": "codex", "requestedModel": cfg.model, "requestedModelSource": "override" if cfg.model else "cli-default",
+            "reportedModel": "unreported", "budgetEnforced": False, "turnsEnforced": False,
+            "enforcedBounds": ["total_timeout_s", "first_output_timeout_s", "inactivity_timeout_s", "stdout caps", "stderr retention cap"],
+            "usage": "tokens only", "shellScope": "any shell command inside the workspace-write sandbox (no per-command allowlist)",
+            "sandbox": {"mode": "workspace-write", "windows": "unelevated"}, "userConfig": "ignored", "execPolicyRules": "ignored"}
+
+
 # --- the adapter --------------------------------------------------------------------------------------------
 
 @dataclass
@@ -591,7 +679,7 @@ class CliWorker:
             except Exception:  # noqa: BLE001 -- the host hook failed: no launch_intent, no spawn
                 return P.WorkReport("failed", reason="prepare_failed")
 
-        cmd = build_command(cfg)
+        cmd = command_for(cfg, wt)
         prompt = self.prompt(order).encode("utf-8")
         trace = AttemptTrace(cfg, order.round)
         try:
@@ -601,10 +689,13 @@ class CliWorker:
         ev.trace = {"ref": trace.ref(), "final": None}
         # The intent is durable BEFORE the process can exist; it names the trace files so a live, killed or
         # aborted attempt can be found even when no `exited` record is ever written.
+        intent = {"runId": cfg.run_id, "round": order.round, "command": " ".join(cmd)[:1024],
+                  "worktreeRef": str(wt)[:512], "baseRef": cfg.base_sha, "budget": cfg.max_budget_usd,
+                  "maxTurns": cfg.max_turns, "timeoutS": cfg.total_timeout_s, "trace": trace.ref()}
+        if cfg.backend == "codex":                # what this CLI does NOT enforce, said where the launch is recorded
+            intent["worker"] = codex_worker_terms(cfg)
         try:
-            order.journal("launch_intent", {"runId": cfg.run_id, "round": order.round, "command": " ".join(cmd)[:1024],
-                                            "worktreeRef": str(wt)[:512], "baseRef": cfg.base_sha, "budget": cfg.max_budget_usd,
-                                            "maxTurns": cfg.max_turns, "timeoutS": cfg.total_timeout_s, "trace": trace.ref()})
+            order.journal("launch_intent", intent)
         except BaseException:
             ev.trace["final"] = trace.close(complete=False, notes=("trace_incomplete:launch_intent_failed",))
             raise
@@ -612,7 +703,7 @@ class CliWorker:
         trace.start()
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(wt),
-                                    env=worker_env(), creationflags=flags, start_new_session=(sys.platform != "win32"))
+                                    env=worker_env(cfg.backend), creationflags=flags, start_new_session=(sys.platform != "win32"))
         except OSError:
             ev.trace["final"] = trace.close(complete=True, notes=("spawn_failed",))
             order.journal("exited", {"code": None, "reason": "spawn_failed", "trace": ev.trace["final"]})
@@ -730,15 +821,17 @@ class CliWorker:
                 continue
             if not isinstance(event, dict):
                 continue
-            for m in reported_models(event):
+            codex = cfg.backend == "codex"
+            for m in ([] if codex else reported_models(event)):          # codex reports no model
                 if m not in ev.reported_models and len(ev.reported_models) < MODELS_MAX:
                     ev.reported_models.append(m)
-            if event.get("type") == "result":
-                ev.results.append(result_class(event))
+            terminal = codex_terminal(event) if codex else (result_class(event) if event.get("type") == "result" else None)
+            if terminal is not None:
+                ev.results.append(terminal)
                 if ev.reported_usage is None:                # the first terminal result only; outcomes unchanged
-                    ev.reported_usage = reported_usage(event)
+                    ev.reported_usage = codex_usage(event) if codex else reported_usage(event)
                 ev.result_sha256 = hashlib.sha256(item.rstrip(b"\r\n")).hexdigest()
-            for raw in assistant_act_lines(event):
+            for raw in (codex_act_lines(event) if codex else assistant_act_lines(event)):
                 act, why = build_act(raw, order.execution_key, seq)
                 if act is not None:
                     d = order.act(json.dumps(act))

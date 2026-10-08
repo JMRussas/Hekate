@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from e1 import cli_worker as W
 from e1 import plan_import as PI
 from e1 import plan_run as PR
 from e1 import pilot_real as R
@@ -93,20 +94,38 @@ def check_run_inputs(a: argparse.Namespace) -> tuple[Path, tuple[Path, ...]]:
             raise Refused("executable_missing", str(p))
     if R.sha256_file(command[-1]) != a.exe_sha256:
         raise Refused("executable_hash_mismatch", str(command[-1]))
+    worker = getattr(a, "worker", "claude")
+    model = getattr(a, "worker_model", None)
+    if model is not None and (worker != "codex" or not W.MODEL.fullmatch(model)):
+        raise Refused("worker_model", "--worker-model needs --worker codex and a plain model name")
     return run_root, command
 
 
-def result_json(res: PR.PlanRunResult, *, fake: bool, root_go: str, run_root: Path) -> dict[str, Any]:
+def execution_kind(a: argparse.Namespace) -> str:
+    """HOST-DECLARED (HK-ISSUE-013): fake when the offline fake CLI runs, else the real CLI chosen by --worker."""
+    return "fake-cli" if a.exe_arg is not None else f"{getattr(a, 'worker', 'claude')}-cli"
+
+
+def worker_args(a: argparse.Namespace) -> dict[str, Any]:
+    return {"backend": getattr(a, "worker", "claude"), "worker_model": getattr(a, "worker_model", None)}
+
+
+def result_json(res: PR.PlanRunResult, *, fake: bool, root_go: str, run_root: Path, kind: str | None = None,
+                worker: dict[str, Any] | None = None) -> dict[str, Any]:
     logs = sorted(run_root.glob("plan-run-*.json"), key=lambda p: int(p.stem.rsplit("-", 1)[1]))
     out: dict[str, Any] = {
         "outcome": res.outcome, "reason": res.reason, "detail": res.detail, "root": res.root, "importSha256": res.import_sha256,
-        "executionKind": "fake-cli" if fake else "claude-cli", "rootGo": root_go, "runRoot": str(run_root),
+        "executionKind": kind or ("fake-cli" if fake else "claude-cli"), "rootGo": root_go, "runRoot": str(run_root),
         "planRunLog": str(logs[-1]) if logs else None,
         "steps": [{"key": s.key, "action": s.action, "outcome": s.outcome, "reason": s.reason, "runRoot": s.run_root,
                    "evidence": s.evidence} for s in res.steps],
         "nodes": {k: {"work": s["work"], "acceptance": s["acceptance"], "ready": s["ready"], "blockers": s["blockers"],
                       "artifactRef": s["artifactRef"]} for k, s in res.nodes.items()},
     }
+    if worker is not None and worker["backend"] != "claude":         # Claude-default output keys are unchanged
+        out["worker"] = {"backend": worker["backend"], "requestedModel": worker["worker_model"],
+                         "requestedModelSource": "override" if worker["worker_model"] else "cli-default",
+                         "terms": "see each node's evidence.json `worker` (unenforced $/turn limits, tokens-only usage)"}
     if fake:
         out["fake"] = "FAKE CLI worker (offline test hook): no model ran; nothing here is real-model evidence"
     if res.outcome != "all_done":
@@ -143,11 +162,11 @@ def run(a: argparse.Namespace, raw: bytes, run_root: Path, command: tuple[Path, 
         aj = ActsJournal(h.dsn, f"plan-cli#{uuid.uuid4().hex[:8]}", now=1000.0).open()
         try:
             res = PR.run_plan(plan, run_root, setup=setup, client=SupervisorClient(h.base_url), aj=aj, executable=command,
-                              executable_sha256=a.exe_sha256, execution_kind="fake-cli" if fake else "claude-cli",
-                              root_go=a.root_go)
+                              executable_sha256=a.exe_sha256, execution_kind=execution_kind(a),
+                              root_go=a.root_go, **worker_args(a))
         finally:
             aj.close()
-        out = result_json(res, fake=fake, root_go=a.root_go, run_root=run_root)
+        out = result_json(res, fake=fake, root_go=a.root_go, run_root=run_root, kind=execution_kind(a), worker=worker_args(a))
         ok = res.outcome == "all_done"
     except Exception as e:  # noqa: BLE001 -- any failure after the harness started is a typed stop
         out = {"outcome": "needs_operator", "reason": "unexpected_error", "detail": type(e).__name__}
@@ -225,10 +244,11 @@ def run_local(a: argparse.Namespace, raw: bytes, run_root: Path, command: tuple[
             except PI.ImportRefused as e:
                 return 1, {"outcome": "needs_operator", "reason": "import_refused", "detail": {"code": e.code, "detail": e.detail}}
             res = PR.run_plan(plan, run_root, setup=setup, client=client, aj=aj, executable=command,
-                              executable_sha256=a.exe_sha256, execution_kind="fake-cli" if fake else "claude-cli", root_go=a.root_go)
+                              executable_sha256=a.exe_sha256, execution_kind=execution_kind(a), root_go=a.root_go,
+                              **worker_args(a))
         finally:
             aj.close()
-        out = result_json(res, fake=fake, root_go=a.root_go, run_root=run_root)
+        out = result_json(res, fake=fake, root_go=a.root_go, run_root=run_root, kind=execution_kind(a), worker=worker_args(a))
         out["store"] = {"kind": "local", "db": store.loc.db, "projectId": store.loc.project_id}
         if res.outcome != "all_done":
             out["resumable"], out["note"] = True, RESUMABLE_LOCAL
@@ -254,6 +274,10 @@ def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -
                     help="run: harness = a disposable database (default); local = the coordinator's own persistent database")
     ap.add_argument("--state-dir", type=Path, help="run --store local: the coordinator state dir holding its locator")
     ap.add_argument("--actor", default="operator:local", help="run --store local: the operator LABEL recorded with each act")
+    ap.add_argument("--worker", choices=W.BACKENDS, default="claude",
+                    help="run: the worker CLI (plan 048): claude (default) or codex (`codex exec`, pinned by --exe/--exe-sha256)")
+    ap.add_argument("--worker-model", help="run --worker codex: the model to request (default: the CLI's own default; "
+                                           "the spec's model is a Claude alias and is not passed to codex)")
     a = ap.parse_args(argv)
     try:
         raw, doc, specs = load_plan(a.plan)

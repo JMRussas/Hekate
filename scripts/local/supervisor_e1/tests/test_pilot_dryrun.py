@@ -297,7 +297,7 @@ def test_the_default_run_is_labelled_simulated_and_dry(pilot, tmp_path):
     assert (log["executionKind"], log["dryRun"]) == ("simulated", True)
 
 
-@pytest.mark.parametrize("kind, dry", [("simulated", True), ("fake-cli", True), ("claude-cli", False)])
+@pytest.mark.parametrize("kind, dry", [("simulated", True), ("fake-cli", True), ("claude-cli", False), ("codex-cli", False)])
 def test_dry_run_is_derived_only_from_the_declared_kind(tmp_path, kind, dry):
     r = P.resolve(cfg(None, tmp_path))
     p = P.Pilot(r, None, None, None, reviewer=Verdicts(), execution_kind=kind)

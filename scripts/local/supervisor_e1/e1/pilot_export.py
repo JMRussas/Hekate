@@ -113,7 +113,7 @@ def worker_from_journal(dsn: str, root: str, claim_key: str, execution_kind: str
         return {"kind": "fake", "requestedModel": None, "reportedModels": [], "reportedModelsAuthenticated": False}
     if not isinstance(data, dict) or "requestedModel" not in data or "reportedModels" not in data:
         raise X.ExportRefused("worker_unrecorded", "no journal `exited` record with model fields for this round")
-    return {"kind": "claude-cli" if execution_kind == "claude-cli" else "fake", "requestedModel": data["requestedModel"],
+    return {"kind": execution_kind if execution_kind in P.REAL_KINDS else "fake", "requestedModel": data["requestedModel"],
             "reportedModels": list(data["reportedModels"]), "reportedModelsAuthenticated": False}
 
 

@@ -47,8 +47,10 @@ H1_BUDGET = {"windowTokens": 200_000, "maxHistoryTurns": 0, "safetyTokens": 0, "
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 MAX_ROUNDS_LIMIT = 3
 # HK-ISSUE-013: what actually ran, as DECLARED by the host that wired the worker (never inferred):
-# simulated = the in-process dry worker; fake-cli = the CLI adapter driving tests/fake_cli.py; claude-cli = the real executable.
-EXECUTION_KINDS = ("simulated", "fake-cli", "claude-cli")
+# simulated = the in-process dry worker; fake-cli = the CLI adapter driving a fake CLI (tests/fake_cli.py, fake_codex.py);
+# claude-cli / codex-cli = the real executable (plan 048 adds codex-cli).
+EXECUTION_KINDS = ("simulated", "fake-cli", "claude-cli", "codex-cli")
+REAL_KINDS = ("claude-cli", "codex-cli")
 
 
 class PilotRefused(Exception):
@@ -550,6 +552,6 @@ class Pilot:
                "rounds": [asdict(r) for r in result.rounds],
                # HK-ISSUE-013: HOST-DECLARED execution kind; dryRun is derived from it, never from report.attested
                # (a fake CLI is also attested). No authentication claim is made by either field.
-               "executionKind": self.execution_kind, "dryRun": self.execution_kind != "claude-cli",
+               "executionKind": self.execution_kind, "dryRun": self.execution_kind not in REAL_KINDS,
                "workaround": "HK-ISSUE-005: fix rounds use done->cancelled->todo + a new claimKey (dry run only)"}
         (self.r.run_dir / "run.json").write_text(json.dumps(doc, indent=1, sort_keys=True), encoding="utf-8", newline="\n")
