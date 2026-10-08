@@ -156,3 +156,95 @@ def test_a_recipe_node_must_be_linear_and_valid_before_any_write(fx):
     with pytest.raises(PI.ImportRefused) as e:
         PI.import_plan(rec, str(uuid.uuid4()), chain(fx, wpath, wsha))
     assert e.value.code == "recipe_invalid" and e.value.detail["code"] == "recipe_oracle" and rec.calls == []
+
+
+# ------------------------------------------------------------------------ same-repository lineage (root msg 1860)
+
+def test_a_recipe_targeting_another_repository_is_refused_before_any_clone(fx, harness, setup, driver, tmp_path):
+    from task_support import make_repo
+    other = make_repo(tmp_path / "elsewhere")
+    doc = recipe_doc(fx)
+    doc["template"]["source"]["repo"] = other["repo"]
+    path, rsha = write_recipe(fx, doc)
+    plan = PI.import_plan(setup, harness.project_id, chain(fx, path, rsha, "d3 other repo"))
+    r = driver(plan)
+    assert (r.outcome, r.reason) == ("needs_operator", "repo_lineage_mismatch")
+    from e1 import plan_run as PR
+    got = r.detail["detail"]
+    assert PR.same_repo(got["recipeRepo"], other["repo"]) and PR.same_repo(got["predecessorRepo"], fx.f["repo"])
+    assert r.nodes["a"]["acceptance"] == "accepted" and r.nodes["b"]["work"] == "todo"
+    assert not (tmp_path / "plan-run" / "b.integration").exists() and not (tmp_path / "plan-run" / "b").exists()
+
+
+THIRD_TEST = "tests/unit/third.test.ts"
+THIRD_CASES = '{"cases": [{"name": "value is 43", "expect": "43", "source": "src/value.txt"}, ' \
+              '{"name": "third loads", "expect": "*", "source": "src/value.txt"}]}\n'
+
+
+def third_recipe(fx) -> dict:
+    """c, after the RECIPE node b: src/value.txt 42 -> 43, its own new oracle; the same original repository."""
+    d = recipe_doc(fx)
+    tpl = d["template"]
+    node = fx.node.as_posix()
+    argv = [node, "node_modules/vitest/vitest.mjs", "run", "--reporter=json", THIRD_TEST]
+    tpl["task"] = {"text": "Set src/value.txt to 43.", "criteria": "The third oracle passes."}
+    tpl["allow"] = [{"path": "src/value.txt", "status": "M", "mode": "100644"}]
+    tpl["oracle"]["files"] = [{"path": THIRD_TEST, "sha256": sha(THIRD_CASES.encode("utf-8"))}]
+    tpl["oracle"]["baseline"].update(argv=argv, cases=[
+        {"file": THIRD_TEST, "fullName": "value is 43", "status": "failed", "failureFirstLine": "AssertionError: expected '42' to be '43'"},
+        {"file": THIRD_TEST, "fullName": "third loads", "status": "passed", "failureFirstLine": None}])
+    tpl["verify"]["steps"][1]["argv"] = argv
+    tpl["worker"]["testCommand"] = " ".join(argv)
+    f = fx.tmp / "oracle-third.json"
+    f.write_text(THIRD_CASES, encoding="utf-8", newline="\n")
+    d["oracle"] = [{"path": THIRD_TEST, "sha256": sha(THIRD_CASES.encode("utf-8")), "from": f.as_posix(), "replaces": None}]
+    return d
+
+
+def test_a_three_node_chain_through_a_recipe_predecessor_in_one_run(fx, harness, setup, driver, tmp_path):
+    """c's predecessor b is itself a recipe node: b is bound through ITS resolved spec + provenance (spec_ran), and
+    the lineage check uses b's recipe template repository, not b's integration clone."""
+    bpath, bsha = write_recipe(fx, recipe_doc(fx))
+    cpath, csha = write_recipe(fx, third_recipe(fx), "recipe-c.json")
+    raw = doc_bytes([{"key": "a", "name": "set value", "spec": {"path": fx.a_path, "sha256": fx.a_spec.sha256}, "after": []},
+                     {"key": "b", "name": "set other", "spec": {"recipe": {"path": bpath, "sha256": bsha}}, "after": ["a"]},
+                     {"key": "c", "name": "set 43", "spec": {"recipe": {"path": cpath, "sha256": csha}}, "after": ["b"]}],
+                    title="d3 three")
+    plan = PI.import_plan(setup, harness.project_id, raw)
+    r = driver(plan, scenarios={"a": "value_ok", "b": "other_ok", "c": "value43_ok"})
+    assert (r.outcome, r.reason) == ("all_done", None)
+    assert [(s.key, s.outcome) for s in r.steps] == [("a", "accepted"), ("b", "accepted"), ("c", "accepted")]
+    pc = json.loads((tmp_path / "plan-run" / "c.integration" / "provenance.json").read_text(encoding="utf-8"))
+    pb = json.loads((tmp_path / "plan-run" / "b.integration" / "provenance.json").read_text(encoding="utf-8"))
+    assert pc["predecessor"]["artifactRef"] == r.nodes["b"]["artifactRef"]
+    assert pc["predecessor"]["specSha256"] == pb["resolvedSpecSha256"]                # b bound via its resolved spec
+    repo = tmp_path / "plan-run" / "c.integration" / "repo"
+    assert git(repo, "rev-parse", f"{pc['base']}^") == r.nodes["b"]["artifactRef"]
+    assert git(repo, "merge-base", "--is-ancestor", r.nodes["a"]["artifactRef"], pc["base"]) == ""   # a -> b -> c lineage
+
+
+@pytest.mark.parametrize("corrupt, reason", [
+    (lambda p: p.write_text(json.dumps(dict(json.loads(p.read_text(encoding="utf-8")), recipeSha256="0" * 64)), encoding="utf-8"),
+     "predecessor_provenance"),                                    # b's provenance no longer names b's recipe pin
+    (lambda p: p.write_text("{not json", encoding="utf-8"), "predecessor_evidence"),          # unreadable record (R4)
+])
+def test_a_recipe_predecessors_own_provenance_is_checked(fx, harness, setup, driver, tmp_path, corrupt, reason):
+    """Review 1866 R3/R4: c's predecessor b is a recipe node; b's resolved spec is trusted ONLY through a provenance
+    that names b's recipe pin and the resolved spec sha."""
+    bpath, bsha = write_recipe(fx, recipe_doc(fx))
+    cpath, csha = write_recipe(fx, third_recipe(fx), "recipe-c.json")
+    good_c = Path(cpath).read_bytes()
+    raw = doc_bytes([{"key": "a", "name": "set value", "spec": {"path": fx.a_path, "sha256": fx.a_spec.sha256}, "after": []},
+                     {"key": "b", "name": "set other", "spec": {"recipe": {"path": bpath, "sha256": bsha}}, "after": ["a"]},
+                     {"key": "c", "name": "set 43", "spec": {"recipe": {"path": cpath, "sha256": csha}}, "after": ["b"]}],
+                    title=f"d3 prov {reason}")
+    plan = PI.import_plan(setup, harness.project_id, raw)
+    Path(cpath).write_bytes(good_c + b" ")                         # run 1 stops at c, after a and b are accepted
+    scen = {"a": "value_ok", "b": "other_ok", "c": "value43_ok"}
+    r1 = driver(plan, scenarios=scen)
+    assert (r1.reason, r1.nodes["b"]["acceptance"]) == ("recipe_tamper", "accepted")
+    Path(cpath).write_bytes(good_c)
+    corrupt(tmp_path / "plan-run" / "b.integration" / "provenance.json")
+    r2 = driver(plan, scenarios=scen)
+    assert (r2.outcome, r2.reason) == ("needs_operator", reason) and r2.nodes["c"]["work"] == "todo"
+    assert not (tmp_path / "plan-run" / "c.integration").exists()

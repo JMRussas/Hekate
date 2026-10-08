@@ -23,6 +23,7 @@ roots, and anything in flight or uncertain stops for an operator instead of bein
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -170,6 +171,20 @@ def spec_ran(plan: PI.ImportedPlan, run_root: Path, key: str, value: str) -> TR.
     return spec
 
 
+def same_repo(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def original_repo(value: str) -> str:
+    """The ORIGINAL source repository a node's work is based on (root msg 1860): a pinned spec's source.repo, or a
+    recipe's template.source.repo (never a recipe node's owned integration clone)."""
+    from e1 import successor as S
+    kind, sha, path = PI.parse_node_ref(value)
+    if kind == "spec":
+        return PI.load_spec(path, sha).doc["source"]["repo"]
+    return S.load_recipe(path, sha)["template"]["source"]["repo"]
+
+
 def materialize_successor(plan: PI.ImportedPlan, run_root: Path, key: str, sha: str, path: str,
                           state: dict[str, dict[str, Any]]) -> TR.T.TaskSpec:
     """Recipe -> pinned/tamper-checked inputs -> the predecessor bound to its own run -> the owned integration base
@@ -181,12 +196,18 @@ def materialize_successor(plan: PI.ImportedPlan, run_root: Path, key: str, sha: 
         recipe = S.load_recipe(path, sha)
         if p["acceptance"] != "accepted" or not isinstance(p["artifactRef"], str):
             raise S.SuccessorStop("predecessor_not_accepted", {"predecessor": pk})
+        # v1 is SAME-repository lineage only: the recipe must target the predecessor's original repository (msg 1860)
+        mine, theirs = recipe["template"]["source"]["repo"], original_repo(p["value"])
+        if not same_repo(mine, theirs):
+            raise S.SuccessorStop("repo_lineage_mismatch", {"recipeRepo": mine, "predecessorRepo": theirs})
         pred = S.bind_predecessor(Path(run_root) / pk, p["artifactRef"], spec_ran(plan, run_root, pk, p["value"]))
         return S.materialize(recipe, sha, pred, p["artifactRef"], integration_dir(run_root, key), f"plan/{plan.root[:8]}/{key}")
     except S.SuccessorStop as e:
         raise _Stop(e.code, {"node": key, "detail": e.detail}) from None
     except PI.ImportRefused as e:
         raise _Stop("predecessor_spec", {"node": key, "code": e.code}) from None
+    except (OSError, ValueError, TR.T.SpecRefused) as e:     # a corrupt/unreadable predecessor record (review 1866 R4)
+        raise _Stop("predecessor_evidence", {"node": key, "error": type(e).__name__}) from None
 
 
 def _write_log(run_root: Path, result: PlanRunResult) -> Path:

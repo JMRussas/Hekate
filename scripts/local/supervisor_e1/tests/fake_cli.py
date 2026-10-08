@@ -107,6 +107,15 @@ elif scenario.startswith("value_"):
         subprocess.run(bash.split(), capture_output=True, timeout=120)
     say(act({"kind": "worker_progress", "seq": 2, "checkpointId": 1, "evidence": f"edited src/value.txt round {rnd}"}))
     result()
+elif scenario == "value43_ok":
+    # D3 v1 (plan 044), the THIRD node of a recipe chain: set src/value.txt to 43
+    init()
+    say(act({"kind": "worker_ack", "seq": 1}))
+    if not os.path.isfile("node_modules/vitest/vitest.mjs"):
+        sys.exit(5)
+    edit("src/value.txt", "43\n")
+    say(act({"kind": "worker_progress", "seq": 2, "checkpointId": 1, "evidence": "edited src/value.txt to 43"}))
+    result()
 elif scenario.startswith("other_"):
     # plan-run v0 (plan 042), the SUCCESSOR task: set src/other.txt to y. other_ok | other_bad
     init()

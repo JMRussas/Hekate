@@ -60,6 +60,25 @@ The recipe is a closed file, pinned at import (`"spec": {"recipe": {path, sha256
 - **P1 regression:** `tests/test_plan_run.py` gives 27 passed.
 - **Demo:** `uv run python tests/demo_plan_run.py --recipe` prints `ONE run, no operator step: all_done [a ran accepted, b ran accepted]` and ends RESULT PASS. Without `--recipe`, the P1 manual flow is unchanged.
 
+## 4a. Review fixes (ChatAgent review msg 1866; root msg 1860)
+
+- **R1, same-repository lineage (blocking, fixed).** v1 derives a base only within ONE original repository.
+  - The recipe's `template.source.repo` must equal the predecessor's **original** repository: its pinned spec's `source.repo`, or, for a recipe predecessor, that predecessor recipe's `template.source.repo`, never its integration clone.
+  - The comparison is `realpath` plus `normcase`. A mismatch is the typed stop `repo_lineage_mismatch`, raised **before** binding, any clone or any claim.
+  - Without this, a recipe naming another repository would run its frozen template against the predecessor's tree.
+- **R3, test gap (fixed).**
+  - A three-node chain a → b (recipe) → c (recipe) now runs to `all_done` in one invocation. c binds b through b's **resolved spec plus provenance**, and the a → b → c ancestry is checked.
+  - If b's provenance no longer names b's recipe pin, the stop is `predecessor_provenance`.
+- **R4 (fixed).** A corrupt or unreadable predecessor record (evidence, provenance, resolved spec) is the typed stop `predecessor_evidence` instead of the generic `unexpected_error`.
+- **R5 (accepted as is).** More than one run-owned ref at the same commit is a conservative `artifact_unavailable`, which fails closed.
+
+## 4b. Limit (R2): a recipe's baseline is predicted before the predecessor exists
+
+A recipe freezes its baseline cases and verify steps **before** the predecessor's artifact X exists.
+- **Covered:** preflight re-proves the structured baseline at the derived base before any spend, so a mispredicted baseline is a typed preflight stop, not a wasted model run.
+- **Not covered:** the satisfiability proof required before a freeze (msg 1845) cannot run against the real X. A contradiction that only X introduces, for example an assertion of the old contract added by the predecessor, shows up only at verification, after model spend.
+- **For the eventual authoring flow:** a recipe's satisfiability proof is made against a **reference** predecessor artifact, and that reference is recorded with the recipe.
+
 ## 5. Not in v1
 
 - merges (more than one predecessor);
