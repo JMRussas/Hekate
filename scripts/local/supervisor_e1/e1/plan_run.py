@@ -223,10 +223,15 @@ def _write_log(run_root: Path, result: PlanRunResult) -> Path:
 def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, executable: tuple[Path, ...], executable_sha256: str,
              execution_kind: str, root_go: str | None, timeouts: tuple[int, int, int] = (1200, 600, 300),
              task_suffix: Callable[[str], str] | None = None, backend: str = "claude",
-             worker_model: str | None = None) -> PlanRunResult:
+             worker_model: str | None = None, max_nodes: int | None = None,
+             stop_requested: Callable[[], bool] | None = None) -> PlanRunResult:
+    """`max_nodes` / `stop_requested` (owned dispatch, plan 050) only ADD stops between nodes: after the authoritative read
+    chose the next node and before anything is claimed, `stop_requested()` -> stop_requested and `max_nodes` dispatched
+    nodes -> node_limit. Neither interrupts a node in flight; with both None the behaviour is unchanged."""
     run_root = Path(run_root)
     run_root.mkdir(parents=True, exist_ok=True)
     result = PlanRunResult("needs_operator", None, plan.root, plan.doc.sha256)
+    ran = 0
     try:
         for _ in range(len(plan.node_ids) + 1):
             v = _ok(setup.plan(plan.root), "plan")
@@ -239,6 +244,10 @@ def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, execut
             if verdict == "stop":
                 raise _Stop(*what)
             key = what
+            if stop_requested is not None and stop_requested():
+                raise _Stop("stop_requested", {"next": key})
+            if max_nodes is not None and ran >= max_nodes:
+                raise _Stop("node_limit", {"max": max_nodes, "next": key})
             s = state[key]
             step = NodeStep(key, s["nodeId"], "stopped")
             result.steps.append(step)
@@ -281,6 +290,7 @@ def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, execut
                              attach=(plan.root, s["nodeId"]),
                              claim_check=make_claim_check(s["nodeId"], s["value"], s["contentRevision"], preds),
                              backend=backend, worker_model=worker_model)
+            ran += 1
             step.action, step.outcome, step.reason = "ran", res.outcome, res.reason
             step.evidence = str(Path(ev["runDir"]) / "evidence.json")
             if res.outcome != "accepted":
