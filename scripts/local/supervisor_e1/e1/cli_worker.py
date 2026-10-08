@@ -56,6 +56,7 @@ ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP", "HOME", 
 ACT_PREFIX = "HEKATE-ACT "
 ZERO_OID = "0" * 40
 REF_ROOT = "refs/hekate-pilot"
+SETUP_ERR_KEEP = 4096    # stderr chars kept from a failed round-setup git call
 
 
 class CliRefused(Exception):
@@ -168,6 +169,13 @@ def git_env() -> dict[str, str]:
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=120, env=git_env())
+
+
+def setup_error(step: str, p: subprocess.CompletedProcess[str], **extra: Any) -> dict[str, Any]:
+    """A failed round-setup git call, kept as evidence (check-002 r2, root msg 2080): the step, git's rc and
+    the bounded TAIL of its stderr (git puts the cause last), with the full length so a cut is visible."""
+    err = p.stderr or ""
+    return {"step": step, "rc": p.returncode, "stderr": err[-SETUP_ERR_KEEP:], "stderr_chars": len(err), **extra}
 
 
 def tree_kill(proc: subprocess.Popen, wait_s: int) -> bool:
@@ -346,6 +354,7 @@ class RunEvidence:
     files_changed: int = 0
     results: list[str] = field(default_factory=list)     # one class per terminal `result` event
     reported_usage: dict[str, Any] | None = None         # CLI-REPORTED cost/turns/duration of the FIRST result event; not metered
+    setup_error: dict[str, Any] | None = None            # a failed worktree add / HEAD check: step, rc, bounded stderr
 
 
 class CliWorker:
@@ -374,9 +383,12 @@ class CliWorker:
             return P.WorkReport("failed", reason="worktree_exists")
         add = _git("worktree", "add", "--detach", str(wt), cfg.base_sha, cwd=cfg.repo)
         if add.returncode != 0:
+            ev.setup_error = setup_error("worktree_add", add)
             return P.WorkReport("failed", reason="worktree_add_failed")
         ev.worktree = str(wt)
-        if _git("rev-parse", "HEAD", cwd=wt).stdout.strip() != cfg.base_sha:
+        head = _git("rev-parse", "HEAD", cwd=wt)
+        if head.stdout.strip() != cfg.base_sha:
+            ev.setup_error = setup_error("worktree_head", head, head=head.stdout.strip()[:64])
             return P.WorkReport("unknown", reason="worktree_head_mismatch")
         if cfg.prepare is not None:
             try:

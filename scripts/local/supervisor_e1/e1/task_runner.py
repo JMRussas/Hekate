@@ -70,6 +70,26 @@ def git_stderr(p: subprocess.CompletedProcess) -> str:
     return err[-ERR_KEEP:]
 
 
+class GitReadFailed(Exception):
+    """A git read that failed: never reported as an empty result (check-002 ownedRefs, root msg 2080)."""
+    def __init__(self, p: subprocess.CompletedProcess):
+        super().__init__(f"git rc {p.returncode}")
+        self.detail = {"rc": p.returncode, "stderr": git_stderr(p)}
+
+
+def owned_refs(repo: Path) -> list[str]:
+    """`<oid> <ref>` for every run-owned ref; [] only when git SUCCEEDED and none exist."""
+    p = _git("for-each-ref", "--format=%(objectname) %(refname)", W.REF_ROOT, cwd=repo)
+    if p.returncode != 0:
+        raise GitReadFailed(p)
+    return p.stdout.splitlines()
+
+
+def error_record(part: str, e: Exception) -> dict[str, Any]:
+    """One best-effort evidence failure: its part and type, plus the git rc/stderr of a failed read."""
+    return {"part": part, "type": type(e).__name__, **({"detail": e.detail} if isinstance(e, GitReadFailed) else {})}
+
+
 def sha256_file(p: Path) -> str:
     return R.sha256_file(Path(p))
 
@@ -574,12 +594,11 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
         try:
             evidence[part] = fn()
         except Exception as e:  # noqa: BLE001 -- evidence is best effort; each failure is recorded by part and type
-            evidence["errors"].append({"part": part, "type": type(e).__name__})
+            evidence["errors"].append(error_record(part, e))
 
     best_effort("adapter", lambda: {str(k): vars(v) for k, v in (holder["w"].evidence.items() if "w" in holder else [])})
     best_effort("records", lambda: {r.claim_key: pilot.records_of(r.claim_key) for r in result.rounds})
-    best_effort("ownedRefs", lambda: _git("for-each-ref", "--format=%(objectname) %(refname)", W.REF_ROOT,
-                                          cwd=repo).stdout.splitlines())
+    best_effort("ownedRefs", lambda: owned_refs(repo))
     best_effort("journal", lambda: R.journal_dump(aj.dsn, pilot.root))
     (resolved.run_dir / "evidence.json").write_text(json.dumps(evidence, indent=1, sort_keys=True, default=str), encoding="utf-8",
                                                      newline="\n")

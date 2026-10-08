@@ -49,7 +49,7 @@ Each failure below exits with code 2, before the harness starts:
 
 The last JSON object printed reports the result:
 - `outcome`: `all_done` or `needs_operator`, with the stop `reason` and `detail` from `run_plan`;
-- each node step, with its run root and `evidence.json`. In it, each round's `adapter.<round>.reported_usage` holds the CLI's own `total_cost_usd` (a decimal string), `num_turns` and `duration_ms` from the round's first result event. They are labelled `cli-reported, not metered`, and each is null when missing or malformed. They are evidence only: the budget guard is still the CLI's `--max-budget-usd`;
+- each node step, with its run root and `evidence.json`. In it, each round's `adapter.<round>.reported_usage` holds the CLI's own `total_cost_usd` (a decimal string), `num_turns` and `duration_ms` from the round's first result event. They are labelled `cli-reported, not metered`, and each is null when missing or malformed. They are evidence only: the budget guard is still the CLI's `--max-budget-usd`. A round whose `git worktree add` or HEAD check failed keeps `adapter.<round>.setup_error`: the step, git's rc and the last 4096 characters of its stderr, with the full length (the outcome is unchanged). `ownedRefs` is present only when git listed the refs; a failed read is recorded in `errors` with its rc and stderr, so a missing list never means "no refs";
 - each node's final work, acceptance, blockers and artifact, from PlanStore's own view;
 - the `plan-run-N.json` log path.
 

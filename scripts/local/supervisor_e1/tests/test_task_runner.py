@@ -779,3 +779,29 @@ def test_failure_lines_strip_ansi_dedupe_and_bound():
     assert got[:2] == ["FAIL  tests/a.test.ts > x", "× y"] and len(got) == TR.FAILURE_LINES_MAX
     assert TR.failure_lines("FAIL " + "z" * 1000)[0] == ("FAIL " + "z" * 1000)[:300]
     assert TR.failure_lines("all good\nTests 3 passed\n") == []
+
+
+# --- ownedRefs: a failed read is never an empty ref set (check-002, root msg 2080) ---------------------------
+
+def test_owned_refs_distinguishes_a_failed_read_from_a_truly_empty_set(tmp_path):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    sha = commit(repo, {"a.txt": "a\n"}, "c0")
+    assert TR.owned_refs(repo) == []                                    # git succeeded and none exist
+    git(repo, "update-ref", f"{W.REF_ROOT}/run1/r1", sha)
+    assert TR.owned_refs(repo) == [f"{sha} {W.REF_ROOT}/run1/r1"]
+    not_git = tmp_path / "plain"
+    not_git.mkdir()
+    with pytest.raises(TR.GitReadFailed) as e:
+        TR.owned_refs(not_git)
+    assert e.value.detail["rc"] not in (0, None) and "not a git repository" in e.value.detail["stderr"]
+    rec = TR.error_record("ownedRefs", e.value)
+    assert rec == {"part": "ownedRefs", "type": "GitReadFailed", "detail": e.value.detail}
+    assert TR.error_record("journal", ValueError("x")) == {"part": "journal", "type": "ValueError"}
+
+
+def test_a_failed_git_read_keeps_only_the_bounded_tail_of_stderr():
+    long = "y" * (TR.ERR_KEEP + 50) + "fatal: why"
+    detail = TR.GitReadFailed(subprocess.CompletedProcess(["git"], 128, "", long)).detail
+    assert detail == {"rc": 128, "stderr": long[-TR.ERR_KEEP:]} and detail["stderr"].endswith("fatal: why")

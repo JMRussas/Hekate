@@ -357,6 +357,28 @@ def test_an_existing_worktree_path_is_never_reused(tmp_path, repo):
     assert (rep.status, rep.reason) == ("failed", "worktree_exists")
 
 
+def test_a_failed_worktree_add_keeps_git_rc_and_stderr_and_launches_nothing(tmp_path, repo):
+    # real git, a well-formed but ABSENT base commit (check-002 r2 lost exactly this; root msg 2080)
+    sink = Sink()
+    (tmp_path / "run").mkdir()
+    w = W.CliWorker(make_cfg(repo, tmp_path / "run", base_sha="1" * 40))
+    rep = w(order("happy", sink))
+    assert (rep.status, rep.reason) == ("failed", "worktree_add_failed")
+    err = w.evidence[1].setup_error
+    assert err["step"] == "worktree_add" and err["rc"] not in (0, None)
+    assert "1" * 40 in err["stderr"] and err["stderr_chars"] == len(err["stderr"])
+    assert "launch_intent" not in sink.kinds() and w.evidence[1].pid is None and w.evidence[1].worktree is None
+
+
+def test_setup_error_keeps_only_the_bounded_tail_of_stderr_and_its_full_length():
+    long = "x" * (W.SETUP_ERR_KEEP + 100) + "fatal: the cause"
+    err = W.setup_error("worktree_add", subprocess.CompletedProcess(["git"], 128, "", long))
+    assert err["stderr"] == long[-W.SETUP_ERR_KEEP:] and err["stderr"].endswith("fatal: the cause")
+    assert err["stderr_chars"] == len(long) and err["rc"] == 128
+    assert W.setup_error("worktree_head", subprocess.CompletedProcess(["git"], 0, "abc\n", None), head="abc") == \
+        {"step": "worktree_head", "rc": 0, "stderr": "", "stderr_chars": 0, "head": "abc"}
+
+
 # ------------------------------------------------------------------------ the optional prepare hook (msg 1632)
 
 def test_prepare_runs_in_the_added_worktree_at_base_before_the_intent_and_the_spawn(tmp_path, repo):
