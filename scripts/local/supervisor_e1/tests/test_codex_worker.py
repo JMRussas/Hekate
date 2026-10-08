@@ -62,6 +62,24 @@ def test_only_the_codex_env_drops_the_exact_windows_apps_path_entry(monkeypatch,
     assert W.worker_env("claude")["PATH"] == W.worker_env()["PATH"] == os.environ["PATH"]
 
 
+def test_the_codex_env_also_drops_packaged_app_directories_and_keeps_everything_else(monkeypatch, tmp_path):
+    """codex-trace-001: a PowerShell-launched PATH held BOTH the alias and the Store PowerShell 7 package directory
+    (C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe), and Codex picked the packaged
+    pwsh.exe, which the unelevated sandbox cannot start (0xC0070005). Both are dropped for codex only; unrelated
+    entries, including look-alike names, keep their order; Claude's PATH is unchanged."""
+    local, pf = tmp_path / "local", tmp_path / "Program Files"
+    alias = local / "Microsoft" / "WindowsApps"
+    pkg = pf / "WindowsApps" / "Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe"
+    keep = [tmp_path / "bin", pf / "nodejs", pf / "WindowsAppsTools", pf / "PowerShell" / "7", local / "WindowsApps"]
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("ProgramFiles", str(pf))
+    entries = [str(keep[0]), str(alias), str(keep[1]), str(pkg) + os.sep, str(keep[2]), str(pf / "WindowsApps"),
+               str(keep[3]), str(pkg).upper(), str(keep[4])]
+    monkeypatch.setenv("PATH", os.pathsep.join(entries))
+    assert W.worker_env("codex")["PATH"].split(os.pathsep) == [str(k) for k in keep]
+    assert W.worker_env("claude")["PATH"] == os.pathsep.join(entries)
+
+
 @pytest.mark.parametrize("over, code", [
     ({"backend": "gemini"}, "config_backend"),
     ({"execution_kind": "claude-cli"}, "config_execution_kind"),                  # a codex worker is never labelled Claude

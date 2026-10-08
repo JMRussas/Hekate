@@ -63,8 +63,33 @@ Event semantics:
   `e1/plan_run.py`, `e1/plan_cli.py` (flags, refusals before any effect).
 - No frozen or revised module pin changes: none of these modules is pinned (checked by sha256 search).
 
-## 5. Known limits
+## 5. Shell discovery fix: packaged PowerShell (2026-10-08, root GO 2512)
 
-- Windows PowerShell 5.1 decodes UTF-8 files as ANSI for shell reads (smoke-004 mojibake); Codex edits through its own
-  patch tool, so edits are expected to be unaffected. The first real run will show it.
-- Real-run verification is a separate root GO: one rehearsal of the frozen README spec with `--worker codex`.
+**Observed.** The first real rehearsal (`codex-trace-001`, root `d1e7b47e…`, accepted in round 1) ran Codex from a
+PowerShell-launched environment. Its PATH held BOTH the `%LOCALAPPDATA%\Microsoft\WindowsApps` alias and the packaged
+Store PowerShell 7 directory `C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe`. The v0 filter
+removed only the alias, so Codex chose the packaged `pwsh.exe`, and every shell call failed:
+`CreateProcessAsUserW failed: -1073283067` (0xC0070005, access denied), on stderr only. Codex still made the README
+edit through its patch tool (real `file_change` items), and the verifier accepted it. smoke-004 had passed only because
+its Git Bash launch PATH had no package directory.
+
+**Fix.** `codex_path_excluded` drops the alias directory and `%ProgramFiles%\WindowsApps` together with everything
+under it, for codex only; all other entries keep their order, and Claude's PATH is unchanged. Codex then falls back to
+System32 Windows PowerShell 5.1.
+
+**Proof (codex-smoke-005, model run, launched from PowerShell).** The launch PATH had 29 entries, 2 excluded; the
+worker PATH had 27. Events:
+- `command_execution` `"C:\windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command 'Get-Content -Encoding UTF8
+  -TotalCount 5 -LiteralPath README.md'`, exit 0, correct UTF-8 output (the em dash intact);
+- `file_change` add `SMOKE.md`, with bytes exactly `codex smoke 005\n` and no BOM;
+- `turn.completed`; stderr empty.
+The worktree's only change was `?? SMOKE.md`. Evidence is in `D:/hekate-coordinator/codex-smoke-005/`.
+
+## 6. Known limits
+
+- Windows PowerShell 5.1 decodes BOM-less UTF-8 as ANSI unless `-Encoding UTF8` is passed. The codex-only prompt line
+  (041b069) asks for it, and smoke-005 obeyed it with correct output. That is model compliance, not enforcement.
+- Edits go through Codex's patch tool. codex-trace-001 (update) and smoke-005 (add) both produced real `file_change`
+  items and BOM-less files.
+- After this fix, a rehearsal of the frozen README spec with shell reads working has not yet been run. It needs its own
+  root GO.
