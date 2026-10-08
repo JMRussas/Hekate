@@ -29,8 +29,8 @@ No nodes are created and no separate database is used until that migration is de
 
 | ID | Alias | Title | Kind | Gate | Owner / assignee | Status |
 |---|---|---|---|---|---|---|
-| HK-ISSUE-001 | H-1 | `strict_loads` lets `RecursionError` escape | defect | deferred | Hekate / claude-hekate (plan 041, msg 1741) | implemented, pending independent review |
-| HK-ISSUE-002 | H-2 | `revalidate` raises untyped errors on a missing identity field | defect | deferred | Hekate / claude-hekate (plan 041, msg 1741) | implemented, pending independent review |
+| HK-ISSUE-001 | H-1 | `strict_loads` lets `RecursionError` escape | defect | deferred | Hekate / claude-hekate (plan 041, msg 1741) | closed (consumer `aea15fa4`, commit `7d62c68`; root acceptance msg 1754) |
+| HK-ISSUE-002 | H-2 | `revalidate` raises untyped errors on a missing identity field | defect | deferred | Hekate / claude-hekate (plan 041, msg 1741) | closed (consumer `aea15fa4`, commit `7d62c68`; root acceptance msg 1754) |
 | HK-ISSUE-003 | F1 (036) | `attemptId` length unchecked on the transition route | defect | deferred | PlanStore / unassigned | open |
 | HK-ISSUE-004 | F2 (036) | `attemptId` length counted differently by Python and C# | interop-risk | deferred | PlanStore + journal / unassigned | open |
 | HK-ISSUE-005 | — | A fix round cannot be dispatched after a reopen | implementation-gap | unattended-blocker | PlanStore + journal / unassigned (dry-run workaround in use) | open |
@@ -53,7 +53,7 @@ No nodes are created and no separate database is used until that migration is de
 - **Repro / evidence:** `depth.py` and `depth2.py` in the evidence directory (array depth 999, object depth 997 under Python 3.13.13). Reported in msgs 1404 and 1413.
 - **Next action:** the separate hardening increment (msgs 1407, 1416). Catch `RecursionError` and refuse `strict_json`, or add an explicit depth limit. Keep the frozen baseline's provenance.
 - **Closure (V&V):** a regression test refuses a depth-2000 document as `strict_json`. The default suite stays green. The golden and supplement replays still pass, or are re-baselined with recorded provenance.
-- **Implemented (plan 041, pending independent review):** `consumer.py` `30ca084a…` → `aea15fa4…`. Both `RecursionError` sources (the parser and the scalar scan) now give `strict_json`, "nesting too deep". `tests/test_consumer_hardening.py` covers depth 2000 and 100000 for arrays and objects, and these cases fail on `30ca084a`.
+- **CLOSED (root acceptance msg 1754; ChatAgent independent review msg 1752):** `consumer.py` `30ca084a…` → `aea15fa4…`, commit `7d62c68`. Both `RecursionError` sources (the parser and the scalar scan) now give `strict_json`, "nesting too deep". `tests/test_consumer_hardening.py` covers depth 2000 and 100000 for arrays and objects, and these cases fail on `30ca084a`.
   - **Replays (root msg 1748, option B):** the bundles are byte-unchanged, and their strict replays truthfully FAIL on the single declared source drift. The out-of-bundle `e1/replay_revision.py` accepts exactly that drift (`30ca084a…` → `aea15fa4…`) with golden 17/17 and supplement 52/52 ok. Nothing is re-baselined.
 
 ### HK-ISSUE-002 — `revalidate` raises untyped errors on a missing identity field
@@ -63,7 +63,8 @@ No nodes are created and no separate database is used until that migration is de
 - **Repro / evidence:** source read; msg 1413, item H-2.
 - **Next action:** the same increment as 001.
 - **Closure (V&V):** regression tests: a manifest identity missing `attemptId` gives a typed refusal, and so does a `Fresh` with a missing field.
-- **Implemented (plan 041, pending independent review):** the fix is in the same `consumer.py` revision.
+- **CLOSED (root acceptance msg 1754; ChatAgent independent review msg 1752):** the fix is in the same `consumer.py` revision (`aea15fa4…`, commit `7d62c68`). The full default suite gave 991 passed, 1 skipped.
+  - **Parity follow-up (separate, ChatAgent-owned):** the TS consumer refuses a missing identity field at revalidation (`fresh_mismatch`), not at verification. It is tracked as **CA-ISSUE-013** in ChatAgent's register (plan 041 §4c).
   - `review_identity`: a missing or malformed identity gives `delivery_mismatch` ("manifest identity"). `verify_delivery` checks it, so a re-signed delivery lacking `attemptId` is refused at verification.
   - `revalidate`: a proof missing any `Fresh` field, or with non-list `pending`/`queue`, gives `fresh_mismatch`. A `Verified` missing a bound field gives `delivery_mismatch`.
   - Covered by `tests/test_consumer_hardening.py`.

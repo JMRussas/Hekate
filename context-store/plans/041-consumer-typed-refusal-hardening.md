@@ -1,6 +1,9 @@
 # Plan 041 — reference consumer typed-refusal hardening (HK-ISSUE-001 + HK-ISSUE-002)
 
-**Status: implemented, pending independent review (2026-10-08).**
+**Status: accepted and closed (2026-10-08; root msg 1754).** HK-ISSUE-001 and HK-ISSUE-002 are closed.
+- **Source:** commit `7d62c68c6d873adca8dfa44a53eac415481ec8fd`, `e1/consumer.py` `aea15fa4…`.
+- **Reviews:** ChatAgent Claude's independent review (msg 1752) accepted it with no blockers, after its own direct probes and its own `replay_revision` run. Root accepted it after reading the consumer diff and `replay_revision` (msg 1754).
+- **Full default suite on these sources:** 991 passed, 1 skipped (the opt-in live npm check), log sha256 `8272d481…5810`.
 - **Branch:** `fix/consumer-typed-refusals` from `722aa12`. Assignment: bridge msg 1741.
 - **How it was done:** direct Claude-lead hardening work. It was **not** routed through the operator task runner (plan 040): that runner is Node-only and does not execute Python repo tasks.
 - **No model run.**
@@ -70,6 +73,27 @@ Each replay pins the consumer hash from its frozen `producer.json` (`30ca084a…
   - rejected: the wrong imported consumer; the frozen consumer imported; a producer pin that is not the declared old one; an extra index problem; a `handoff` drift; a drift line naming another hash; no drift; a missing case; an extra case; a `BAD` case; a relabelled `REPLAY PASS`;
   - a live run of both bundles passes, and the bundle files are byte-identical before and after, with `git status` clean under `fixtures/`.
 - **Adopting a future consumer revision** requires its own reviewed change to `REVISION_TO`. The bundles are never re-baselined; option C was rejected because it rewrites frozen provenance.
+
+## 4b. Evidence logs (scratchpad, sha256 from tool output)
+
+| Log | sha256 |
+|---|---|
+| strict golden replay (FAIL, declared drift only, 17/17 ok) | `5c055d462293379e270ffa33d1cbdc31be1366ae3e8b99a87afaed1dfe6d2f10` |
+| strict supplement replay (FAIL, declared drift only, 52/52 ok) | `d73345690c43f4129f2c7e896a32f42a36c54d8bebb20f8d1ecbe37f7ef5e48b` |
+| revised replay (`python -m e1.replay_revision`, PASS) | `f077642d38964e9d39ad87fd0fde38cc11979a082822ff492de708bd21f25531` |
+| full default suite (991 passed, 1 skipped) | `8272d481d85046bb2143108f5c5657cf41fa9b3208bc65df0b62e3176a085810` |
+
+## 4c. Parity with the ChatAgent TypeScript consumer (ChatAgent review msg 1752; a separate follow-up)
+
+- **A missing identity field, with the identity object present.**
+  - Python (this plan) refuses **at verification** with `delivery_mismatch`.
+  - ChatAgent's TS `verifyStored` only checks that the identity object exists (`delivery.ts:451`). A missing field passes verification there and is refused **at revalidation** as `fresh_mismatch` (`sameReviewIdentity`, `delivery.ts:579–600`).
+  - Both refuse the delivery, at a different stage and with a different code. Only a crafted, re-signed manifest can reach this case; the canonical producer never emits one.
+  - **Follow-up, owned by ChatAgent:** CA-ISSUE-013 aligns TS verification (all identity fields required in `verifyStored`, giving `delivery_mismatch`). Root plans it as the next real Node-only supervised task (msg 1754). It is not part of this plan.
+- **Deep nesting** (pre-existing; documented at `delivery.ts:59–62`):
+  - TS refuses beyond 64 levels as `codec_unsupported` (DEPTH).
+  - Python refuses only at its recursion limit, about 1000, as `strict_json`. Nesting from 65 to about 1000 levels is accepted by Python and refused by TS.
+  - This plan does not change it, and no depth policy is adopted here.
 
 ## 5. Not changed or not claimed
 
