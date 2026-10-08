@@ -4,6 +4,8 @@
 // can block through a different owner — and are never merged with dependency edges, which are
 // identified by (predecessorId, successorId).
 //
+// The Attempts slot (trace contract v0) is supplied by the view; NodeDetail only places it.
+//
 // Depends on: planContract/types.ts, managed/labels.ts
 // Used by: ManagedPlansView
 
@@ -15,9 +17,11 @@ interface Props {
   plan: PlanView;
   nodeId: string;
   history: ReactNode;
+  /** Shown for leaves only: a container has no attempts of its own. */
+  attempts?: ReactNode;
 }
 
-export default function NodeDetail({ plan, nodeId, history }: Props) {
+export default function NodeDetail({ plan, nodeId, history, attempts }: Props) {
   const node = plan.nodes.find(n => n.id === nodeId);
   if (!node) return null;
   const nameOf = (id: string) => plan.nodes.find(n => n.id === id)?.name ?? id;
@@ -115,6 +119,8 @@ export default function NodeDetail({ plan, nodeId, history }: Props) {
           </div>
         ))}
       </Section>
+
+      {!container && attempts && <Section title="Attempts">{attempts}</Section>}
 
       <Section title="History">{history}</Section>
     </div>

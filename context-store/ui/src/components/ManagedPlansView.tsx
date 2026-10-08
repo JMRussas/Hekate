@@ -1,9 +1,11 @@
 // ManagedPlansView — read-only browser for plan-contract managed plans (plan 021)
 //
 // Left: managed-plan discovery (uuid cursor; Refresh resets it). Right: the selected plan as a
-// tree, a dependency map and its history, plus the selected node's detail and history.
-// GET only. Each data slot (list, plan, plan events, node events) has one live request; switching
-// plan or node aborts the old ones and late responses are dropped before parsing (requestSlot).
+// tree, a dependency map and its history, plus the selected node's detail, attempts and history.
+// GET only. Each data slot (list, plan, plan events, node events, attempt trace) has one live
+// request; switching plan, node or attempt aborts the old ones and late responses are dropped
+// before parsing (requestSlot). Refresh clears every selection, the selected attempt included;
+// the trace's own "Reload trace" reloads just the selected attempt.
 // An unsupported contract version, an error-bearing plan or any failed/unsafe response clears
 // the old view and shows an explicit error; no tree or map is derived from it.
 //
@@ -11,14 +13,17 @@
 // Used by: App.tsx
 
 import { useCallback, useEffect, useState } from 'react';
-import { ContractApiError, getNodeEvents, getPlan, getPlanEvents, listPlans, type CheckedEventPage, type RequestGuard } from '../planContract/api';
+import { ContractApiError, getAttemptTrace, getNodeEvents, getPlan, getPlanEvents, listPlans, type CheckedEventPage, type RequestGuard } from '../planContract/api';
 import { isStale, useRequestSlot, type RequestSlot } from '../planContract/requestSlot';
 import type { PlanListItem, PlanView } from '../planContract/types';
+import AttemptsPanel from './managed/AttemptsPanel';
+import AttemptTrace from './managed/AttemptTrace';
 import DependencyMap from './managed/DependencyMap';
 import EventsTimeline from './managed/EventsTimeline';
 import { EMPTY_EVENTS, type EventsState } from './managed/eventsState';
 import NodeDetail from './managed/NodeDetail';
 import PlanTree from './managed/PlanTree';
+import { applyTracePage, EMPTY_TRACE, type TraceState } from './managed/traceState';
 
 type ErrorInfo = { code: string; message: string };
 const toError = (e: unknown): ErrorInfo =>
@@ -57,11 +62,32 @@ async function loadEvents(
   }
 }
 
+/**
+ * Load one trace page into the slot. afterSeq null (re)starts the trace and drops held records;
+ * otherwise the page is appended. Errors clear the trace, as for every other slot.
+ */
+async function loadTrace(
+  slot: RequestSlot, nodeId: string, attemptId: string, afterSeq: number | null,
+  set: (f: (s: TraceState) => TraceState) => void,
+) {
+  const g = slot.begin();
+  set(s => (afterSeq === null ? { ...EMPTY_TRACE, status: 'loading', attemptId } : { ...s, status: 'loading', error: null }));
+  try {
+    const page = await getAttemptTrace(nodeId, attemptId, afterSeq, g);
+    if (!g.isCurrent()) return;
+    set(s => (!g.isCurrent() ? s : applyTracePage(s, page, afterSeq)));
+  } catch (e) {
+    if (isStale(e, g)) return;
+    set(s => (!g.isCurrent() ? s : { ...EMPTY_TRACE, status: 'error', attemptId, error: toError(e) }));
+  }
+}
+
 export default function ManagedPlansView() {
   const listSlot = useRequestSlot();
   const planSlot = useRequestSlot();
   const planEventsSlot = useRequestSlot();
   const nodeEventsSlot = useRequestSlot();
+  const traceSlot = useRequestSlot();
 
   const [list, setList] = useState<ListState>({ status: 'loading', plans: [], next: null, error: null });
   const [plan, setPlan] = useState<PlanState>({ status: 'none' });
@@ -69,6 +95,12 @@ export default function ManagedPlansView() {
   const [tab, setTab] = useState<Tab>('tree');
   const [planEvents, setPlanEvents] = useState<EventsState>(EMPTY_EVENTS);
   const [nodeEvents, setNodeEvents] = useState<EventsState>(EMPTY_EVENTS);
+  const [trace, setTrace] = useState<TraceState>(EMPTY_TRACE);
+
+  const clearTrace = () => {
+    traceSlot.cancel();
+    setTrace(EMPTY_TRACE);
+  };
 
   const loadList = useCallback(async (cursor: string | null) => {
     const g = listSlot.begin();
@@ -93,6 +125,7 @@ export default function ManagedPlansView() {
     planSlot.cancel();
     planEventsSlot.cancel();
     nodeEventsSlot.cancel();
+    clearTrace();
     setPlan({ status: 'none' });
     setNodeId(null);
     setPlanEvents(EMPTY_EVENTS);
@@ -105,6 +138,7 @@ export default function ManagedPlansView() {
     planSlot.cancel();
     planEventsSlot.cancel();
     nodeEventsSlot.cancel();
+    clearTrace();
     setNodeId(null);
     setNodeEvents(EMPTY_EVENTS);
     setPlanEvents(EMPTY_EVENTS);
@@ -139,9 +173,15 @@ export default function ManagedPlansView() {
 
   const selectNode = (id: string) => {
     if (plan.status !== 'ok') return;
+    clearTrace();
     setNodeId(id);
     setNodeEvents({ ...EMPTY_EVENTS, status: 'loading' });
     void loadEvents(nodeEventsSlot, (c, g) => getNodeEvents(id, c, g), null, setNodeEvents);
+  };
+
+  const selectAttempt = (attemptId: string) => {
+    if (nodeId === null) return;
+    void loadTrace(traceSlot, nodeId, attemptId, null, setTrace);
   };
 
   const nameOf = (id: string) => (plan.status === 'ok' ? plan.plan.nodes.find(n => n.id === id)?.name : null) ?? id;
@@ -232,6 +272,15 @@ export default function ManagedPlansView() {
                 <NodeDetail plan={plan.plan} nodeId={nodeId} history={
                   <EventsTimeline testId="node-events" state={nodeEvents} nameOf={nameOf}
                     onLoadMore={() => void loadEvents(nodeEventsSlot, (c, g) => getNodeEvents(nodeId, c, g), nodeEvents.nextCursorText, setNodeEvents)} />
+                } attempts={
+                  <AttemptsPanel events={nodeEvents.items} partial={nodeEvents.nextCursorText !== null}
+                    selectedAttemptId={trace.attemptId} onSelect={selectAttempt} trace={
+                      trace.attemptId === null ? null : (
+                        <AttemptTrace key={trace.attemptId} state={trace}
+                          onReload={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, null, setTrace)}
+                          onMore={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, trace.lastSeq, setTrace)} />
+                      )
+                    } />
                 } />
               </div>
             )}

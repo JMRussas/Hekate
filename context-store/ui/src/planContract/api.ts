@@ -10,6 +10,11 @@
 import { ContractJsonError, parseContractJson } from './json';
 import {
   SUPPORTED_CONTRACT_VERSION,
+  TRACE_INTEGRITY,
+  TRACE_REASONS,
+  TRACE_STATUSES,
+  TRACE_STREAMS,
+  type AttemptTracePageView,
   type EventPageView,
   type PlanListPage,
   type PlanView,
@@ -238,6 +243,52 @@ function checkEvents(v: unknown, requestedNode: string | null): EventPageView {
   return o as unknown as EventPageView;
 }
 
+function checkTrace(v: unknown, nodeId: string, attemptId: string, afterSeq: number | null): AttemptTracePageView {
+  const o = obj(v, 'trace page');
+  checkVersion(o, 'The trace page');
+  if (o.nodeId !== nodeId || o.attemptId !== attemptId)
+    throw new ContractApiError(200, 'unexpected_shape', 'The trace is for a different node or attempt.');
+  count(o, 'attemptEpoch', 'trace page');
+  optStr(o, 'claimKey', 'trace page');
+  oneOf(o, 'status', 'trace page', TRACE_STATUSES);
+  oneOf(o, 'reason', 'trace page', TRACE_REASONS, true);
+  oneOf(o, 'integrity', 'trace page', TRACE_INTEGRITY);
+  optStr(o, 'executionKind', 'trace page');
+  optCount(o, 'nextAfterSeq', 'trace page');
+  bool(o, 'capped', 'trace page');
+  if (o.exit !== null) {
+    const x = obj(o.exit, 'trace page.exit');
+    optCount(x, 'code', 'trace exit', Number.MIN_SAFE_INTEGER);
+    optStr(x, 'killReason', 'trace exit');
+  }
+  if (o.prompt !== null) {
+    const p = obj(o.prompt, 'trace page.prompt');
+    str(p, 'text', 'trace prompt');
+    count(p, 'bytes', 'trace prompt');
+  }
+  let previous = afterSeq ?? -1;
+  const records = arr(o, 'records', 'trace page');
+  for (const raw of records) {
+    const r = obj(raw, 'trace record');
+    count(r, 'seq', 'trace record');
+    if ((r.seq as number) <= previous) bad('trace record.seq order');
+    previous = r.seq as number;
+    count(r, 'tMs', 'trace record');
+    oneOf(r, 'stream', 'trace record', TRACE_STREAMS);
+    str(r, 'text', 'trace record');
+    bool(r, 'cut', 'trace record');
+    bool(r, 'redacted', 'trace record');
+  }
+  // Cross-field rules of the contract: a status never contradicts its reason, integrity or exit.
+  const notCaptured = o.status === 'not_captured';
+  if (notCaptured !== (o.reason !== null)) bad('trace page.reason');
+  if (notCaptured && (records.length > 0 || o.integrity !== 'none')) bad('trace page.status');
+  if (o.integrity === 'verified' && o.status !== 'exited') bad('trace page.integrity');
+  if (o.exit !== null && o.status !== 'exited') bad('trace page.exit');
+  if (afterSeq !== null && o.prompt !== null) bad('trace page.prompt');
+  return o as unknown as AttemptTracePageView;
+}
+
 // --- endpoints (GET only) -----------------------------------------------------
 
 export async function listPlans(afterRootId: string | null, req: RequestGuard): Promise<PlanListPage> {
@@ -273,3 +324,14 @@ export const getPlanEvents = (rootId: string, cursorText: string | null, req: Re
 
 export const getNodeEvents = (nodeId: string, cursorText: string | null, req: RequestGuard) =>
   events(`/nodes/${encodeURIComponent(nodeId)}/events`, nodeId, cursorText, req);
+
+/**
+ * One page of an attempt's trace. afterSeq is the last record seq already held (null for the
+ * first page, which alone carries the prompt); it is a checked safe integer from an earlier page.
+ */
+export async function getAttemptTrace(nodeId: string, attemptId: string, afterSeq: number | null, req: RequestGuard): Promise<AttemptTracePageView> {
+  const q = new URLSearchParams({ limit: '200' });
+  if (afterSeq !== null) q.set('afterSeq', String(afterSeq));
+  const path = `/nodes/${encodeURIComponent(nodeId)}/attempts/${encodeURIComponent(attemptId)}/trace?${q}`;
+  return checkTrace((await getChecked(path, req)).value, nodeId, attemptId, afterSeq);
+}
