@@ -1,6 +1,6 @@
 # Plan 043 — local development coordinator: persistence and operator acts (P2 DESIGN, revision 3)
 
-**Status: revision 3, the design accepted for source implementation with disposable tests (2026-10-07; root msgs 1800, 1837, 1873, 1878).**
+**Status: revision 3; source implemented with disposable tests, pending independent review (2026-10-07; root msgs 1800, 1837, 1873, 1878, 1887). No dedicated coordinator database has been activated.**
 - No code, no schema activation and no writes to any live database. Implementation needs a separate GO after D3.
 - **Scope: the LOCAL development coordinator only.** This records a local decision. The production questions stay open in 028 / HK-ISSUE-009 / 010 / 011.
 
@@ -64,3 +64,85 @@
 5. ONE local multi-task demonstration on a NEW dedicated database, under a separate GO.
 
 **Estimate:** about 250–350 lines including tests. No PlanStore C# change.
+
+## 5. Implemented (branch `feat/plan-run-local`; disposable coordinator databases only)
+
+The main result (root msgs 1901/1904) is a **two-process CLI continuation** on the persistent store:
+1. **Run 1:** a is accepted, then b, which is pending, stops `spec_pending`.
+2. **The operator** forwards a's artifact and **pins** b's spec.
+3. **Run 2**, with the SAME plan file in the SAME run root: it attaches, skips a, runs b and ends `all_done`.
+
+Across that restart nothing is dispatched twice: in-flight or uncertain work stops.
+
+**`e1/local_store.py`**
+- **`LocalStore.create`:**
+  1. a NEW guarded database;
+  2. the marker row;
+  3. an exclusive locator;
+  4. the **single-instance lock**: a PostgreSQL session advisory lock keyed by the marker, held for the store's lifetime;
+  5. PlanStore via the Api, the project row and the three journal installers;
+  6. verify.
+- **`LocalStore.open`:**
+  1. the locator;
+  2. the database exists;
+  3. the marker matches;
+  4. the lock is taken **before the Api starts** (a second coordinator gets `store_in_use`);
+  5. the Api starts on the locator's own port (a busy port is `api_port_in_use`; another listener is never killed or adopted);
+  6. verify (tables, functions, project, bounds);
+  7. the clock sanity rule.
+- **`stop()`** kills only this process's Api, releases the lock and **never drops** the database.
+- **`session(actor, plan_bytes)`:**
+  - the operator policy's **root allowlist is derived** from the validated plan file;
+  - uncertain or unparseable operator acts stop the session **before any dispatch** (`uncertain_operator_acts`).
+- **`LiveClockJournal`:** the journal's `now` is **UTC epoch seconds**, sampled at the pilot's ticks.
+  - It is stable within an operation. The journal reads it for both a record's size and its `at`; a value read live on every access made the journal flag its own record as corrupt (found in testing).
+  - It never goes backwards within the process. `time.monotonic()` is used only for in-process intervals.
+
+**`e1/operator_acts.py`** (the module name avoids shadowing the standard-library `operator`)
+- **The surface:** only the named acts, with no passthrough. These are plan, create_plan, add_child, add_dependency, decide, transition (only `cancelled`/`todo`, the HK-005 reset) and revise (pin).
+- **The policy:** the actor label, the marker's project, and the derived root allowlist. Anything outside it is refused before any HTTP call.
+- **D7:**
+  - each act writes a durable **intent** (flush plus fsync) BEFORE the call and an **outcome** after it;
+  - `uncertain_acts()` lists intents without an outcome and any partial or unparseable line, and these stop the next session;
+  - nothing is retried automatically.
+  The log is local JSONL because the journal's record kinds are closed; no new journal kind was added.
+- **No `release_inflight`:** in-flight or uncertain work is classified by an operator, never released automatically.
+
+**`e1/plan_import.py`**
+- **The authorized pin (review 1899a):** a node *declared pending* may carry a valid spec/recipe ref at contentRevision > 1, in any work state. Re-importing the unchanged file after a pin is a no-op; every other difference is `import_conflict`.
+- **`attach_plan`:** for a later run of the SAME file, it re-derives the identities and **verifies the plan with no write**. An absent plan is `plan_missing`, a missing node or edge is `plan_drift`, and any other unauthorized difference is `import_conflict`.
+
+**`e1/plan_cli.py` `run --store local --state-dir D [--actor L]`**
+- **Binding, checked before any effect** (no database access):
+  - a NEW run root is a first run;
+  - an existing run root must carry `plan.binding.json` = {marker, projectId, planRoot, importSha256} for THIS store and THIS file, plus the original bytes in `plan.import.json`;
+  - an edited file is refused as `plan_changed`; another binding is `binding_mismatch`; a folder without a binding is `run_root_unbound`.
+- **A first run** imports, then binds the run root exclusively. A binding is never written for a failed import.
+- **A continuation attaches (no re-import)** and runs `run_plan` in the SAME run root: accepted nodes are skipped; in-flight or uncertain work stops.
+- **A stop is `resumable: true`.** The database is kept.
+- **Creating a coordinator database is not a CLI command.** It is `LocalStore.create`, and activating a dedicated one needs its own GO.
+
+**`e1/plan_run.py`:** a recipe node whose earlier materialization stopped after creating `<key>.integration` now stops precisely with `integration_exists`, and the directory is **kept**. Automatic archive/retry is deferred (root msg 1901).
+
+**Tests** (all on disposable coordinator databases)
+
+`tests/test_local_store.py` (22):
+- create, mark and verify; never adopt or recreate;
+- open refuses a foreign marker, a missing database, a non-coordinator name or an unreadable locator;
+- verify refuses a hidden journal table and mismatched bounds;
+- a second coordinator gives `store_in_use`; a busy port is refused with the listener left alive;
+- persistence across a process restart, with real UTC records;
+- **in-flight work across a restart: no duplicate claim**;
+- the clock rule; the sampled clock;
+- operator policy refusals, intent/outcome logging, a crash between them giving an uncertain act, and the root allowlist (zero calls);
+- uncertain or unparseable acts stop the session;
+- the CLI `--store local`;
+- **the two-process continuation with an operator pin** and `plan_changed`;
+- an unbound run root is refused.
+
+`tests/test_plan_run.py`:
+- a pin of a pending node re-imports as a no-op;
+- a declared node revised is a conflict;
+- `attach_plan` gives plan_missing, attaches, allows the pin, and refuses unauthorized drift.
+
+`tests/test_plan_run_d3.py`: a stopped integration gives `integration_exists`, with the directory kept.

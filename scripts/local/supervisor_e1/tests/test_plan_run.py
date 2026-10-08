@@ -206,15 +206,28 @@ def test_a_partial_import_completes_on_resume_without_duplicates(fx, harness, se
 
 
 def test_a_conflicting_existing_plan_is_refused_without_writing(fx, harness, setup):
+    """A node DECLARED with a pinned spec whose content changed is a conflict (no write)."""
     raw = two_nodes(fx)
     plan = PI.import_plan(setup, harness.project_id, raw)
     other = write_spec(fx.a_doc, fx.tmp / "spec-a-copy.json")
-    PI.pin_spec(setup, plan, "b", (fx.tmp / "spec-a-copy.json").as_posix())    # b's content now differs from the document
+    PI.pin_spec(setup, plan, "a", (fx.tmp / "spec-a-copy.json").as_posix())    # a's content now differs from the document
     before = view(setup, plan)
     with pytest.raises(PI.ImportRefused) as e:
         PI.import_plan(setup, harness.project_id, raw)
-    assert (e.value.code, e.value.detail) == ("import_conflict", {"node": "b"}) and view(setup, plan) == before
+    assert (e.value.code, e.value.detail) == ("import_conflict", {"node": "a"}) and view(setup, plan) == before
     assert other.sha256 == fx.a_spec.sha256
+
+
+def test_an_operator_pin_on_a_pending_node_reimports_as_a_noop(fx, harness, setup):
+    """Review 1899(a): pin_spec on a node DECLARED pending is the one authorized drift; the unchanged plan file then
+    re-imports as a no-op (it used to be import_conflict, which blocked continuing a pinned plan)."""
+    raw = two_nodes(fx)
+    plan = PI.import_plan(setup, harness.project_id, raw)
+    write_spec(fx.a_doc, fx.tmp / "spec-b-pin.json")
+    PI.pin_spec(setup, plan, "b", (fx.tmp / "spec-b-pin.json").as_posix())
+    before = view(setup, plan)
+    again = PI.import_plan(setup, harness.project_id, raw)
+    assert again.applied == () and again.root == plan.root and view(setup, plan) == before
 
 
 # ------------------------------------------------------------------------ the driver
@@ -356,3 +369,23 @@ def test_an_attached_pilot_never_dispatches_another_node(fx, harness, setup, cli
         aj.close()
     assert (res.outcome, res.reason) == ("needs_operator", "claim_mismatch")
     assert res.detail == {"outcome": "claimed", "nodeId": plan.node_ids["a"]} and calls == []
+
+
+def test_attach_verifies_the_plan_with_no_write(fx, harness, setup):
+    """Root msg 1901: a later run ATTACHES (no write): an absent plan is plan_missing, a complete one attaches with the
+    same identities, an operator pin of a pending node is authorized, any other drift is import_conflict."""
+    raw = two_nodes(fx)
+    with pytest.raises(PI.ImportRefused) as e:
+        PI.attach_plan(setup, harness.project_id, raw)
+    assert e.value.code == "plan_missing"
+    plan = PI.import_plan(setup, harness.project_id, raw)
+    before = view(setup, plan)
+    assert PI.attach_plan(setup, harness.project_id, raw).node_ids == plan.node_ids and view(setup, plan) == before
+    write_spec(fx.a_doc, fx.tmp / "spec-b-attach.json")
+    PI.pin_spec(setup, plan, "b", (fx.tmp / "spec-b-attach.json").as_posix())          # authorized
+    assert PI.attach_plan(setup, harness.project_id, raw).root == plan.root
+    write_spec(fx.a_doc, fx.tmp / "spec-a-attach.json")
+    PI.pin_spec(setup, plan, "a", (fx.tmp / "spec-a-attach.json").as_posix())          # NOT authorized: a was declared
+    with pytest.raises(PI.ImportRefused) as e:
+        PI.attach_plan(setup, harness.project_id, raw)
+    assert (e.value.code, e.value.detail) == ("import_conflict", {"node": "a"})

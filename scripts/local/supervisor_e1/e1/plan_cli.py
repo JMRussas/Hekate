@@ -85,7 +85,7 @@ def check_run_inputs(a: argparse.Namespace) -> tuple[Path, tuple[Path, ...]]:
     if not (a.launch_real_model and a.root_go and a.root_go.strip() and a.exe and a.exe_sha256):
         raise Refused("run_needs", "--exe --exe-sha256 --launch-real-model --root-go")
     run_root = a.run_root.resolve()
-    if run_root.exists():
+    if run_root.exists() and getattr(a, "store", "harness") != "local":       # local: a BOUND run root may continue
         raise Refused("run_root_exists", str(run_root))
     command = (a.exe.resolve(),) + ((a.exe_arg.resolve(),) if a.exe_arg else ())
     for p in command:
@@ -158,6 +158,88 @@ def run(a: argparse.Namespace, raw: bytes, run_root: Path, command: tuple[Path, 
     return (0 if ok else 1), out
 
 
+RESUMABLE_LOCAL = ("the local coordinator database keeps the PlanStore state: fix what the stop names (e.g. pin a pending "
+                   "spec), then run the SAME plan file again with --store local in the SAME run root (bound; no re-import; "
+                   "accepted nodes are skipped; in-flight or uncertain work stops)")
+
+
+BINDING = "plan.binding.json"
+BOUND_PLAN = "plan.import.json"
+
+
+def check_binding(a: argparse.Namespace, raw: bytes, run_root: Path) -> tuple[str, dict[str, str]]:
+    """--store local run-root binding (root msg 1901), checked BEFORE any effect (no database access):
+    a NEW run root is a first run; an existing one must carry a binding equal to {marker, projectId, planRoot,
+    importSha256} of THIS store and THIS plan file (byte-identical: an edited file is a new plan, plan_changed)."""
+    import hashlib
+    from e1 import local_store as LS
+    try:
+        loc = LS.Locator.read(a.state_dir)
+    except LS.LocalStoreRefused as e:
+        raise Refused(e.code, e.detail) from None
+    want = {"marker": loc.marker, "projectId": loc.project_id,
+            "planRoot": PI.identities(PI.parse(raw), loc.project_id).root, "importSha256": hashlib.sha256(raw).hexdigest()}
+    if not run_root.exists():
+        return "first", want
+    try:
+        got = json.loads((run_root / BINDING).read_text(encoding="utf-8"))
+        bound = (run_root / BOUND_PLAN).read_bytes()
+    except (OSError, ValueError):
+        raise Refused("run_root_unbound", str(run_root)) from None
+    if got.get("importSha256") != want["importSha256"]:
+        raise Refused("plan_changed", {"bound": got.get("importSha256"), "given": want["importSha256"]})
+    if got != want or hashlib.sha256(bound).hexdigest() != want["importSha256"]:
+        raise Refused("binding_mismatch", str(run_root / BINDING))
+    return "continue", want
+
+
+def run_local(a: argparse.Namespace, raw: bytes, run_root: Path, command: tuple[Path, ...],
+              opener: Callable[[Path], Any] | None = None, mode: str = "first",
+              binding: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
+    """--store local (plan 043 rev 3): OPEN the coordinator's own marked database (never create or adopt one),
+    verify it before any dispatch, run with the named operator surface and a real clock, stop the Api, keep the DB."""
+    from e1 import local_store as LS
+    try:
+        store = (opener or LS.LocalStore.open)(a.state_dir)
+    except LS.LocalStoreRefused as e:
+        return 2, {"refused": e.code, "detail": e.detail}
+    fake = a.exe_arg is not None
+    out: dict[str, Any] = {"outcome": "needs_operator", "reason": "unexpected_error"}
+    code = 1
+    try:
+        try:
+            setup, client, aj = store.session(actor=a.actor, plan_bytes=raw)
+        except LS.LocalStoreRefused as e:                # e.g. uncertain operator acts: classify first, nothing ran
+            return 1, {"outcome": "needs_operator", "reason": e.code, "detail": e.detail}
+        try:
+            try:
+                if mode == "continue":                  # the SAME plan file in its bound run root: verify, NO write
+                    plan = PI.attach_plan(setup, store.loc.project_id, raw)
+                else:
+                    plan = PI.import_plan(setup, store.loc.project_id, raw)
+                    run_root.mkdir(parents=True)        # bind only AFTER a successful import, exclusively
+                    with open(run_root / BOUND_PLAN, "xb") as f:
+                        f.write(raw)
+                    with open(run_root / BINDING, "x", encoding="utf-8", newline="\n") as f:
+                        f.write(json.dumps(binding, indent=1, sort_keys=True))
+            except PI.ImportRefused as e:
+                return 1, {"outcome": "needs_operator", "reason": "import_refused", "detail": {"code": e.code, "detail": e.detail}}
+            res = PR.run_plan(plan, run_root, setup=setup, client=client, aj=aj, executable=command,
+                              executable_sha256=a.exe_sha256, execution_kind="fake-cli" if fake else "claude-cli", root_go=a.root_go)
+        finally:
+            aj.close()
+        out = result_json(res, fake=fake, root_go=a.root_go, run_root=run_root)
+        out["store"] = {"kind": "local", "db": store.loc.db, "projectId": store.loc.project_id}
+        if res.outcome != "all_done":
+            out["resumable"], out["note"] = True, RESUMABLE_LOCAL
+        code = 0 if res.outcome == "all_done" else 1
+    except Exception as e:  # noqa: BLE001 -- any failure after the store opened is a typed stop
+        out = {"outcome": "needs_operator", "reason": "unexpected_error", "detail": type(e).__name__}
+    finally:
+        store.stop()
+    return code, out
+
+
 def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -> int:
     ap = argparse.ArgumentParser(prog=PROG, description="Validate or run a prepared plan-import.v0 plan (disposable harness).")
     ap.add_argument("command", choices=("validate", "run"))
@@ -168,6 +250,10 @@ def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -
     ap.add_argument("--exe-sha256", help="run: sha256 of the executable (of --exe-arg when given)")
     ap.add_argument("--launch-real-model", action="store_true", help="run: required acknowledgement that a model is launched")
     ap.add_argument("--root-go", help="run: the root GO reference recorded with the evidence")
+    ap.add_argument("--store", choices=("harness", "local"), default="harness",
+                    help="run: harness = a disposable database (default); local = the coordinator's own persistent database")
+    ap.add_argument("--state-dir", type=Path, help="run --store local: the coordinator state dir holding its locator")
+    ap.add_argument("--actor", default="operator:local", help="run --store local: the operator LABEL recorded with each act")
     a = ap.parse_args(argv)
     try:
         raw, doc, specs = load_plan(a.plan)
@@ -176,10 +262,17 @@ def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -
             print(json.dumps(dict(info, validate="ok", effects="none: no harness, clone, install, test or spawn"), indent=1))
             return 0
         run_root, command = check_run_inputs(a)
+        if a.store == "local" and a.state_dir is None:
+            raise Refused("state_dir_required", "--store local needs --state-dir")
+        mode, binding = check_binding(a, raw, run_root) if a.store == "local" else ("first", None)
     except Refused as e:
         print(json.dumps({"refused": e.code, "detail": e.detail}, default=str))
         return 2
-    print(json.dumps(dict(info, run="starting", runRoot=str(run_root)), indent=1), flush=True)
+    print(json.dumps(dict(info, run="starting", runRoot=str(run_root), store=a.store), indent=1), flush=True)
+    if a.store == "local":
+        code, out = run_local(a, raw, run_root, command, mode=mode, binding=binding)
+        print(json.dumps(out, indent=1, default=str))
+        return code
     if harness_factory is None:
         from e1.harness import Harness
         harness_factory = Harness

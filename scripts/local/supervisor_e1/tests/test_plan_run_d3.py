@@ -248,3 +248,26 @@ def test_a_recipe_predecessors_own_provenance_is_checked(fx, harness, setup, dri
     r2 = driver(plan, scenarios=scen)
     assert (r2.outcome, r2.reason) == ("needs_operator", reason) and r2.nodes["c"]["work"] == "todo"
     assert not (tmp_path / "plan-run" / "c.integration").exists()
+
+
+
+
+def test_a_stopped_integration_is_a_precise_operator_stop_and_is_kept(fx, harness, setup, driver, tmp_path, monkeypatch):
+    """Root msg 1901: a materialization that stops AFTER creating b.integration leaves it behind; every re-run stops
+    with the PRECISE reason integration_exists and the directory is KEPT (automatic archive/retry is deferred)."""
+    path, rsha = write_recipe(fx, recipe_doc(fx))
+    plan = PI.import_plan(setup, harness.project_id, chain(fx, path, rsha, "d3 stopped integration"))
+    real = S.materialize
+
+    def clone_fails(recipe, recipe_sha, pred, artifact, out, branch):
+        Path(out).mkdir(parents=True)
+        (Path(out) / "partial.txt").write_text("evidence of the failed attempt", encoding="utf-8")
+        raise S.SuccessorStop("integration_clone_failed", "simulated")
+    monkeypatch.setattr(S, "materialize", clone_fails)
+    r1 = driver(plan)
+    assert (r1.reason, r1.nodes["a"]["acceptance"], r1.nodes["b"]["work"]) == ("integration_clone_failed", "accepted", "todo")
+    monkeypatch.setattr(S, "materialize", real)                                   # only this patch (npm env stays)
+    r2 = driver(plan)                                                                  # the SAME run root
+    assert (r2.outcome, r2.reason) == ("needs_operator", "integration_exists") and r2.nodes["b"]["work"] == "todo"
+    kept = tmp_path / "plan-run" / "b.integration" / "partial.txt"
+    assert kept.read_text(encoding="utf-8") == "evidence of the failed attempt"          # nothing deleted or renamed

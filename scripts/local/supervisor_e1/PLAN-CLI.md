@@ -64,7 +64,15 @@ The harness database is dropped at exit **whatever the outcome**. `Harness.stop(
 
 ## Limits (v0)
 
-- **A stop cannot be resumed.** The harness drops its PlanStore database at exit. After `needs_operator`, prepare what the stop names, then run the plan again in a **new** run root.
+- **A stop cannot be resumed** with the default `--store harness`. The harness drops its PlanStore database at exit. After `needs_operator`, prepare what the stop names, then run the plan again in a **new** run root.
+- **`--store local --state-dir D [--actor L]` keeps the state and continues in the SAME run root** (plan 043 rev 3 §5).
+  - It opens the local coordinator's OWN marked database, named by the locator in `D`. It never creates or adopts one. A second coordinator, or a busy port, is refused.
+  - **The first run** imports the plan, then binds the run root (`plan.binding.json` plus the original `plan.import.json`).
+  - **A later run with the SAME plan file in the SAME run root** attaches with no re-import, skips accepted nodes, and stops on in-flight or uncertain work. An edited plan file is `plan_changed`.
+  - After a `spec_pending` stop, the operator pins the spec; that is the one authorized drift. Then the same command continues.
+  - Uncertain or unparseable operator-act log entries stop the run before any dispatch.
+  - `actor` is a label, not authentication. The database is never dropped.
+  - Creating a coordinator database is not a CLI command. It is `e1.local_store.LocalStore.create`, and activating a dedicated one needs its own GO.
 - **A recipe node needs no operator step.** A `{"recipe": ...}` node (D3 v1: one predecessor, same original repository) gets its base derived from the predecessor's accepted artifact within the same run, so a fully pinned or recipe chain can reach `all_done` in ONE `run`. Its stops (`repo_lineage_mismatch`, `recipe_tamper`, `oracle_conflict`, `predecessor_evidence`, ...) pass through as `reason` and `detail`. The integration repo, resolved spec and provenance are under `<run-root>/<key>.integration/`.
 - **A pending spec is an operator stop.** A `spec: null` node, whose base is prepared by an operator (D3 v0), stops with `spec_pending` once its predecessors are accepted. Their accepted artifacts are in the per-node owned clones under the run root. To continue:
   1. integrate those artifacts into the source repo;

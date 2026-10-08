@@ -253,8 +253,12 @@ def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, execut
                     raise _Stop("spec_mismatch", {"node": key, "code": e.code, "detail": e.detail}) from None
             else:
                 # D3 v1: derive the base from the ONE accepted predecessor, with no operator step (plan 044)
-                if node_root.exists() or integration_dir(run_root, key).exists():
+                if node_root.exists():
                     raise _Stop("node_run_root_exists", {"node": key, "path": str(node_root)})
+                if integration_dir(run_root, key).exists():
+                    # an earlier materialization stopped after creating it: a PRECISE operator stop, the directory is
+                    # kept as evidence (automatic archive/retry is deferred, root msg 1901)
+                    raise _Stop("integration_exists", {"node": key, "path": str(integration_dir(run_root, key))})
                 spec = materialize_successor(plan, run_root, key, sha, path, state)
             base, source = spec.doc["source"]["taskBaseCommit"], spec.doc["source"]["repo"]
             preds = {}

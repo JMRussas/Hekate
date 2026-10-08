@@ -221,8 +221,47 @@ def _ok(resp, what: str) -> dict[str, Any]:
     return resp.body
 
 
+def _content_matches(n: NodeDecl, got: dict[str, Any]) -> bool:
+    """As declared (revision 1), or, for a node declared pending only, an operator pin at a later revision."""
+    if got.get("contentRevision") == 1 and got.get("value") == node_value(n):
+        return True
+    if n.kind is None and isinstance(got.get("contentRevision"), int) and got["contentRevision"] > 1:
+        try:
+            return parse_node_ref(got.get("value")) is not None
+        except ImportRefused:
+            return False
+    return False
+
+
 def _op(doc: ImportDoc, step: str) -> str:
     return f"pi-{doc.sha256[:24]}-{step}"
+
+
+def _check_view(doc: ImportDoc, plan: ImportedPlan, v: dict[str, Any]) -> tuple[dict[str, Any], set[tuple[str, str]]]:
+    """The authoritative view against the document: anything existing that is NOT exactly declared (or an authorized
+    operator pin of a node declared pending) is import_conflict. Returns (nodes by id, existing edges)."""
+    if v.get("projectId") != plan.project_id:
+        raise ImportRefused("import_conflict", "root exists in another project")
+    by_id = {n["id"]: n for n in v["nodes"]}
+    root_node = by_id.get(plan.root)
+    if root_node is None or root_node.get("name") != doc.title:
+        raise ImportRefused("import_conflict", "root name")
+    expected_ids = set(plan.node_ids.values()) | {plan.root}
+    if set(by_id) - expected_ids:
+        raise ImportRefused("import_conflict", {"unexpectedNodes": sorted(set(by_id) - expected_ids)})
+    want_edges = {(plan.node_ids[n.key], plan.node_ids[a]) for n in doc.nodes for a in n.after}
+    have_edges = {(e["successorId"], e["predecessorId"]) for e in v["dependencies"]}
+    if have_edges - want_edges or any(e.get("gate") not in (None, "accepted") for e in v["dependencies"]):
+        raise ImportRefused("import_conflict", "unexpected dependency edges or gates")
+    # Every existing node must be EXACTLY the declared one; otherwise nothing is written. The ONE authorized drift
+    # (review 1899a): a node DECLARED pending may carry an operator pin, a valid spec/recipe ref at contentRevision > 1.
+    for order, n in enumerate(doc.nodes):
+        got = by_id.get(plan.node_ids[n.key])
+        if got is not None and not (got.get("parentId") == plan.root and got.get("nodeType") == "task" and got.get("name") == n.name
+                                    and got.get("siblingOrder") == order and got.get("contentAttributes") == {}
+                                    and _content_matches(n, got)):
+            raise ImportRefused("import_conflict", {"node": n.key})
+    return by_id, have_edges
 
 
 def import_plan(setup, project_id: str, raw: bytes) -> ImportedPlan:
@@ -237,26 +276,7 @@ def import_plan(setup, project_id: str, raw: bytes) -> ImportedPlan:
         applied.append("root")
         view = setup.plan(plan.root)
     v = _ok(view, "plan")
-    if v.get("projectId") != plan.project_id:
-        raise ImportRefused("import_conflict", "root exists in another project")
-    by_id = {n["id"]: n for n in v["nodes"]}
-    root_node = by_id.get(plan.root)
-    if root_node is None or root_node.get("name") != doc.title:
-        raise ImportRefused("import_conflict", "root name")
-    expected_ids = set(plan.node_ids.values()) | {plan.root}
-    if set(by_id) - expected_ids:
-        raise ImportRefused("import_conflict", {"unexpectedNodes": sorted(set(by_id) - expected_ids)})
-    want_edges = {(plan.node_ids[n.key], plan.node_ids[a]) for n in doc.nodes for a in n.after}
-    have_edges = {(e["successorId"], e["predecessorId"]) for e in v["dependencies"]}
-    if have_edges - want_edges or any(e.get("gate") not in (None, "accepted") for e in v["dependencies"]):
-        raise ImportRefused("import_conflict", "unexpected dependency edges or gates")
-    # Every existing node must be EXACTLY the declared one; otherwise nothing is written.
-    for order, n in enumerate(doc.nodes):
-        got = by_id.get(plan.node_ids[n.key])
-        if got is not None and not (got.get("parentId") == plan.root and got.get("nodeType") == "task" and got.get("name") == n.name
-                                    and got.get("siblingOrder") == order and got.get("contentAttributes") == {}
-                                    and got.get("contentRevision") == 1 and got.get("value") == node_value(n)):
-            raise ImportRefused("import_conflict", {"node": n.key})
+    by_id, have_edges = _check_view(doc, plan, v)
     for order, n in enumerate(doc.nodes):
         if plan.node_ids[n.key] in by_id:
             continue
@@ -275,6 +295,24 @@ def import_plan(setup, project_id: str, raw: bytes) -> ImportedPlan:
             _ok(setup.add_dependency(edge[0], edge[1], _op(doc, f"e-{n.key}-{a}"), succ_rev), "add_dependency")
             applied.append(f"edge:{n.key}<-{a}")
     return ImportedPlan(doc, plan.project_id, plan.root, plan.node_ids, plan.after, tuple(applied))
+
+
+def attach_plan(setup, project_id: str, raw: bytes) -> ImportedPlan:
+    """A LATER run of the SAME plan file on a persistent store (root msg 1901): re-derive the identities from the
+    bytes and VERIFY the authoritative plan with NO write. Missing nodes or edges are plan_drift; anything else not
+    exactly declared (except an operator pin of a pending node) is import_conflict; an absent plan is plan_missing."""
+    doc = parse(raw)
+    validate(doc)
+    plan = identities(doc, project_id)
+    view = setup.plan(plan.root)
+    if view.status == 404:
+        raise ImportRefused("plan_missing", plan.root)
+    by_id, have_edges = _check_view(doc, plan, _ok(view, "plan"))
+    missing = [f"node:{n.key}" for n in doc.nodes if plan.node_ids[n.key] not in by_id]
+    missing += [f"edge:{n.key}<-{a}" for n in doc.nodes for a in n.after if (plan.node_ids[n.key], plan.node_ids[a]) not in have_edges]
+    if missing:
+        raise ImportRefused("plan_drift", missing)
+    return plan
 
 
 def pin_spec(setup, plan: ImportedPlan, key: str, path: str) -> str:

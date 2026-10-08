@@ -172,6 +172,7 @@ class LocalStore:
         s.psql("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS age; LOAD 'age'; "
                "SET search_path = ag_catalog, \"$user\", public; SELECT create_graph('code_graph'); "
                "SELECT create_vlabel('code_graph','CodeNode'); SELECT create_elabel('code_graph','DEPENDS_ON');")
+        s._acquire_lock()                                                       # single instance from the start (review 1894 D3)
         s._start_api()                                                          # the Api applies the PlanStore schema
         s.psql(f"INSERT INTO projects (id, name, root_path) VALUES ('{loc.project_id}', 'local-coordinator', 'local://coordinator')")
         install(s.dsn, E2C_BOUNDS)
@@ -189,7 +190,12 @@ class LocalStore:
         if exists != "1":
             raise LocalStoreRefused("db_missing", loc.db)
         s._check_marker()
-        s._start_api()
+        s._acquire_lock()                       # BEFORE the Api starts: a second coordinator is refused by name
+        try:
+            s._start_api()
+        except BaseException:
+            s.stop()
+            raise
         try:
             s.verify()
             s.clock()
@@ -197,6 +203,17 @@ class LocalStore:
             s.stop()
             raise
         return s
+
+    def _acquire_lock(self) -> None:
+        """ONE coordinator per database (review 1894 D3): a PostgreSQL session advisory lock keyed by the marker,
+        held on a dedicated connection for the store's lifetime and released by stop(). A second open is refused."""
+        import psycopg
+        key = int(self.loc.marker[:15], 16)                                  # < 2**60: a valid bigint key
+        conn = psycopg.connect(self.dsn, autocommit=True)
+        if not conn.execute("SELECT pg_try_advisory_lock(%s)", (key,)).fetchone()[0]:
+            conn.close()
+            raise LocalStoreRefused("store_in_use", self.loc.db)
+        self._lock_conn = conn
 
     def _check_marker(self) -> None:
         try:
@@ -231,11 +248,18 @@ class LocalStore:
         clock_check(float(last) if last else None, time.time())
 
     # -- a session ---------------------------------------------------------------------------------------------
-    def session(self, *, actor: str, writer: str | None = None) -> tuple[Any, Any, LiveClockJournal]:
-        """(operator surface, supervisor client, live-clock journal) for run_plan / import_plan."""
+    def session(self, *, actor: str, plan_bytes: bytes, writer: str | None = None) -> tuple[Any, Any, LiveClockJournal]:
+        """(operator surface, supervisor client, live-clock journal) for import_plan / run_plan of ONE plan file. The
+        operator policy's root allowlist is DERIVED from that validated file (root msg 1895)."""
+        from e1 import plan_import as PI
         from e1.operator_acts import OperatorPolicy, OperatorSurface
         from e1.wire import SetupClient, SupervisorClient
-        setup = OperatorSurface(SetupClient(self.base_url), OperatorPolicy(actor, self.loc.project_id), self.state_dir / "operator-acts.jsonl")
+        root = PI.identities(PI.parse(plan_bytes), self.loc.project_id).root
+        setup = OperatorSurface(SetupClient(self.base_url), OperatorPolicy(actor, self.loc.project_id, frozenset({root})),
+                                self.state_dir / "operator-acts.jsonl")
+        left = setup.uncertain_acts()
+        if left:                                     # stop BEFORE any dispatch; an operator classifies them (root msg 1904)
+            raise LocalStoreRefused("uncertain_operator_acts", left[:10])
         aj = LiveClockJournal(self.dsn, writer or f"coordinator#{uuid.uuid4().hex[:8]}").open()
         return setup, SupervisorClient(self.base_url), aj
 
@@ -247,6 +271,10 @@ class LocalStore:
         log = getattr(self, "_log", None)
         if log is not None:
             log.close()
+        lock = getattr(self, "_lock_conn", None)
+        if lock is not None:                                                     # releases the single-instance lock
+            lock.close()
+            self._lock_conn = None
 
     def drop_for_test(self) -> None:
         """TESTS ONLY: drop THIS coordinator database (guarded name + matching marker) and its locator."""

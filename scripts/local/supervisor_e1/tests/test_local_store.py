@@ -87,7 +87,7 @@ def test_verify_refuses_a_partial_schema_or_mismatched_bounds(store):
 def test_a_plan_run_persists_across_stop_and_reopen_with_a_real_clock(store, fx):
     raw = doc_bytes([{"key": "a", "name": "set value", "spec": {"path": fx.a_path, "sha256": fx.a_spec.sha256}, "after": []}],
                     title=f"local {uuid.uuid4().hex[:6]}")
-    setup, client, aj = store.session(actor="operator:test")
+    setup, client, aj = store.session(actor="operator:test", plan_bytes=raw)
     t0 = time.time()
     try:
         plan = PI.import_plan(setup, store.loc.project_id, raw)
@@ -104,7 +104,7 @@ def test_a_plan_run_persists_across_stop_and_reopen_with_a_real_clock(store, fx)
     store.stop()                                                                 # the Api process ends; the database stays
     again = LS.LocalStore.open(store.state_dir)                                   # a NEW Api process on the SAME database
     try:
-        setup2, client2, aj2 = again.session(actor="operator:test")
+        setup2, client2, aj2 = again.session(actor="operator:test", plan_bytes=raw)
         try:
             plan2 = PI.import_plan(setup2, again.loc.project_id, raw)             # deterministic ids: a no-op
             assert plan2.applied == () and plan2.root == plan.root
@@ -150,6 +150,9 @@ def test_the_live_journal_clock_is_sampled_stable_and_never_backwards():
 
 # ------------------------------------------------------------------------ the operator surface (pure)
 
+ROOT = str(uuid.uuid4())
+
+
 class FakeSetup:
     def __init__(self, project):
         self.project, self.calls = project, []
@@ -171,15 +174,15 @@ class FakeSetup:
 def test_operator_acts_are_named_policy_bound_and_logged(tmp_path):
     project = str(uuid.uuid4())
     fake = FakeSetup(project)
-    s = OP.OperatorSurface(fake, OP.OperatorPolicy("operator:alice", project), tmp_path / "acts.jsonl")
+    s = OP.OperatorSurface(fake, OP.OperatorPolicy("operator:alice", project, frozenset({ROOT})), tmp_path / "acts.jsonl")
     assert not hasattr(s, "events") and not hasattr(s, "_send")                    # no general passthrough
     with pytest.raises(OP.OperatorRefused) as e:
-        s.create_plan("r", str(uuid.uuid4()), "x", "k")
+        s.create_plan(ROOT, str(uuid.uuid4()), "x", "k")
     assert e.value.code == "project_outside_policy"
     with pytest.raises(OP.OperatorRefused) as e:
         s.decide("n1", {"decision": "accepted"})                                   # not seen in a policy plan view
     assert e.value.code == "node_outside_policy"
-    s.plan("r")
+    s.plan(ROOT)
     s.decide("n1", {"decision": "accepted", "actor": "someone-else"})
     assert fake.calls[-1][1][1]["actor"] == "operator:alice"                       # the configured label, always
     with pytest.raises(OP.OperatorRefused) as e:
@@ -188,7 +191,221 @@ def test_operator_acts_are_named_policy_bound_and_logged(tmp_path):
     s.transition("n1", {"to": "cancelled"})
     other = FakeSetup(str(uuid.uuid4()))
     with pytest.raises(OP.OperatorRefused) as e:
-        OP.OperatorSurface(other, OP.OperatorPolicy("operator:alice", project), tmp_path / "x.jsonl").plan("r")
+        OP.OperatorSurface(other, OP.OperatorPolicy("operator:alice", project, frozenset({ROOT})), tmp_path / "x.jsonl").plan(ROOT)
     assert e.value.code == "plan_outside_policy"
     log = [json.loads(x) for x in (tmp_path / "acts.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [(x["act"], x["actor"]) for x in log] == [("decide", "operator:alice"), ("transition", "operator:alice")]
+    assert [(x["act"], x["phase"], x["actor"]) for x in log] == [
+        ("decide", "intent", "operator:alice"), ("decide", "outcome", "operator:alice"),
+        ("transition", "intent", "operator:alice"), ("transition", "outcome", "operator:alice")]
+    assert s.uncertain_acts() == []
+
+
+def test_a_crash_between_intent_and_outcome_is_an_uncertain_act(tmp_path):
+    """Review 1894 D7: the intent is written BEFORE the call; a call that never returns leaves it uncertain."""
+    project = str(uuid.uuid4())
+    fake = FakeSetup(project)
+    s = OP.OperatorSurface(fake, OP.OperatorPolicy("operator:alice", project, frozenset({ROOT})), tmp_path / "acts.jsonl")
+    s.plan(ROOT)
+
+    def boom(*a, **kw):
+        raise ConnectionError("coordinator died mid-call")
+    fake.decide = boom
+    with pytest.raises(ConnectionError):
+        s.decide("n1", {"decision": "accepted"})
+    left = s.uncertain_acts()
+    assert [(x["act"], x["target"], x["phase"]) for x in left] == [("decide", "n1", "intent")]
+
+
+def test_a_second_coordinator_on_the_same_database_is_refused(store):
+    """Review 1894 D3: one coordinator per database, by an advisory lock taken BEFORE its Api starts."""
+    if getattr(store, "_lock_conn", None) is None:
+        store._acquire_lock()                                                   # the module store holds the lock
+    with pytest.raises(LS.LocalStoreRefused) as e:
+        LS.LocalStore.open(store.state_dir)
+    assert e.value.code == "store_in_use"
+
+
+def test_a_busy_api_port_is_refused_and_the_listener_is_left_alone(store, tmp_path):
+    """Review 1894 S2: a port in use refuses the start; the other listener is never killed or adopted."""
+    import socket
+    busy = socket.socket()
+    busy.bind(("127.0.0.1", 0))
+    busy.listen(16)                                                              # room for the start probe and our check
+    port = busy.getsockname()[1]
+    try:
+        d = json.loads((store.state_dir / LS.LOCATOR).read_text(encoding="utf-8"))
+        s = LS.LocalStore(tmp_path, LS.Locator(d["db"], d["marker"], d["projectId"], port))
+        s._container()
+        with pytest.raises(LS.LocalStoreRefused) as e:
+            s._start_api()
+        assert e.value.code == "api_port_in_use"
+        probe = socket.create_connection(("127.0.0.1", port), timeout=2)          # still listening
+        probe.close()
+    finally:
+        busy.close()
+
+
+# ------------------------------------------------------------------------ the CLI's --store local
+
+def _plan_file(fx, title):
+    a = json.loads(json.dumps(fx.a_doc))
+    a["task"]["text"] += "\nFAKE-SCENARIO: value_ok\n"                          # the CLI has no per-node suffix
+    from task_support import write_spec
+    spec = write_spec(a, fx.tmp / f"spec-{title}.json")
+    p = fx.tmp / f"plan-{title}.json"
+    p.write_bytes(doc_bytes([{"key": "a", "name": "set value", "spec": {"path": (fx.tmp / f"spec-{title}.json").as_posix(),
+                                                                         "sha256": spec.sha256}, "after": []}], title=f"cli local {title}"))
+    return p
+
+
+def _cli(plan, run_root, *extra):
+    from e1 import plan_cli as CLI
+    return CLI.main(["run", "--plan", str(plan), "--run-root", str(run_root), "--exe", str(PYEXE), "--exe-arg", str(FAKE),
+                     "--exe-sha256", sha_file(FAKE), "--launch-real-model", "--root-go", "test-only", *extra])
+
+
+def _last_json(capsys):
+    out = capsys.readouterr().out
+    return json.loads(out[out.rindex("\n{") + 1:] if "\n{" in out else out)
+
+
+def test_cli_store_local_runs_and_a_rerun_finds_the_persisted_state(store, fx, capsys):
+    plan = _plan_file(fx, uuid.uuid4().hex[:6])
+    store.stop()                                                                 # the CLI opens its own Api process
+    try:
+        assert _cli(plan, fx.tmp / "cli-rr1", "--store", "local", "--state-dir", str(store.state_dir)) == 0
+        out = _last_json(capsys)
+        assert (out["outcome"], [(s["key"], s["outcome"]) for s in out["steps"]]) == ("all_done", [("a", "accepted")])
+        assert out["store"] == {"kind": "local", "db": store.loc.db, "projectId": store.loc.project_id}
+        assert _cli(plan, fx.tmp / "cli-rr2", "--store", "local", "--state-dir", str(store.state_dir)) == 0
+        out2 = _last_json(capsys)
+        assert (out2["outcome"], out2["steps"]) == ("all_done", [])               # persisted: nothing re-run
+    finally:
+        store.api = None
+        store._start_api()
+
+
+def test_cli_store_local_refusals_happen_before_any_effect(fx, tmp_path, capsys):
+    plan = _plan_file(fx, "refusal")
+    assert _cli(plan, tmp_path / "rr-a", "--store", "local") == 2
+    assert _last_json(capsys)["refused"] == "state_dir_required" and not (tmp_path / "rr-a").exists()
+    assert _cli(plan, tmp_path / "rr-b", "--store", "local", "--state-dir", str(tmp_path / "no-coordinator")) == 2
+    assert _last_json(capsys)["refused"] == "locator_unreadable" and not (tmp_path / "rr-b").exists()
+
+
+def test_in_flight_work_survives_a_restart_and_stops_without_a_duplicate_claim(store, fx):
+    """Root msg 1892: a node claimed (in flight) before a restart is still in flight after it; the re-run classifies
+    it and stops, with NO new claim (the attempt epoch is unchanged) and no node run root."""
+    raw = doc_bytes([{"key": "a", "name": "set value", "spec": {"path": fx.a_path, "sha256": fx.a_spec.sha256}, "after": []}],
+                    title=f"local inflight {uuid.uuid4().hex[:6]}")
+    setup, client, aj = store.session(actor="operator:test", plan_bytes=raw)
+    aj.close()
+    plan = PI.import_plan(setup, store.loc.project_id, raw)
+    c = client.claim(plan.root, f"elsewhere-{uuid.uuid4().hex[:8]}", "other-attempt", None, "someone-else")
+    assert c.body["receipt"]["nodeId"] == plan.node_ids["a"]
+    store.stop()
+    again = LS.LocalStore.open(store.state_dir)                                   # restart: a new Api process, same database
+    try:
+        setup2, client2, aj2 = again.session(actor="operator:test", plan_bytes=raw)
+        try:
+            r = PR.run_plan(plan, fx.tmp / "rr-inflight", setup=setup2, client=client2, aj=aj2, executable=(PYEXE, FAKE),
+                            executable_sha256=sha_file(FAKE), execution_kind="fake-cli", root_go="test-only")
+        finally:
+            aj2.close()
+        assert (r.outcome, r.reason, r.steps) == ("needs_operator", "inflight", [])
+        assert r.nodes["a"]["work"] == "in_progress" and r.nodes["a"]["attemptEpoch"] == 1        # no duplicate claim
+        assert not (fx.tmp / "rr-inflight" / "a").exists()
+    finally:
+        again.stop()
+        store.api = None
+        store._start_api()
+
+
+def test_a_root_outside_the_derived_allowlist_is_refused_before_any_call(tmp_path):
+    """Root msg 1895 (D6): the allowed roots are derived from the validated plan file; any other root is refused
+    LOCALLY, before any HTTP call, even inside the right project."""
+    project = str(uuid.uuid4())
+    fake = FakeSetup(project)
+    s = OP.OperatorSurface(fake, OP.OperatorPolicy("operator:alice", project, frozenset({ROOT})), tmp_path / "acts.jsonl")
+    other_root = str(uuid.uuid4())
+    for call in (lambda: s.plan(other_root), lambda: s.create_plan(other_root, project, "x", "k")):
+        with pytest.raises(OP.OperatorRefused) as e:
+            call()
+        assert e.value.code == "root_outside_policy"
+    assert fake.calls == []                                                       # zero HTTP calls
+    with pytest.raises(OP.OperatorRefused) as e:
+        OP.OperatorPolicy("operator:alice", project, frozenset())
+    assert e.value.code == "policy_roots"
+
+
+# ------------------------------------------------------------------------ the two-process CLI continuation (root msg 1901)
+
+def test_two_cli_processes_continue_a_bound_plan_across_an_operator_pin(store, fx, capsys):
+    """Root 1901's required result: run 1 (a accepted, b pending) stops spec_pending; the operator integrates a's
+    artifact and PINS b's spec; run 2 with the SAME plan file in the SAME run root attaches (no re-import), skips the
+    accepted a, runs b and ends all_done. An edited plan file is plan_changed."""
+    from test_plan_run import b_spec_doc, integrate_and_prepare_b
+    from task_support import write_spec
+    a = json.loads(json.dumps(fx.a_doc))
+    a["task"]["text"] += "\nFAKE-SCENARIO: value_ok\n"
+    a_spec = write_spec(a, fx.tmp / "spec-a-cli2.json")
+    raw = doc_bytes([{"key": "a", "name": "set value", "spec": {"path": (fx.tmp / "spec-a-cli2.json").as_posix(), "sha256": a_spec.sha256},
+                      "after": []}, {"key": "b", "name": "set other", "spec": None, "after": ["a"]}], title=f"two process {uuid.uuid4().hex[:6]}")
+    plan_file = fx.tmp / "plan-two-process.json"
+    plan_file.write_bytes(raw)
+    rr = fx.tmp / "rr-two-process"
+    store.stop()
+    try:
+        assert _cli(plan_file, rr, "--store", "local", "--state-dir", str(store.state_dir)) == 1
+        out1 = _last_json(capsys)
+        assert (out1["outcome"], out1["reason"], out1["resumable"]) == ("needs_operator", "spec_pending", True)
+        bind = json.loads((rr / "plan.binding.json").read_text(encoding="utf-8"))
+        assert bind["marker"] == store.loc.marker and (rr / "plan.import.json").read_bytes() == raw
+        # OPERATOR: forward a's accepted artifact, freeze b's spec on it, pin it through the operator surface
+        ev = json.loads(next((rr / "a").glob("pilot-*/evidence.json")).read_text(encoding="utf-8"))
+        anchor, base = integrate_and_prepare_b(fx, ev["ownedRefs"][0].split()[1], rr / "a" / "repo")
+        b = b_spec_doc(fx, anchor, base)
+        b["task"]["text"] += "\nFAKE-SCENARIO: other_ok\n"
+        write_spec(b, fx.tmp / "spec-b-cli2.json")
+        op = LS.LocalStore.open(store.state_dir)
+        try:
+            setup, _client, aj = op.session(actor="operator:test", plan_bytes=raw)
+            aj.close()
+            PI.pin_spec(setup, PI.attach_plan(setup, op.loc.project_id, raw), "b", (fx.tmp / "spec-b-cli2.json").as_posix())
+        finally:
+            op.stop()
+        edited = fx.tmp / "plan-two-process-edited.json"
+        edited.write_bytes(raw + b" ")
+        assert _cli(edited, rr, "--store", "local", "--state-dir", str(store.state_dir)) == 2
+        assert _last_json(capsys)["refused"] == "plan_changed"
+        assert _cli(plan_file, rr, "--store", "local", "--state-dir", str(store.state_dir)) == 0
+        out2 = _last_json(capsys)
+        assert (out2["outcome"], [(s["key"], s["outcome"]) for s in out2["steps"]]) == ("all_done", [("b", "accepted")])
+        assert {k: (v["work"], v["acceptance"]) for k, v in out2["nodes"].items()} == {"a": ("done", "accepted"), "b": ("done", "accepted")}
+    finally:
+        store.api = None
+        store._start_api()
+
+
+def test_an_existing_unbound_run_root_is_refused_before_any_effect(store, fx, tmp_path, capsys):
+    plan = _plan_file(fx, "unbound")
+    (tmp_path / "rr-unbound").mkdir()
+    assert _cli(plan, tmp_path / "rr-unbound", "--store", "local", "--state-dir", str(store.state_dir)) == 2
+    assert _last_json(capsys)["refused"] == "run_root_unbound"
+
+
+def test_uncertain_or_unparseable_operator_acts_stop_before_any_dispatch(store):
+    """Root msg 1904: an intent without an outcome, or a partial line, is surfaced on the next session and stops it."""
+    log = store.state_dir / "operator-acts.jsonl"
+    before = log.read_bytes() if log.exists() else b""
+    raw = doc_bytes([{"key": "a", "name": "x", "spec": None, "after": []}], title="uncertain acts")
+    try:
+        with open(log, "ab") as f:
+            f.write(json.dumps({"phase": "intent", "id": "deadbeef", "act": "decide", "target": "n1"}).encode() + b"\n")
+            f.write(b'{"phase": "outc')
+        with pytest.raises(LS.LocalStoreRefused) as e:
+            store.session(actor="operator:test", plan_bytes=raw)
+        assert e.value.code == "uncertain_operator_acts"
+        assert [x["phase"] for x in e.value.detail] == ["unparseable", "intent"]
+    finally:
+        log.write_bytes(before)
