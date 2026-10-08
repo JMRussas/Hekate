@@ -43,6 +43,8 @@ No nodes are created and no separate database is used until that migration is de
 | HK-ISSUE-012 | — | A prior-attempt decision blocks the fix round's review | implementation-gap | pilot-blocker | journal derivations / claude-hekate | closed (plan 038 rev 2; root acceptance msg 1479) |
 | HK-ISSUE-013 | — | A real run's run.json says `dryRun: true` | defect | deferred | Hekate / claude-hekate (export producer slice) | closed (future runs: host-declared executionKind; root acceptance msg 1602) |
 | HK-ISSUE-014 | — | Operator task runner v0 for a real task spec (CA012 first) | implementation-gap | pilot-blocker | Hekate / claude-hekate (plan 040) | closed (bounded operator runner v0, final source `30279d8`; root acceptance msg 1731) |
+| HK-ISSUE-015 | — | An interrupted pre-launch dispatch cannot be reconciled or continued | implementation-gap | unattended-blocker | Hekate + PlanStore + journal / unassigned | open (design not ready; root msg 2127) |
+| HK-ISSUE-016 | B5 (2120) | Run records do not name the Hekate source that executed them | implementation-gap | deferred | Hekate / claude-hekate (proposal pending) | open |
 
 ## Entries
 
@@ -264,6 +266,23 @@ No nodes are created and no separate database is used until that migration is de
   3. A root-GO'd real CA012 preflight with recorded evidence: preflight-2.
   - Full default suite on `30279d8`: 933 passed, 1 skipped.
 - **CLOSED (root acceptance, msg 1731)** for the bounded operator runner v0 only.
+
+### HK-ISSUE-015 — An interrupted pre-launch dispatch cannot be reconciled or continued
+- **Observed (fact):** check-002 (root GO 2063) stopped `needs_operator` / `worker_failed` / `worktree_add_failed` in round 2. Its run.json keeps `dispatch_intent@4` open with `dispatch_outcome` unknown. The round's journal stream ends at `dispatch_intent`, with no `launch_intent`, so no worker process was started (`cli_worker` journals `launch_intent` before `Popen`). PlanStore keeps the node `in_progress` on the round-2 attempt, still carrying round 1's `artifactRef` `a6fb96d` as history. Cause analysis: msgs 2078/2094.
+- **Gap:** no supported operator path closes such an intent and releases the attempt. The design (msgs 2111/2117/2121, reviews 2119/2120/2124) is not ready. Unresolved:
+  - writer takeover, then same-session advisory-lock acquisition, then a re-read, all as one fenced sequence;
+  - the blast radius of a takeover on the writer's other streams;
+  - idempotent partial apply (`operator_takeover` always bumps the epoch; operator-act ids are fresh per call; an act left uncertain blocks `LocalStore.session`);
+  - the local pre-launch leftovers (worktree, `npm ci`), which must be listed rather than called "no effects".
+- **Continuation:** blocked in the same run root (`plan_run` stops `node_run_root_exists`). A NEW run root re-attaches to the same nodes (uuid5 identities) and would grant fresh `maxRounds`. Root decision (msg 2127): no apply and no reset of the historical task to `todo`. Recovery and continuation need a joint design with cross-run attempt accounting. check-002 stays stopped and unchanged.
+- **Depends on:** HK-ISSUE-016 (the proof must bind the adapter source that ran), HK-ISSUE-010 (operator-act authorization).
+- **Closure (V&V):** a reviewed design and implementation with tests for the fence sequence, the partial-apply replay and cross-run accounting; or a recorded decision that stopped runs stay stopped.
+
+### HK-ISSUE-016 — Run records do not name the Hekate source that executed them
+- **Observed (fact):** a run's run.json and evidence.json record the spec, the executable hash and the adapter evidence, but not the Hekate commit or the e1 source that ran. check-002's executing source (`c701ce0`) is known only from the launch message (msg 2065), not from its records.
+- **Impact:** proofs that depend on adapter ordering (HK-ISSUE-015) cannot be bound to the code that ran from the run's own records.
+- **Next action:** a small provenance increment for future runs (proposal requested, msg 2125). It must be host-observed, not authenticated, and must not change any run outcome.
+- **Closure (V&V):** reviewed source and tests; recorded in new runs' evidence.
 
 ## External references (owned elsewhere; not HK issues)
 
