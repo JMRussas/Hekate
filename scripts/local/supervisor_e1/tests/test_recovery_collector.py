@@ -231,7 +231,7 @@ def test_the_connection_is_read_only_and_errors_never_echo_the_dsn(jdb):
 
 # --- root review 2366: deadline validation, setup cleanup, header numerics/bounds before stream reads ----------------
 
-@pytest.mark.parametrize("deadline", [float("nan"), float("inf"), -1, True, "1", None])
+@pytest.mark.parametrize("deadline", [float("nan"), float("inf"), -1, True, "1", None, 10 ** 400, 1e300, 120.0001, 121])
 def test_an_invalid_deadline_refuses_before_connecting(monkeypatch, deadline):
     def never(*a, **kw):
         raise AssertionError("connect must not be attempted")
@@ -321,3 +321,13 @@ def test_outstanding_beyond_per_stream_refuses_before_any_stream_read(jdb):
     with pytest.raises(RC.CollectorRefused) as e:
         RC.collect_observation(dsn, W, _before_query=lambda cur: queries.append(1))
     assert e.value.code == "read_failed" and "outstanding" in str(e.value) and len(queries) == 4
+
+
+@pytest.mark.parametrize("deadline", [0, 0.0, 60, 120, 120.0])
+def test_in_range_deadlines_pass_validation_and_reach_connect(monkeypatch, deadline):
+    def sentinel(*a, **kw):
+        raise ConnectionRefusedError("sentinel")
+    monkeypatch.setattr(RC.psycopg, "connect", sentinel)
+    with pytest.raises(RC.CollectorRefused) as e:
+        RC.collect_observation("dbname=x", W, deadline_s=deadline)
+    assert (e.value.code, str(e.value)) == ("connect_failed", "connect_failed: ConnectionRefusedError")

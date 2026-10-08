@@ -25,7 +25,8 @@ CONTRACT (root review 2350/2351):
   Values are validated with e1.recovery_manifest's own patterns and are never rewritten.
 - The canonical observation size is counted INCREMENTALLY and exactly (header + every stream + separating commas);
   over OBSERVATION_MAX it refuses input_overflow before any further stream is read.
-- deadline_s must be a finite number >= 0 (bool refused; 0 means "time out immediately"), checked before connecting.
+- deadline_s must be a number in [0, 120] seconds (default 120; bool refused; NaN, inf, huge ints and huge finite floats
+  refused by the range comparison, never by math.isfinite); 0 means "time out immediately". Checked before connecting.
 - Every step after connecting (cursor, watchdog start, queries) is inside one cleanup guarantee: the owned timer is
   cancelled and the cursor and connection are closed even if setup itself fails (typed read_failed, error type only).
 - SOFT DEADLINE ONLY: no query is issued once deadline_s has elapsed (collector_timeout), and a watchdog requests
@@ -38,7 +39,6 @@ CONTRACT (root review 2350/2351):
 from __future__ import annotations
 
 import json
-import math
 import threading
 import time
 from typing import Any, Callable
@@ -53,6 +53,7 @@ from e1.evidence import TERMINALS
 ID_CAP = 1024                 # root / claim_key octets selected; longer -> NULL -> whole read_failed
 OUTSTANDING_CAP = 65536       # outstanding::text octets selected
 OBSERVATION_MAX = 16 << 20    # canonical observation bytes
+DEADLINE_MAX_S = 120          # soft deadline range [0, 120] seconds (0 = time out immediately)
 CONNECT_OPTIONS = "-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=5000"
 
 _Q3 = """
@@ -132,8 +133,10 @@ def collect_observation(dsn: str, writer: str, *, deadline_s: float = 120.0, now
     """The sanitized observation of ONE writer (see the module contract). `_before_query` is a TEST hook only."""
     if not _ok(writer, RM.IDENT):
         raise CollectorRefused("read_failed", "writer id")
-    if isinstance(deadline_s, bool) or not isinstance(deadline_s, (int, float)) or not math.isfinite(deadline_s) or deadline_s < 0:
-        raise CollectorRefused("read_failed", "deadline_s must be a finite number >= 0")       # checked BEFORE connecting
+    # Type, then a plain range comparison: no math.isfinite (it overflows on huge ints, root 2375); NaN, inf, huge ints and
+    # huge finite floats all fail the comparison. Checked BEFORE connecting.
+    if isinstance(deadline_s, bool) or not isinstance(deadline_s, (int, float)) or not (0 <= deadline_s <= DEADLINE_MAX_S):
+        raise CollectorRefused("read_failed", f"deadline_s must be a number in [0, {DEADLINE_MAX_S}]")
     t0 = now()
     try:
         conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row, connect_timeout=10, options=CONNECT_OPTIONS)
