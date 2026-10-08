@@ -24,8 +24,9 @@ UNCHANGED task_spec.parse accepts. Then, in the exclusive DIR (exit 1 = not read
 Only then is package/spec.json written (the same bytes) and authoring.json says ready true. package/ exists only
 for a ready package. authoring.json is written last in every outcome.
 
-No worker, model, harness, PlanStore or plan launch: this module imports none of them. Dependencies install with
-`npm ci --offline` only (the profile must say offline).
+It CALLS no worker, model, harness, PlanStore or plan launch (review 2002 F3: it imports e1.pilot for the Verdict
+type and e1.task_runner for the shared checks, and those modules import the launch code, but nothing here invokes it).
+Dependencies install with `npm ci --offline` only (the profile must say offline).
 """
 
 from __future__ import annotations
@@ -244,16 +245,21 @@ def _write_new(path: Path, data: bytes) -> None:
         f.write(data)
 
 
-def draft(draft_path: Path, profile_path: Path, reference_path: Path, out: Path) -> tuple[int, dict[str, Any]]:
-    out = Path(out).resolve()
-    # ---- before any effect: exit 2 ----
+RECORD_FAILED = "authoring_record_failed"    # authoring.json not written AFTER the folder exists (review 2005)
+
+
+def prepare(draft_path: Path, profile_path: Path, reference_path: Path, out: Path) -> dict[str, Any]:
+    """Everything before any effect. Raises AuthorRefused only; nothing is created."""
     raw_d, raw_p, raw_r = (read_input(draft_path, "draft"), read_input(profile_path, "profile"),
                            read_input(reference_path, "reference"))
     profile, d = parse_profile(raw_p), parse_draft(raw_d)
-    check_tool_pins(profile)
+    check_tool_pins(profile)                                               # BEFORE any subprocess
     if out.exists():
         raise AuthorRefused("out_exists", str(out))
     repo, base = Path(profile["repo"]), d["source"]["taskBaseCommit"]
+    for key, code in (("anchorCommit", "anchor_not_found"), ("taskBaseCommit", "base_not_found")):   # review 2002 F2
+        if TR._git("cat-file", "-e", f"{d['source'][key]}^{{commit}}", cwd=repo).returncode != 0:
+            raise AuthorRefused(code, d["source"][key])
     lock = TR.blob_sha256(repo, base, "package-lock.json")
     if lock != profile["lock"]["packageLock"]:
         raise AuthorRefused("profile_lock_mismatch", lock)
@@ -269,8 +275,23 @@ def draft(draft_path: Path, profile_path: Path, reference_path: Path, out: Path)
         cspec = T.parse(capture_bytes)                                     # the UNCHANGED parser; no bypass
     except T.SpecRefused as e:
         raise AuthorRefused("draft_spec_invalid", str(e)) from None
+    return {"raw": (raw_d, raw_p, raw_r), "profile": profile, "draft": d, "oracleFiles": oracle_files,
+            "captureBytes": capture_bytes, "captureSpec": cspec}
+
+
+def draft(draft_path: Path, profile_path: Path, reference_path: Path, out: Path) -> tuple[int, dict[str, Any]]:
+    out = Path(out).resolve()
+    # ---- before any effect: exit 2. An unforeseen error here (e.g. a git timeout) is a typed refusal; nothing is created.
+    try:
+        pre = prepare(draft_path, profile_path, reference_path, out)
+        out.mkdir(parents=True, exist_ok=False)
+    except AuthorRefused:
+        raise
+    except Exception as e:                                                 # review 2005: the type name only
+        raise AuthorRefused("pre_effect_error", type(e).__name__) from None
     # ---- effects: the exclusive DIR; exit 1 when not ready, evidence kept ----
-    out.mkdir(parents=True, exist_ok=False)
+    (raw_d, raw_p, raw_r), profile, d = pre["raw"], pre["profile"], pre["draft"]
+    oracle_files, capture_bytes, cspec = pre["oracleFiles"], pre["captureBytes"], pre["captureSpec"]
     ev_dir = out / "evidence"
     rec: dict[str, Any] = {"version": AUTHORING_VERSION, "ready": False,
                            "inputs": {"draft": {"path": str(draft_path), "sha256": _sha(raw_d)},
@@ -308,8 +329,12 @@ def draft(draft_path: Path, profile_path: Path, reference_path: Path, out: Path)
     except (AuthorRefused, TR.PreflightRefused, T.SpecRefused, OSError) as e:
         rec["notReady"] = {"stage": stage, "code": getattr(e, "code", type(e).__name__),
                            "detail": getattr(e, "detail", str(e))}
-    finally:
+    except Exception as e:                       # review 2002 F1: anything else fails closed as a typed not-ready
+        rec["notReady"] = {"stage": stage, "code": "unexpected_error", "detail": type(e).__name__}
+    try:
         _write_new(out / "authoring.json", json.dumps(rec, indent=1, sort_keys=True, default=str).encode("utf-8"))   # LAST
+    except Exception as e:                       # review 2005: the folder exists, so this is NOT "no effects"
+        rec.update(ready=False, recordFailed={"code": RECORD_FAILED, "detail": type(e).__name__, "out": str(out)})
     return (0 if rec["ready"] else 1), rec
 
 
@@ -323,12 +348,11 @@ def main(argv: list[str]) -> int:
     a = ap.parse_args(argv)
     try:
         code, rec = draft(a.draft, a.profile, a.reference, a.out)
-    except (AuthorRefused, TR.PreflightRefused) as e:
-        print(json.dumps({"refused": e.code, "detail": e.detail}, default=str))
+    except AuthorRefused as e:                                             # before any effect: nothing was created
+        print(json.dumps({"refused": e.code, "detail": e.detail, "effects": "none"}, default=str))
         return 2
     print(json.dumps(rec, indent=1, default=str))
     return code
-
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

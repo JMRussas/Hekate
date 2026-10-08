@@ -2,6 +2,7 @@
 npm/vitest/tsc. No real npm, Node, model, harness or PlanStore."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -199,3 +200,59 @@ def test_the_helper_imports_no_launch_path():
     assert sorted(l for l in imports if "e1" in l) == ["from e1 import consumer as C", "from e1 import pilot as P",
                                                       "from e1 import task_runner as TR", "from e1 import task_spec as T"]
     assert not hasattr(TA, "run") and "launch_real_model" not in Path(TA.__file__).read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------------------ review 2002 F1/F2
+
+@pytest.mark.parametrize("key, code", [("anchorCommit", "anchor_not_found"), ("taskBaseCommit", "base_not_found")])
+def test_an_unknown_commit_is_named_before_the_lock_check(ax, tmp_path, key, code):
+    f, profile, draft = ax
+    draft["source"][key] = "f" * 40
+    with pytest.raises(TA.AuthorRefused) as e:
+        author(tmp_path, profile, draft)
+    assert e.value.code == code and not (tmp_path / "out").exists()
+
+
+def test_an_unexpected_error_after_effects_is_a_typed_not_ready(ax, tmp_path, monkeypatch, capsys):
+    f, profile, draft = ax
+
+    def boom(*a, **kw):
+        raise RuntimeError("something unforeseen")
+    monkeypatch.setattr(TR, "run_baseline", boom)
+    d, p, r = files(tmp_path, profile, draft)
+    assert TA.main(["draft", "--draft", str(d), "--profile", str(p), "--reference", str(r), "--out", str(tmp_path / "out")]) == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["notReady"] == {"stage": "capture", "code": "unexpected_error", "detail": "RuntimeError"}
+    assert json.loads((tmp_path / "out" / "authoring.json").read_text(encoding="utf-8"))["notReady"]["code"] == "unexpected_error"
+    assert not (tmp_path / "out" / "package").exists()
+
+
+def test_an_unforeseen_error_before_any_effect_is_a_typed_refusal_with_no_folder(ax, tmp_path, monkeypatch, capsys):
+    """Review 2005: e.g. a git read timing out after the tool pins: exit 2, the type name only, nothing created."""
+    f, profile, draft = ax
+
+    def timeout(*a, **kw):
+        raise subprocess.TimeoutExpired(["git"], 300)
+    monkeypatch.setattr(TR, "_git", timeout)
+    d, p, r = files(tmp_path, profile, draft)
+    assert TA.main(["draft", "--draft", str(d), "--profile", str(p), "--reference", str(r), "--out", str(tmp_path / "out")]) == 2
+    assert json.loads(capsys.readouterr().out) == {"refused": "pre_effect_error", "detail": "TimeoutExpired", "effects": "none"}
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_record_that_cannot_be_written_is_not_reported_as_no_effects(ax, tmp_path, monkeypatch, capsys):
+    """Review 2005: the folder exists, so a failed authoring.json is exit 1 with recordFailed, never a pre-effect refusal."""
+    f, profile, draft = ax
+    real = TA._write_new
+
+    def no_record(path, data):
+        if Path(path).name == "authoring.json":
+            raise PermissionError("denied")
+        real(path, data)
+    monkeypatch.setattr(TA, "_write_new", no_record)
+    d, p, r = files(tmp_path, profile, draft)
+    assert TA.main(["draft", "--draft", str(d), "--profile", str(p), "--reference", str(r), "--out", str(tmp_path / "out")]) == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["ready"] is False and printed["recordFailed"]["code"] == TA.RECORD_FAILED
+    assert printed["recordFailed"]["detail"] == "PermissionError" and "refused" not in printed
+    assert (tmp_path / "out").is_dir() and not (tmp_path / "out" / "authoring.json").exists()

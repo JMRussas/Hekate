@@ -45,6 +45,13 @@ uv run python -m e1.task_author draft --draft D:/plans/task.draft.json `
 - the capture, preflight and reference results;
 - `ready`, or `notReady` {stage, code, detail}.
 
+**Edge cases** (reviews 2002/2005):
+- Capture accepts only `AssertionError` failures. An oracle that imports a function that does not exist yet fails at the base with `TypeError: x is not a function` and is refused (`baseline_not_assertion`). Make it fail by assertion first, for example `expect(typeof mod.fn).toBe("function")`.
+- The reference patch, like the draft and the profile, is at most 64 KiB (`reference_size`).
+- An unknown anchor or base commit is `anchor_not_found` / `base_not_found`.
+- An unforeseen error BEFORE the folder exists (for example a git timeout) is refused as `pre_effect_error` (exit 2, nothing created). After the folder exists it is a typed not-ready (`unexpected_error`), with the evidence kept. Both report only the error's type name.
+- If `authoring.json` itself cannot be written, the result is exit 1 with `recordFailed` (`authoring_record_failed`), never "no effects". **A package counts as ready only when `authoring.json` exists and says `ready: true`.**
+
 Running the package is a separate, reviewed step: `plan_cli` with its own GO.
 
 Limits (v0): one pinned task only. There are no recipes or multi-task plans, no task or oracle generation, and only vitest/tsc projects (the runner's fixed entries).
