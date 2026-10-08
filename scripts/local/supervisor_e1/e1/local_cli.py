@@ -13,7 +13,8 @@ review 1907 F3); recovery is: inspect, drop that coordinator database, delete it
 The created store is stopped before exit (its Api and lock); the database is kept. Use it with
 `plan_cli run --store local --state-dir D`.
 
-Exit codes: 0 created, 1 create failed after an effect (database and locator kept), 2 refused before any effect.
+Exit codes: 0 created; 1 create failed after createdb (the database is kept; with no locator the result says a
+hekate_coord_* database may exist unnamed); 2 refused before any effect (including no owned container).
 """
 
 from __future__ import annotations
@@ -71,10 +72,14 @@ def create(state: Path, port: int, creator: Callable[..., Any]) -> tuple[int, di
     except Exception as e:  # noqa: BLE001 -- typed result; a partial database and its locator are KEPT
         kept = (state / LS.LOCATOR).exists()
         first = (str(e).splitlines() or [""])[0]
+        if isinstance(e, LS.LocalStoreRefused) and e.code == "container" and not kept:
+            return 2, {"refused": "container", "detail": first[:200]}      # before createdb: nothing was created
         return 1, {"outcome": "create_failed", "code": getattr(e, "code", type(e).__name__), "detail": first[:200],
                    "locatorKept": kept, "locator": str(state / LS.LOCATOR) if kept else None,
-                   "note": "the partially created coordinator database and its locator are kept for inspection; to retry, "
-                           "drop that database, delete the locator, then create again" if kept else None}
+                   "note": ("the partially created coordinator database and its locator are kept for inspection; to retry, "
+                            "drop that database, delete the locator, then create again") if kept else
+                           ("a hekate_coord_* database may exist WITHOUT a locator (createdb runs before the marker and the "
+                            "locator); list hekate_coord_* databases in the owned container before retrying")}
     try:
         return 0, {"outcome": "created", "db": store.loc.db, "projectId": store.loc.project_id, "apiPort": store.loc.api_port,
                    "stateDir": str(state), "locator": str(state / LS.LOCATOR),
