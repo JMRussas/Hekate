@@ -54,8 +54,8 @@ def init():
     emit({"type": "system", "subtype": "init", "model": flag("--model"), "budget": flag("--max-budget-usd")})
 
 
-def result():
-    emit({"type": "result", "subtype": "success", "is_error": False, "result": "done"})
+def result(**usage):
+    emit({"type": "result", "subtype": "success", "is_error": False, "result": "done", **usage})
 
 
 def edit(name="hello.txt", text="hello\n"):
@@ -139,6 +139,18 @@ elif scenario == "result_is_error":
     say(act({"kind": "worker_ack", "seq": 1}))
     edit()
     emit({"type": "result", "subtype": "success", "is_error": True})
+elif scenario in ("usage_ok", "usage_bad", "usage_twice"):
+    # The CLI's own cost/turns/duration on the terminal result (root msg 2034): well formed, malformed, or twice.
+    init()
+    say(act({"kind": "worker_ack", "seq": 1}))
+    edit()
+    if scenario == "usage_ok":
+        result(total_cost_usd=0.4123, num_turns=7, duration_ms=12345)
+    elif scenario == "usage_bad":
+        result(total_cost_usd="0.4", num_turns=True, duration_ms=-1)
+    else:
+        result(total_cost_usd=0.1, num_turns=1, duration_ms=1)
+        result(total_cost_usd=0.9, num_turns=9, duration_ms=9)
 elif scenario == "result_malformed":
     init()
     say(act({"kind": "worker_ack", "seq": 1}))

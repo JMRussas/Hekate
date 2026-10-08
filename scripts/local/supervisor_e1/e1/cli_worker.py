@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -301,6 +302,24 @@ def result_class(event: dict[str, Any]) -> str:
     return f"error:{subtype[:64]}"
 
 
+USAGE_LABEL = "cli-reported, not metered"
+
+
+def reported_usage(event: dict[str, Any]) -> dict[str, Any]:
+    """The CLI's OWN cost/turns/duration from one terminal `type=result` event (root msgs 2030/2034), recorded as
+    reported and never metered or enforced (--max-budget-usd stays the guard). Each field is independently null
+    unless well formed: the cost a finite number >= 0 (not bool), kept as a decimal STRING so the evidence holds no
+    float; turns and duration integers >= 0 (not bool). Never changes the round's outcome."""
+    def count(v: Any) -> int | None:
+        return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+    c = event.get("total_cost_usd")
+    ok = isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) and c >= 0
+    cost = (str(c) if isinstance(c, int) else repr(c)) if ok else None
+    return {"label": USAGE_LABEL, "total_cost_usd": cost, "num_turns": count(event.get("num_turns")),
+            "duration_ms": count(event.get("duration_ms"))}
+
+
 # --- the adapter --------------------------------------------------------------------------------------------
 
 @dataclass
@@ -322,6 +341,7 @@ class RunEvidence:
     reported_models: list[str] = field(default_factory=list)   # CLI-REPORTED (system/init, assistant.message.model); not authenticated
     files_changed: int = 0
     results: list[str] = field(default_factory=list)     # one class per terminal `result` event
+    reported_usage: dict[str, Any] | None = None         # CLI-REPORTED cost/turns/duration of the FIRST result event; not metered
 
 
 class CliWorker:
@@ -481,6 +501,8 @@ class CliWorker:
                     ev.reported_models.append(m)
             if event.get("type") == "result":
                 ev.results.append(result_class(event))
+                if ev.reported_usage is None:                # the first terminal result only; outcomes unchanged
+                    ev.reported_usage = reported_usage(event)
                 ev.result_sha256 = hashlib.sha256(item.rstrip(b"\r\n")).hexdigest()
             for raw in assistant_act_lines(event):
                 act, why = build_act(raw, order.execution_key, seq)

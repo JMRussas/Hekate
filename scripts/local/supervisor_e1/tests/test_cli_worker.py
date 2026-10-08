@@ -438,3 +438,41 @@ def test_pilot_refuses_to_finish_without_a_worker_authored_ack(pilot, tmp_path, 
     p, _ = pilot_with_cli(pilot, tmp_path, repo, "no_ack", Verdicts())
     res = p.run()
     assert (res.outcome, res.reason) == ("needs_operator", "no_worker_ack") and p._node()["work"] == "in_progress"
+
+
+# ------------------------------------------------------------------------ CLI-reported usage (root msgs 2030/2034)
+
+NULLS = {"total_cost_usd": None, "num_turns": None, "duration_ms": None}
+
+
+@pytest.mark.parametrize("fields, want", [
+    ({"total_cost_usd": 0.4123, "num_turns": 7, "duration_ms": 12345}, {"total_cost_usd": "0.4123", "num_turns": 7, "duration_ms": 12345}),
+    ({"total_cost_usd": 2, "num_turns": 0, "duration_ms": 0}, {"total_cost_usd": "2", "num_turns": 0, "duration_ms": 0}),
+    ({"total_cost_usd": 0.0}, dict(NULLS, total_cost_usd="0.0")),
+    ({"total_cost_usd": 0}, dict(NULLS, total_cost_usd="0")),
+    ({}, NULLS),
+    ({"total_cost_usd": "0.4", "num_turns": "7", "duration_ms": 1.5}, NULLS),
+    ({"total_cost_usd": True, "num_turns": True, "duration_ms": False}, NULLS),
+    ({"total_cost_usd": -0.01, "num_turns": -1, "duration_ms": -5}, NULLS),
+    ({"total_cost_usd": float("nan")}, NULLS), ({"total_cost_usd": float("inf")}, NULLS),
+    ({"total_cost_usd": None, "num_turns": None, "duration_ms": [1]}, NULLS),
+])
+def test_reported_usage_keeps_only_well_formed_fields(fields, want):
+    event = {"type": "result", "subtype": "success", "is_error": False, **fields}
+    assert W.reported_usage(event) == dict(want, label="cli-reported, not metered")
+    assert W.result_class(event) == "success"                                   # usage never changes the class
+
+
+@pytest.mark.parametrize("scenario, status, reason, usage", [
+    ("usage_ok", "ok", None, {"total_cost_usd": "0.4123", "num_turns": 7, "duration_ms": 12345}),
+    ("usage_bad", "ok", None, NULLS),                                            # malformed usage: same outcome, nulls
+    ("usage_twice", "unknown", "ambiguous_result", {"total_cost_usd": "0.1", "num_turns": 1, "duration_ms": 1}),
+    ("happy", "ok", None, NULLS),                                                # a result without usage fields
+    ("no_result", "unknown", "no_result", None),                                 # no result event: no usage at all
+])
+def test_the_round_evidence_carries_the_first_results_reported_usage(tmp_path, repo, scenario, status, reason, usage):
+    w, sink, rep, _ = run(tmp_path, repo, scenario)
+    assert (rep.status, rep.reason) == (status, reason)
+    got = w.evidence[1].reported_usage
+    assert got == (None if usage is None else dict(usage, label="cli-reported, not metered"))
+    assert vars(w.evidence[1])["reported_usage"] == got                         # reaches evidence.json "adapter" via vars()
