@@ -53,7 +53,8 @@ class FakePlan(SupervisorClient):
         self.doc = doc or claim_doc()
         self.doc["replayed"] = replayed
         self.reject_finish = reject_finish
-        self.node = {"id": NODE, "work": "in_progress", "attemptId": ATT, "attemptEpoch": 1, "stateRevision": 5}
+        self.node = {"id": NODE, "work": "in_progress", "attemptId": ATT, "attemptEpoch": 1, "stateRevision": 5,
+                     "contentRevision": self.doc["receipt"]["contentRevision"]}
         self.calls: list[str] = []
         self.finishes: list[dict[str, Any]] = []
         self.reread: dict[str, Any] | None = None     # a different receipt served to the pre-finish re-read
@@ -114,7 +115,7 @@ class Hook:
 
 
 def host(tmp_path, *, reply=None, model=None, **over):
-    tmp_path.mkdir(parents=True, exist_ok=True)
+    tmp_path.mkdir(parents=True, exist_ok=True)               # nested fixture dirs ("a", "b", ...) do not exist yet
     model = model or HookChat(reply=json.dumps(GOOD) if reply is None else reply)
     kw: dict[str, Any] = dict(client=FakePlan(), journal=Hook(), role=RW.athena_role(), model=model,
                               snapshot=SNAPSHOT, task_id=NODE, source_revision=SRC, observed_at=OBSERVED,
@@ -159,11 +160,13 @@ def test_success_native_trace_exact_manifest_and_one_finish_to_done(tmp_path):
                                "prompt": "attempt-r1.prompt.txt", "trace": "attempt-r1.trace.jsonl"}
     assert "pid" not in json.dumps(hook.one("launched")) and hook.one("launched")["inProcess"] is True
     trace_bytes = (run_dir / "attempt-r1.trace.jsonl").read_bytes()
-    assert exited["exitCode"] == 0 and exited["inProcess"] is True and exited["trace"]["complete"] is True
+    assert exited["code"] == 0 and exited["reason"] == "exit" and exited["roleReason"] == "ok"
+    assert exited["inProcess"] is True and exited["trace"]["complete"] is True
     assert exited["trace"]["trace"]["sha256"] == hashlib.sha256(trace_bytes).hexdigest()
     assert exited["trace"]["prompt"]["sha256"] == hashlib.sha256(prompt).hexdigest()
     records = [json.loads(line) for line in trace_bytes.decode("ascii").splitlines()]
-    assert [json.loads(x["text"]) for x in records if x["stream"] == "stdout"] == [GOOD]     # validated output only
+    stdout = [x for x in records if x["stream"] == "stdout"]
+    assert len(stdout) == 1 and json.loads(stdout[0]["text"]) == GOOD                         # validated output only, parsed
     assert {x["stream"] for x in records} == {"stdout", "hekate"}
     # exact manifest, host-asserted, bound to the receipt, the plan node's stateRevision (5, never eventSeq 4) and files
     manifest = (run_dir / "role-manifest.json").read_bytes()
@@ -213,7 +216,8 @@ def test_stale_receipt_attempt_state_or_rejected_finish_never_finishes(tmp_path)
     r = go(h)
     assert r.outcome is Outcome.NEEDS_OPERATOR and r.reason == "non_success:nonzero_exit" and client.finishes == []
     assert r.result.structured_result == {"status": "failed", "code": "state_changed"}
-    assert hook.one("exited")["reason"] == "state_changed" and hook.one("result_captured")["candidate"] is False
+    assert hook.one("exited")["reason"] == "exit" and hook.one("exited")["roleReason"] == "state_changed"
+    assert hook.one("result_captured")["candidate"] is False
 
     h, client, hook, _ = host(tmp_path / "d", client=FakePlan(reject_finish=True))
     r = go(h)
@@ -319,7 +323,7 @@ def test_result_file_failure_is_not_a_success(tmp_path):
     r = go(h)
     assert r.outcome is Outcome.NEEDS_OPERATOR and client.finishes == []
     assert (run_dir / "role-result.json").read_bytes() == b"x"        # never overwritten
-    assert hook.one("exited")["exitCode"] == RS.EXIT_HOST_FAILED and hook.one("exited")["trace"]["complete"] is False
+    assert hook.one("exited")["code"] == RS.EXIT_HOST_FAILED and hook.one("exited")["trace"]["complete"] is False
     assert not (run_dir / "role-manifest.json").exists()
 
 
@@ -334,7 +338,8 @@ def test_invalid_output_or_outage_keeps_evidence_and_never_finishes(tmp_path, mo
     assert r.outcome is Outcome.NEEDS_OPERATOR and r.reason == "non_success:nonzero_exit" and client.finishes == []
     assert r.result.structured_result == {"status": "failed", "code": code}
     exited = hook.one("exited")
-    assert exited["exitCode"] == RS.EXIT_ROLE_FAILED and exited["reason"] == code and exited["trace"]["complete"] is True
+    assert exited["code"] == RS.EXIT_ROLE_FAILED and exited["reason"] == "exit" and exited["roleReason"] == code
+    assert exited["trace"]["complete"] is True
     assert hook.one("result_captured")["candidate"] is False and hook.one("result_captured")["artifactRef"] is None
     run_dir = tmp_path / "run"
     assert not (run_dir / "role-result.json").exists() and not (run_dir / "role-manifest.json").exists()
@@ -363,7 +368,7 @@ def test_trace_cap_or_write_error_cannot_succeed(tmp_path, monkeypatch):
     h, client, hook, _ = host(tmp_path)
     r = go(h)
     assert r.outcome is Outcome.NEEDS_OPERATOR and client.finishes == []
-    assert r.result.structured_result["code"] == "trace_incomplete" and hook.one("exited")["exitCode"] == RS.EXIT_HOST_FAILED
+    assert r.result.structured_result["code"] == "trace_incomplete" and hook.one("exited")["code"] == RS.EXIT_HOST_FAILED
     assert hook.one("exited")["trace"]["trace"]["capped"] is True
 
 

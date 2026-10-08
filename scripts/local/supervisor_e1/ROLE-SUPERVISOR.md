@@ -41,6 +41,13 @@ Without the `roles` group the test module skips itself.
 6. The Supervisor re-reads the receipt/plan and finishes to `done` (awaiting independent review). There is no accept/review
    write anywhere in this module or in the client it is given.
 
+`exited` uses the native trace contract: `code` (what `AttemptTrace.ParseExited` reads) and `reason: "exit"` for every
+completed invocation, including a typed role failure (it exited; it was not killed). The typed failure travels separately
+as `roleReason` (`ok` on success). `timedOut`/`killed` are passed through from the Supervisor unchanged; no stop is claimed.
+The manifest `limits` are `deadlineMs` (the role deadline rounded up to whole ms; the role definition hash binds the exact
+value), `maxInputBytes`, `maxOutputBytes` and `maxModelCalls: 1` (adapter calls, not provider CLI turns). The plan node must
+carry a real positive integer `contentRevision` equal to the pinned receipt's; a missing, null or bool value refuses before the model.
+
 Exit codes in `exited`/`WorkResult`: `0` success, `2` typed role failure (invalid/refused output, outage, deadline), `3` host
 failure (journal/file/trace/manifest/state). A failure or incomplete/capped trace is never a success and never finishes.
 

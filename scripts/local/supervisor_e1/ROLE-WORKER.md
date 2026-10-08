@@ -91,7 +91,9 @@ if completed), correlation, observation time.
 - Exactly one model call; no retry. (A model object may retry internally; configure the host's model not to.)
 - The deadline and external cancellation are **cooperative**: the awaiting task is cancelled and the model object is
   asked to stop, but this cannot prove the external provider stopped or did not bill. Deadline gives
-  `deadline_exceeded`; external cancellation propagates as `asyncio.CancelledError`. The timeout object's `expired()` is
+  `deadline_exceeded`; external cancellation propagates as `asyncio.CancelledError`, and so does a cancellation that
+  originates in the provider call itself (LangGraph can drop a cancelled node without cancelling the caller, so the node
+  records a marker and `run_role` re-raises `CancelledError` after the graph; it is never a result). The timeout object's `expired()` is
   also checked, so a provider that swallows the cancellation and returns later still yields `deadline_exceeded`, never
   its late output. No process or request is promised to stop.
 - `RoleResult.output` returns a fresh deep copy on every read (dict-like access preserved); mutating it cannot change the

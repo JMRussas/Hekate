@@ -69,6 +69,10 @@ class RolePackage:
     prompt: bytes                            # exact system prompt + canonical snapshot, as the model receives them
 
 
+def _is_revision(v: Any) -> bool:
+    return type(v) is int and 1 <= v <= RW.MAX_SAFE_INT
+
+
 def _reparse(path: str) -> bool:
     st = os.lstat(path)
     return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
@@ -176,8 +180,9 @@ class RoleSupervisor:
                  "operationKey": f"supervisor:{claim_key}:finish",
                  "role": {"id": r.id, "version": str(r.version), "definitionSha256": r.definition_hash},
                  "binding": {"binding": self._binding, "provider": self._provider, "model": self._model_identity},
-                 "limits": {"timeoutSeconds": math.ceil(r.deadline_seconds), "maxInputBytes": r.max_input_bytes,
-                            "maxOutputBytes": r.max_output_bytes, "maxTurns": 1},
+                 # deadlineMs is the deadline rounded UP to whole ms (an upper bound); the role definition hash binds the exact value
+                 "limits": {"deadlineMs": math.ceil(r.deadline_seconds * 1000), "maxInputBytes": r.max_input_bytes,
+                            "maxOutputBytes": r.max_output_bytes, "maxModelCalls": 1},
                  "source": {"revision": self._source, "snapshotSha256": snapshot_sha}, "reviewerRefs": [],
                  "linkage": "host_asserted"}
         try:
@@ -224,7 +229,7 @@ class RoleSupervisor:
             raise RuntimeError(type(e).__name__) from None
         if (node.get("work") != "in_progress" or node.get("attemptId") != base.attempt_id
                 or node.get("attemptEpoch") != base.attempt_epoch
-                or node.get("contentRevision", base.content_revision) != base.content_revision):
+                or not _is_revision(node.get("contentRevision")) or node["contentRevision"] != base.content_revision):
             raise PackageRefused("plan_drift", overflow=False)
         snap = json.loads(self._snapshot_bytes)
         if any(e["id"] == RESERVED_EVIDENCE_ID for e in snap["evidence"]):
@@ -270,9 +275,11 @@ class RoleSupervisor:
             return self._launched                                     # the host's own record; no duplicate model-only one
         if kind == "exited":
             code = data.get("exitCode")
-            data = {"runId": data.get("runId"), "executionKind": EXECUTION_KIND, "inProcess": True, "exitCode": code,
-                    "timedOut": data.get("timedOut"), "killed": data.get("killed"), "reason": self._reason,
-                    "trace": self._final}
+            # AttemptTrace.ParseExited reads `code`, and any reason other than 'exit' is a kill reason: a role that ran
+            # to a typed failure still EXITED, so that failure travels separately as `roleReason`.
+            data = {"runId": data.get("runId"), "executionKind": EXECUTION_KIND, "inProcess": True, "code": code,
+                    "timedOut": data.get("timedOut"), "killed": data.get("killed"), "reason": "exit",
+                    "roleReason": self._reason, "trace": self._final}
         elif kind == "result_captured":
             ok = data.get("artifactRef") is not None and self._role_status == "completed"
             data = {"runId": data.get("runId"), "artifactRef": data.get("artifactRef"), "candidate": ok,

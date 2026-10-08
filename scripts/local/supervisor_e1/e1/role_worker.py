@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import Any, Mapping, TypedDict
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langsmith import tracing_context
@@ -422,13 +423,29 @@ class RoleState(TypedDict, total=False):
     failure: str
 
 
-def build_graph(model: BaseChatModel) -> Any:
-    """model -> validate over the injected model; compiled WITHOUT a checkpointer (nothing is persisted)."""
+def build_graph(model: BaseChatModel, interrupted: list[bool] | None = None) -> Any:
+    """model -> validate over the injected model; compiled WITHOUT a checkpointer (nothing is persisted).
+
+    `interrupted` receives a marker when the model call is cancelled: LangGraph can lose a cancelled node without
+    cancelling its caller, so `run_role` reads the marker and re-raises."""
+
+    class CancellationObserver(AsyncCallbackHandler):
+        # Observe the original error through LangChain's public callback surface.
+        # Some versions wrap provider cancellation in a subsequent ordinary error.
+        async def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+            if isinstance(error, asyncio.CancelledError) and interrupted is not None:
+                interrupted.append(True)
 
     async def model_node(state: RoleState) -> RoleState:
         try:
-            response = await model.ainvoke(state["messages"])      # the ONE call; no retry
+            response = await model.ainvoke(state["messages"], config={"callbacks": [CancellationObserver()]})
+        except asyncio.CancelledError:
+            if interrupted is not None:
+                interrupted.append(True)
+            raise
         except Exception:                                          # provider text is never kept
+            if interrupted:
+                raise asyncio.CancelledError() from None
             return {"failure": UNAVAILABLE}
         return {"response": response}
 
@@ -505,7 +522,8 @@ async def run_role(
         "max_output_bytes": role.max_output_bytes,
         "evidence_ids": evidence_ids,
     }
-    graph = build_graph(model)
+    interrupted: list[bool] = []
+    graph = build_graph(model, interrupted)
     deadline = asyncio.timeout(role.deadline_seconds)
     try:
         # ambient LANGSMITH_TRACING must not export the evidence or model blocks, whatever the environment says
@@ -515,10 +533,14 @@ async def run_role(
     except TimeoutError:
         return failed(DEADLINE_EXCEEDED)
     except Exception:
+        if interrupted and not deadline.expired():
+            raise asyncio.CancelledError() from None
         return failed(UNAVAILABLE)
 
     if deadline.expired():                # a provider that swallowed the cancellation must not deliver a late result
         return failed(DEADLINE_EXCEEDED)
+    if interrupted:                       # provider-originated cancellation: never a result, the caller is interrupted
+        raise asyncio.CancelledError()
     if "failure" in final:
         return failed(final["failure"])
     output = final["output"]
