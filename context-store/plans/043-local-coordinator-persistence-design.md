@@ -1,57 +1,60 @@
-# Plan 043 — local development coordinator: persistence and operator capability (P2 DESIGN ONLY)
+# Plan 043 — local development coordinator: persistence and operator acts (P2 DESIGN, revision 2)
 
-**Status: proposal for root review (2026-10-07; direction from root msg 1800).**
-- No code, no schema activation and no writes to any live database.
-- **Scope: the LOCAL development coordinator only.** This records a local-only decision. The broader production questions stay open in 028 / HK-ISSUE-009 / 010 / 011 and are not decided here.
+**Status: revised design for root review (2026-10-07; root msgs 1800, 1837, 1873).**
+- No code, no schema activation and no writes to any live database. Implementation needs a separate GO after D3.
+- **Scope: the LOCAL development coordinator only.** This records a local decision. The production questions stay open in 028 / HK-ISSUE-009 / 010 / 011.
 
-## 1. HK-ISSUE-009 (local): where the journal lives
+## 1. HK-ISSUE-009 (local): journal location and initialization
 
-**Decision proposed (root direction):** the `supervisor_journal` schema lives in the **same** database as PlanStore.
-- `ActsJournal` Route A already takes the PlanStore project lock and reads PlanStore tables in one transaction (`acts_durable.py:60-80, 147`). Coupling keeps that coherent read and keeps PlanStore the sole task authority.
+**Decision:** the journal lives in the `supervisor_journal` schema of the **same** PlanStore database.
+- Route A already reads PlanStore tables under the project lock (`acts_durable.py:60-80, 147`).
+- The target is a **new dedicated local development database and project**: never an existing populated database, never a production selection.
 
-**Target:** a **new dedicated local development database and project**, never an existing populated database and never a production selection.
+**Initialization (honest about transactions).** The existing installers each open their own connection and transaction (`durable.install` `durable.py:188`, `install_acts` `acts_durable.py:46`, `install_handoff` `handoff_durable.py:35`). So initialization is **not** one transaction, and v1 does not claim it is. Instead:
+1. **Guard before any write:**
+   - the server is loopback;
+   - the database name equals an operator-typed `--target-db`;
+   - the database has **no** `supervisor_journal` schema;
+   - the PlanStore schema is present;
+   - the configured project row exists.
+   A populated or partially initialized database is refused.
+2. **Run the three installers in order.** `journal_schema.sql` uses plain `CREATE SCHEMA`, so a re-run fails rather than silently half-applying.
+3. **Verify complete before ANY dispatch.** On every coordinator start, the expected tables and functions are present and the recorded bounds equal the configured `E2C_BOUNDS`. Anything missing or mismatched is **refused** and named; there is no repair and no migration.
+   - A failed initialization leaves a database that step 3 refuses. The documented recovery is to drop that dedicated database and create a new one. There is no uninstall command.
 
-### Minimal implementation (one module plus a CLI, about 150 lines plus tests)
+## 2. Time across process restart and reboot
 
-`e1/local_store.py`:
-- **`target(dsn, expected_db, project_id)`** refuses unless:
-  - the server is loopback;
-  - the database name equals an explicit `--target-db` that the operator typed;
-  - the database carries a marker table `hekate_local_coordinator(marker, created_at, version)` with one row whose marker names this purpose;
-  - the project row exists.
-  A populated database without the marker is refused, so there is no accidental adoption.
-- **`install(dsn, ...)`:** explicit opt-in (`--install --target-db X --i-understand-local-only`).
-  - It writes the marker plus the existing `durable.install` / `install_acts` / `install_handoff` in ONE transaction.
-  - It records `schema_version` and the source sha256 of each schema file. Re-running with the same versions is a no-op; a version mismatch refuses (no migration in v0).
-  - **Rollback:** `--uninstall` drops only `supervisor_journal.*` and the marker row, and only when no stream is open, that is, no node is in flight in PlanStore. Otherwise it refuses.
-- **Clock:** `now = time.monotonic()` for intervals, plus the PlanStore event `createdAt` for the record time. The fixed `now=1000.0` stays test-only. A backwards wall-clock step is recorded, never trusted.
-- **Restart classification:** on start, `recovery.scan` (the existing read-only path) plus the plan-run v0 in-flight rule. Any `uncertain` or in-flight stream stops for the operator, as today. There is no automatic resume in this increment.
-- **Bounded evidence:** per-node run roots exactly as P1. The journal tables keep their existing caps (`global_usage.per_stream`).
+- **Recorded times are wall-clock UTC** (`datetime.now(timezone.utc)`), written into each journal record. Intervals inside ONE process (timeouts, heartbeats) use `time.monotonic()`.
+- **Monotonic values are never persisted or compared across processes.** They reset on reboot and are meaningless across process lifetimes.
+- **On start**, the coordinator reads the latest recorded UTC across streams. A current UTC earlier than it (a backwards clock), or later by an implausible gap (configured, e.g. more than 7 days), is a **stop for the operator**, never an automatic adjustment.
+- The fixed `now=1000.0` stays test-only.
+- **Restart classification:**
+  - streams are classified by the existing read-only `recovery.scan`;
+  - plan-run's in-flight rule applies (an open attempt, an existing run root);
+  - an `uncertain` or in-flight stream is a stop.
+  There is **no automatic resume** in this increment.
 
-**Threats and boundary:** the threats are wrong-database writes, which the explicit target name plus the marker plus loopback prevent, and a half-installed schema, which the single transaction prevents. It is not a multi-user store, has no network exposure and no production use.
+## 3. HK-ISSUE-010 (local): named operator acts under an explicit trust boundary
 
-## 2. HK-ISSUE-010 (local): an operator capability, not the test-fixture surface
-
-**Problem:** `SetupClient` is the "test-fixture surface" (`wire.py:79-80`). Decisions, the HK-005 moves and `pin_spec` go through it with an `actor` string over loopback. **That is not authentication**, and it must not be labelled as such.
-
-**Minimal option (recommended): a named local capability file.**
-- `e1/operator.py` exposes ONLY the named coordinator and operator acts:
+**Chosen (root msg 1837): the smaller alternative.**
+- **Operator surface.** `e1/operator.py` exposes ONLY the named coordinator and operator acts that plan-run uses:
   - `decide`;
   - `fix_round_reset` (the HK-005 cancel→todo);
   - `pin_spec`;
   - `release_inflight`, after operator classification.
-  Each method maps to exactly one existing route. There is no general HTTP passthrough.
-- **The capability:** a random 256-bit secret in a file the operator creates (`--init-operator`), readable only by the local user, with its sha256 recorded in the marker table at install.
-  - Every operator act carries `actor = "operator:<name>"` and an HMAC of the operation key under the secret. It is checked locally before the call, and the act plus its HMAC are appended to the journal (`operator_act` record).
-  - What this proves: **possession of a local file**. What it does not prove: authentication to PlanStore, which still trusts loopback. It is described exactly that way in the evidence.
-- **Alternative (smaller, weaker):** keep `SetupClient`, but restrict `run_plan` to the four named calls and record them as operator acts without any capability. This is only acceptable if root accepts "loopback plus local user" as the entire boundary.
-- **Not proposed:** any PlanStore auth change. Production auth stays HK-ISSUE-010 / 028 OQ2.
+  Each maps to exactly one existing route, with no general passthrough. It replaces direct `SetupClient` use in run_plan and pilot.
+- **Policy.** A configuration file names the operator `actor`, the allowed `rootId`s and the `projectId`. An act outside that policy is refused locally before the call, and each act is journaled as `operator_act`.
+- **Boundary, stated plainly:**
+  - **The boundary:** a trusted, single, local OS account on loopback.
+  - **What this is NOT:** server authentication. PlanStore still trusts loopback, and the `actor` string is a label, not a credential. No local secret or HMAC is used, because a locally checked secret would not authorize anything at PlanStore.
+  - **Where the real control lives:** production authentication stays HK-ISSUE-010 / 028 OQ2.
 
-## 3. Order of work after GO
+## 4. Order after GO (source plus disposable-database tests only; no live-DB writes until a separate GO)
 
-1. `local_store` target guard and installer (disposable-database tests: refuse an unmarked database, refuse a version mismatch, rollback only when idle).
-2. `operator.py` capability (tests: a missing or wrong secret is refused; only the named acts exist).
-3. A plan-run v0 option `--store local`: the same driver, a real clock.
-4. One local multi-task demonstration on the NEW dedicated database, under a separate GO.
+1. The init guard and the verify-complete check. Tests: refuse an existing journal schema, refuse a partial schema, refuse mismatched bounds, refuse a non-loopback or unnamed target.
+2. The clock rule. Tests: backwards time stops; an implausible gap stops; normal restart passes.
+3. The `operator.py` policy surface. Tests: only the named acts exist; an act outside the policy is refused; acts are journaled.
+4. `run_plan --store local`: the same driver, a real clock, the operator surface.
+5. ONE local multi-task demonstration on a NEW dedicated database, under a separate GO.
 
-**Estimate:** about 300–400 lines including tests, plus a review. No change to the PlanStore C# code.
+**Estimate:** about 250–350 lines including tests. No PlanStore C# change.
