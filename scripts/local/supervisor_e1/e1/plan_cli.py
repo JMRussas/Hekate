@@ -121,8 +121,12 @@ def run(a: argparse.Namespace, raw: bytes, run_root: Path, command: tuple[Path, 
     from e1.handoff_durable import install_handoff
     from e1.wire import SetupClient, SupervisorClient
     fake = a.exe_arg is not None
-    h = harness_factory()
-    h.start()
+    try:
+        h = harness_factory()
+        h.start()                       # a failed start cleans up what it created itself (Harness.start)
+    except Exception as e:  # noqa: BLE001 -- e.g. the port is in use: a typed result, never a traceback
+        first = (str(e).splitlines() or [""])[0]
+        return 1, {"outcome": "needs_operator", "reason": "harness_unavailable", "detail": f"{type(e).__name__}: {first}"[:200]}
     out: dict[str, Any] = {"outcome": "needs_operator", "reason": "unexpected_error"}
     ok = False
     try:

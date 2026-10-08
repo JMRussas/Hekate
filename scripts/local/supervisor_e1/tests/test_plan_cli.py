@@ -150,6 +150,25 @@ def test_a_pending_spec_stops_needs_operator_exit_1_and_says_it_is_not_resumable
     assert Path(out["planRunLog"]).is_file()
 
 
+class Busy:
+    def start(self):
+        raise RuntimeError("port 5108 is in use; refusing\nsecond line " + "x" * 500)
+
+
+def no_harness():
+    raise OSError("docker not found")
+
+
+@pytest.mark.parametrize("factory, detail", [
+    (Busy, "RuntimeError: port 5108 is in use; refusing"),           # start fails: one bounded line, nothing after it
+    (no_harness, "OSError: docker not found"),                        # the factory itself fails
+])
+def test_a_harness_that_cannot_start_is_a_typed_result_not_a_traceback(fx, tmp_path, capsys, factory, detail):
+    assert CLI.main(run_argv(plan_file(fx, one_node(fx)), tmp_path / "rr"), harness_factory=factory) == 1
+    assert last_json(capsys) == {"outcome": "needs_operator", "reason": "harness_unavailable", "detail": detail}
+    assert not (tmp_path / "rr").exists()
+
+
 def test_a_failure_after_the_harness_started_is_a_typed_stop_and_the_harness_is_stopped(harness, fx, tmp_path, capsys, monkeypatch):
     def broken(*a, **kw):
         raise RuntimeError("driver failed")

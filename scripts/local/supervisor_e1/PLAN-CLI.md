@@ -46,7 +46,12 @@ The last JSON object printed reports the result:
 
 Exit codes: `0` all_done, `1` needs_operator (or an error after the harness started), `2` refused before any effect.
 
-Failure evidence is kept: the per-node run roots, the plan-run log and, on any outcome other than all_done, the harness work folder.
+- A harness that cannot start (for example, port 5108 in use) gives `harness_unavailable`, exit 1.
+- Harness cleanup problems are listed under `harness`. They do not change the exit code of an all_done run.
+
+Failure evidence is kept: the per-node run roots, the plan-run log and, on any outcome other than all_done, the harness work folder (build output and `api.log`).
+
+The harness database is dropped at exit **whatever the outcome**. `Harness.stop(keep_work=True)` keeps only the work folder. A failed drop is reported under `harness`.
 
 ## Limits (v0)
 
