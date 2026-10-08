@@ -49,6 +49,23 @@ No nodes are created and no separate database is used until that migration is de
 
 ## Entries
 
+### HK-ISSUE-018 — Planning role candidate accepted invalid correlation and leaked an untyped config error
+
+- **Observed:** candidate `dbbe6fa` accepted non-UUID root/task IDs, zero attempt/content counters and a trailing newline in an attempt ID. An unhashable binding entry raised `TypeError` rather than `RoleError`. Six independent lead regressions failed.
+- **Owner / task:** Hermes implementation, `a08ee7ab-7b4a-5bde-967e-eb512132d089`. The candidate was recorded as rejected; repair used a new attempt epoch.
+- **Fix:** `90c4b2c` validates UUIDs, positive safe counters and complete identifiers, checks binding types before uniqueness, protects returned output from caller mutation and disables ambient LangSmith tracing. Deadline expiry refuses late results even when provider cancellation is swallowed.
+- **Verification / status:** closed for this bounded adapter at integrated `633e31a`. `tests/test_role_worker_review.py` reproduces the original failures and passes after repair. Combined role/evidence checks passed 159 cases; compatibility selection passed 359, with four harness cases passing separately after supplying the maintained container-workspace selector. Default dependencies passed 50 cases with two optional-role test modules skipped.
+- **Additional test defects fixed:** short pytest IDs avoid Windows' 32767-character environment-variable limit; the tracing positive control stubs SDK server-info discovery so it stays offline. The original failed tests and telemetry warning remain retained.
+- **Evidence:** `D:/hekate-coordinator/runs/managed-role-adapter-001/` and `managed-role-adapter-002/review-accepted.txt`. This closure does not establish native managed dispatch or persistent monitoring.
+
+### HK-ISSUE-019 — Role evidence omitted content revision and conflated operation keys with claim linkage
+
+- **Observed:** candidate `f1dc0aa` omitted content revision from manifest/expected identity, admitted the unsafe JavaScript integer `2**53`, and refused operation keys on manual attempts without claim receipts. Four independent lead regressions failed.
+- **Owner / task:** Hermes evidence implementation, `28520a10-c13d-55ec-8b20-1af2ecdda639`. Candidate rejected in PlanStore; a new attempt epoch records the repair.
+- **Fix / status:** closed at integrated `633e31a`. Content revision is required independently of attempt epoch and state revision; the numeric limit is `2**53-1`; an unlinked attempt may retain its operation key while its claim key stays null.
+- **Verification:** `tests/test_role_evidence_review.py` fails on the candidate and passes on the repair; all 50 evidence tests pass without optional LangChain dependencies. Exact byte/identity consistency is the claim, not authenticated provenance or tamper-proof storage.
+- **Evidence:** `D:/hekate-coordinator/runs/managed-role-adapter-001/evidence-review-first.log`, `default-dependencies.log`, and `D:/hekate-coordinator/runs/role-evidence-001/review-rejected.txt`.
+
 ### HK-ISSUE-001 — `strict_loads` lets `RecursionError` escape
 - **Observed (fact):** `e1/consumer.py` `strict_loads` only catches `ValueError`. For JSON nested about 997–999 levels or deeper (the exact depth depends on the call stack), `json.loads` raises `RecursionError`, which escapes as an untyped exception instead of `Refused("strict_json")`.
 - **Impact:** a malformed delivery crashes the consumer instead of being refused. Only the fixture depth is proven (the deepest value in both accepted fixture bundles is 7); no universal bound on producer depth is claimed.
