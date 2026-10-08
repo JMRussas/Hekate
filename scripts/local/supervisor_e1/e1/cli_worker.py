@@ -317,6 +317,16 @@ TRACE_LINE_CUT = 256 << 10           # a retained stderr line longer than this i
 REASONING_BLOCKS = ("thinking", "redacted_thinking")
 
 
+@dataclass(frozen=True)
+class TraceCaptureConfig:
+    """The five CliConfig fields AttemptTrace reads, for hosts that capture a trace without a CLI (e.g. an in-process role)."""
+    run_dir: Path
+    execution_kind: str
+    stdout_lines_max: int
+    stdout_bytes_max: int
+    stderr_keep: int
+
+
 def trace_names(round_: int) -> tuple[str, str]:
     """The round's trace files, RELATIVE to the pilot run dir: (prompt, trace)."""
     return f"attempt-r{round_}.prompt.txt", f"attempt-r{round_}.trace.jsonl"
@@ -346,7 +356,7 @@ class AttemptTrace:
     hash describes exactly the retained file bytes, unlike the full-stream stderr digest. Thread-safe; every write is
     flushed; after close() further writes are ignored so the final hash always matches the file."""
 
-    def __init__(self, cfg: CliConfig, round_: int):
+    def __init__(self, cfg: "CliConfig | TraceCaptureConfig", round_: int):
         self.run_dir = cfg.run_dir
         self.prompt_name, self.trace_name = trace_names(round_)
         self.kind = cfg.execution_kind
