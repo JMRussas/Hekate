@@ -44,7 +44,7 @@ PREFLIGHT = "preflight.json"
 CLEAN_STATUS = ["!! node_modules/"]
 VITEST_ENTRY = "node_modules/vitest/vitest.mjs"
 TSC_ENTRY = "node_modules/typescript/bin/tsc"
-NPMRC = "npm-empty.npmrc"   # the run root's owned EMPTY npm user/global config (msg 1683)
+NPMRCS = {"user": "npm-empty-user.npmrc", "global": "npm-empty-global.npmrc"}   # owned EMPTY npm configs (1683/1689)
 ERR_KEEP = 4096          # stderr prefix kept for report-bearing runs (stdout alone is the report)
 
 
@@ -145,18 +145,21 @@ def owned_clone(spec: T.TaskSpec, run_root: Path) -> Path:
 # --- dependencies ------------------------------------------------------------------------------------------
 
 def make_npmrc(run_root: Path) -> None:
-    """The run root's OWNED empty npm config (created once, exclusively, by preflight; outside every worktree)."""
-    with open(Path(run_root) / NPMRC, "xb"):
-        pass
+    """The run root's OWNED empty npm configs, one for user and one for global (npm refuses the same file as
+    both, msg 1689): created once, exclusively, by preflight; outside every worktree."""
+    for name in NPMRCS.values():
+        with open(Path(run_root) / name, "xb"):
+            pass
 
 
 def npm_env(spec: T.TaskSpec, run_root: Path) -> tuple[dict[str, str], dict[str, Any]]:
-    """The environment for npm ONLY (msgs 1675-1683): the worker allowlist plus
+    """The environment for npm ONLY (msgs 1675-1689): the worker allowlist plus
     - npm_config_cache: the operator's warm cache, REQUIRED, an absolute existing directory (native Path
       rules: a drive-relative `C:x` or a relative path is refused; a UNC path must exist). Fail closed:
       absent -> npm_cache_required, invalid -> npm_cache_invalid; there is no silent default cache.
-    - npm_config_userconfig / npm_config_globalconfig: the run root's owned EMPTY file, re-checked as an
-      empty regular file before every spawn, so no ambient npmrc changes registry, auth, proxy or cache.
+    - npm_config_userconfig / npm_config_globalconfig: the run root's two DISTINCT owned EMPTY files, each
+      re-checked as an empty regular file before every spawn, so no ambient npmrc changes registry, auth,
+      proxy or cache.
     npm's builtin npmrc (beside the pinned CLI) cannot be disabled by env; these env values override it,
     and its sha256 is recorded as provenance. No config contents or credentials are recorded."""
     raw = os.environ.get("npm_config_cache")
@@ -165,21 +168,27 @@ def npm_env(spec: T.TaskSpec, run_root: Path) -> tuple[dict[str, str], dict[str,
     cache = Path(raw)
     if not cache.is_absolute() or not cache.is_dir():
         raise PreflightRefused("npm_cache_invalid", raw)
-    rc = Path(run_root) / NPMRC
-    try:
-        st = os.lstat(rc)
-    except OSError:
-        raise PreflightRefused("npmrc_missing", str(rc)) from None
-    if not stat.S_ISREG(st.st_mode) or st.st_size != 0:
-        raise PreflightRefused("npmrc_not_empty", str(rc))
+    rcs: dict[str, Path] = {}
+    for role, name in NPMRCS.items():
+        rc = Path(run_root) / name
+        try:
+            st = os.lstat(rc)
+        except OSError:
+            raise PreflightRefused("npmrc_missing", str(rc)) from None
+        if not stat.S_ISREG(st.st_mode) or st.st_size != 0:
+            raise PreflightRefused("npmrc_not_empty", str(rc))
+        rcs[role] = rc
     builtin = Path(spec.doc["hashes"]["npmCli"]["path"]).parents[1] / "npmrc"
     try:
         builtin_sha = sha256_file(builtin) if builtin.is_file() else None
     except OSError:
         builtin_sha = None
-    env = {**W.worker_env(), "npm_config_cache": str(cache), "npm_config_userconfig": str(rc), "npm_config_globalconfig": str(rc)}
-    ev = {"npmCache": str(cache), "cacachePresent": (cache / "_cacache").is_dir(), "npmrc": str(rc),
-          "npmrcSha256": sha256_file(rc), "builtinNpmrc": str(builtin), "builtinNpmrcSha256": builtin_sha}
+    env = {**W.worker_env(), "npm_config_cache": str(cache), "npm_config_userconfig": str(rcs["user"]),
+           "npm_config_globalconfig": str(rcs["global"])}
+    ev = {"npmCache": str(cache), "cacachePresent": (cache / "_cacache").is_dir(),
+          "userconfig": {"path": str(rcs["user"]), "sha256": sha256_file(rcs["user"])},
+          "globalconfig": {"path": str(rcs["global"]), "sha256": sha256_file(rcs["global"])},
+          "builtinNpmrc": str(builtin), "builtinNpmrcSha256": builtin_sha}
     return env, ev
 
 
@@ -326,7 +335,7 @@ class SpecVerifier:
     spec: T.TaskSpec
     repo: Path
     run_dir_of: Callable[[], Path]
-    run_root: Path                                   # holds the owned empty npmrc (never inside a worktree)
+    run_root: Path                                   # holds the owned empty npmrcs (never inside a worktree)
 
     def __post_init__(self):
         self.reports: list[dict[str, Any]] = []

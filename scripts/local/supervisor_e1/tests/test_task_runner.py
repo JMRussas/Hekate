@@ -175,19 +175,21 @@ def test_the_recorded_ca012_baseline_report_is_exactly_the_frozen_specs_cases():
         sum(c["status"] == "failed" for c in b0["cases"]), sum(c["status"] == "passed" for c in b0["cases"]))
 
 
-# ------------------------------------------------------------------------ npm's scoped environment (msgs 1675-1683)
+# ------------------------------------------------------------------------ npm's scoped environment (msgs 1675-1691)
 
 def test_npm_gets_only_the_scoped_cache_and_the_owned_empty_configs(fx, tmp_path, npm_cache):
     f, doc = fx
     rec = TR.preflight(spec_of(tmp_path, doc), tmp_path / "rr")
     deps = rec["baseline"]["deps"]
-    rc = tmp_path / "rr" / TR.NPMRC
-    assert deps["npm"] == {"npmCache": str(npm_cache), "cacachePresent": True, "npmrc": str(rc),
-                           "npmrcSha256": hashlib.sha256(b"").hexdigest(),
+    user, glob = (tmp_path / "rr" / TR.NPMRCS[r] for r in ("user", "global"))
+    empty = hashlib.sha256(b"").hexdigest()
+    assert deps["npm"] == {"npmCache": str(npm_cache), "cacachePresent": True,
+                           "userconfig": {"path": str(user), "sha256": empty}, "globalconfig": {"path": str(glob), "sha256": empty},
                            "builtinNpmrc": str(Path(doc["hashes"]["npmCli"]["path"]).parents[1] / "npmrc"),
                            "builtinNpmrcSha256": None}                     # the fake npm has no builtin npmrc
     assert "added 2 packages" in deps["outputHead"] and deps["outputBytes"] == len(deps["outputHead"].encode())
-    assert rc.is_file() and rc.stat().st_size == 0 and not (tmp_path / "rr" / "baseline" / TR.NPMRC).exists()
+    for rc in (user, glob):
+        assert rc.is_file() and rc.stat().st_size == 0 and not (tmp_path / "rr" / "baseline" / rc.name).exists()
     assert not any(k.lower().startswith("npm_config") for k in W.worker_env())      # the worker env is NOT widened
 
 
@@ -235,17 +237,53 @@ def test_a_cold_cache_is_refused_with_npms_own_error_in_the_evidence(fx, tmp_pat
     assert "ENOTCACHED" in rec["detail"]["outputHead"] and rec["detail"]["npm"]["cacachePresent"] is False
 
 
-def test_the_empty_npmrc_is_rechecked_before_every_npm_spawn(fx, tmp_path):
+@pytest.mark.parametrize("role", ["user", "global"])
+def test_each_empty_npmrc_is_rechecked_before_every_npm_spawn(fx, tmp_path, role):
     f, doc = fx
     spec = spec_of(tmp_path, doc)
     TR.preflight(spec, tmp_path / "rr")
-    rc = tmp_path / "rr" / TR.NPMRC
+    rc = tmp_path / "rr" / TR.NPMRCS[role]
     rc.write_text("registry=https://example.invalid/\n", encoding="utf-8")
     assert refusal(TR.npm_env, spec, tmp_path / "rr") == "npmrc_not_empty"
     rc.unlink()
     assert refusal(TR.npm_env, spec, tmp_path / "rr") == "npmrc_missing"
     rc.mkdir()
     assert refusal(TR.npm_env, spec, tmp_path / "rr") == "npmrc_not_empty"
+
+
+def test_the_fake_npm_refuses_one_file_as_both_configs_like_real_npm(fx, tmp_path, monkeypatch):
+    """The 1689 defect would now fail the suite: one shared file -> npm's double-loading error."""
+    f, doc = fx
+    real = TR.npm_env
+
+    def shared(spec, run_root):
+        env, ev = real(spec, run_root)
+        return dict(env, npm_config_globalconfig=env["npm_config_userconfig"]), ev
+    monkeypatch.setattr(TR, "npm_env", shared)
+    code, rec = pre_refusal(tmp_path, doc)
+    assert code == "deps_install_failed" and "double-loading config" in rec["detail"]["outputHead"]
+
+
+@pytest.mark.skipif(TR.os.environ.get("HEKATE_E1_INTEROP_LIVE") != "1", reason="opt-in interop_live: the REAL pinned npm")
+def test_interop_live_real_npm_reads_the_forwarded_cache_under_npm_env(tmp_path, monkeypatch):
+    """The REAL pinned node + npm-cli of the frozen CA012 spec, `npm config get cache` under npm_env(): no
+    network, no install, no model. It must print the forwarded cache; both owned configs stay empty."""
+    spec = TR.T.load(Path(__file__).resolve().parent / "fixtures" / "ca012-spec-v0.json")
+    cache = TR.os.environ.get("HEKATE_E1_NPM_CACHE", "D:/caches/npm")
+    if not Path(cache).is_dir():
+        pytest.skip(f"no warm npm cache at {cache}")
+    monkeypatch.setenv("npm_config_cache", str(Path(cache)))
+    TR.check_pins(spec)
+    root = tmp_path / "rr"
+    root.mkdir()
+    TR.make_npmrc(root)
+    env, ev = TR.npm_env(spec, root)
+    h = spec.doc["hashes"]
+    p = subprocess.run([h["pinnedNodeExe"]["path"], h["npmCli"]["path"], "config", "get", "cache"], cwd=root, env=env,
+                       capture_output=True, text=True, timeout=120)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert Path(p.stdout.strip()) == Path(cache) and ev["cacachePresent"] is True
+    assert all((root / n).stat().st_size == 0 for n in TR.NPMRCS.values())
 
 
 def test_report_cases_refuses_a_suite_level_error_and_foreign_files(tmp_path):

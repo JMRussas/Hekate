@@ -1,7 +1,8 @@
 """A FAKE npm CLI for the operator task runner tests (no network, no packages). `ci` copies the fake
 vitest and tsc entries into node_modules/ from this directory; anything else is refused. The lockfile
 itself is hash-checked by the runner BEFORE this runs. Like real npm with the runner's scoped env: it
-requires npm_config_userconfig/globalconfig to be empty files, and --offline needs npm_config_cache/_cacache."""
+requires npm_config_userconfig/globalconfig to be two DISTINCT empty files, and --offline needs
+npm_config_cache/_cacache."""
 
 import os
 import shutil
@@ -17,6 +18,10 @@ for var in ("npm_config_userconfig", "npm_config_globalconfig"):           # the
     if not cfg or not Path(cfg).is_file() or Path(cfg).stat().st_size != 0:
         print(f"npm error fake: {var} is not an empty config file: {cfg!r}")
         sys.exit(7)
+user, glob = (Path(os.environ[v]).resolve() for v in ("npm_config_userconfig", "npm_config_globalconfig"))
+if user == glob:                                  # real npm 11 refuses to load one file as both (msg 1689)
+    print(f'npm error double-loading config "{glob}" as "global", previously loaded as "user"')
+    sys.exit(1)
 cache = os.environ.get("npm_config_cache")
 if "--offline" in args and not (cache and (Path(cache) / "_cacache").is_dir()):
     print("npm error code ENOTCACHED")                                       # what a cold cache does to a real offline ci
