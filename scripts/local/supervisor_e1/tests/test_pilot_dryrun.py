@@ -25,12 +25,12 @@ FROZEN = {
     "e1/acts_durable.py": "5ad500d623e8e85f8a107e7846bde1ac810cf8ce3242fa9b3402c70dce684a44",
     "e1/acts_schema.sql": "cbe901cba3970e08e4edc83eecc829ad40d130fa70f03e411fb056f378cccf7b",
     "e1/consumer_durable.py": "d21fa3d15c1938646ff21240ee8bd0a52743b0253cae0b583404bfcdae60993e",
-    "e1/handoff.py": "1e9036f6ed29983c1282dde0a3a256094984e2c6a9a3d8940a575beeea6faab2",
     "e1/handoff_durable.py": "b6c1d9c3095c4bfba5bae865d5cf1dc4646d4c53e452ab3a95ab4c3ca5006670",
     "e1/handoff_schema.sql": "affc532042b3399f24884358114b415847ab256f76d5eb183a05d2f14c223159",
-    "e1/durable.py": "55eef956fc7ec3a90d9e2cc57749e25809b945bade111ed65aa939370c82a6b1",
     "e1/supervisor.py": "697b0bd31694431c26ba1b202717ed5b43f79351cf9d875e637d3eb4eda8e5f0",
 }
+# e1/handoff.py and e1/durable.py left FROZEN when they were intentionally revised; see REVISED_HK017 below for their
+# accepted FROZEN hashes (kept there as provenance) and their current recorded revision.
 
 # Formerly frozen modules intentionally revised by plan 038 (HK-ISSUE-012, root decision). Provenance:
 # the accepted pre-038 hashes were acts.py 1d44e39c...80e5 and evidence.py f8affab9...cbde (recovery.py
@@ -38,9 +38,10 @@ FROZEN = {
 # and copied into plan 038; None fails the check below instead of pinning a guessed value.
 REVISED_038: dict[str, str | None] = {
     "e1/acts.py": "ffa11dd506b5195fc0db6e813ec74bb9a97ef91d6e7027082436b8989b6bf97b",
-    "e1/evidence.py": "db8b7a791fd07a73b42b9a47613f3fb9c5689020c8cfedda37a4ddd3af0f74f7",
     "e1/recovery.py": "c1af35bd00ddc5d8f28d30fa228862db7c79a0822e68d2099c31faf0be849fc6",
 }
+# e1/evidence.py was revised again after plan 038 (its post-038 value db8b7a79...f74f7 is kept as provenance in
+# REVISED_HK017 below).
 
 # Formerly frozen consumer intentionally revised by plan 041 (HK-ISSUE-001 + HK-ISSUE-002, root msg 1741):
 # typed refusals for excessive nesting and missing identity/proof fields. Provenance: the accepted
@@ -48,6 +49,24 @@ REVISED_038: dict[str, str | None] = {
 # the frozen golden and supplement bundles' producer.json still record; they are not re-baselined).
 REVISED_041: dict[str, str] = {
     "e1/consumer.py": "aea15fa421b5a857d9393dbbdff5073a977de5e28bf4a0854b35c0d1983475ed",
+}
+
+
+# Formerly frozen modules intentionally revised by accepted increments (root msgs 2218, 2264, 2284). Values are the
+# real sha256 of the final accepted source (HK-ISSUE-017 fix 274e71f, root V&V msg 2284). Provenance, in order:
+# - e1/durable.py:  FROZEN 55eef956fc7ec3a90d9e2cc57749e25809b945bade111ed65aa939370c82a6b1
+#                   -> guarded takeover (HK-ISSUE-015 M1, f846936) 914b14c94849df4fc4da577144afb1eba08958642ab7c157f21ece4fc3a0e024
+#                   -> HK-ISSUE-017 (274e71f) below
+# - e1/handoff.py:  FROZEN 1e9036f6ed29983c1282dde0a3a256094984e2c6a9a3d8940a575beeea6faab2
+#                   -> pending-effects fix (7c8c562) cfa1a52a654a311b6d1d9b915ba350184160108265d96fac015337d0027c1a47
+#                   -> HK-ISSUE-017 (274e71f) below
+# - e1/evidence.py: REVISED_038 db8b7a791fd07a73b42b9a47613f3fb9c5689020c8cfedda37a4ddd3af0f74f7
+#                   -> HK-ISSUE-017 (274e71f) below
+# Older fixture and producer evidence that records the earlier hashes is not re-baselined.
+REVISED_HK017: dict[str, str] = {
+    "e1/durable.py": "9d74b9e5bc8a6007eee2d5c2161de8ea1fff9b9114994f5a4498c13b920af35b",
+    "e1/evidence.py": "4a75920261c217262f755f91d2214d14fce53584a09c85b02cf4603027060d96",
+    "e1/handoff.py": "43f332a85b27444868dd02df7010f6f2587933c59de22a2081aa8bbba99705d0",
 }
 
 
@@ -304,6 +323,11 @@ def test_plan_038_revised_modules_match_their_recorded_revision():
     missing = sorted(rel for rel, want in REVISED_038.items() if want is None)
     assert not missing, f"plan 038 hashes not yet recorded (fill from sha256sum after V&V): { {r: got[r] for r in missing} }"
     assert got == REVISED_038
+
+
+def test_hk017_revised_modules_match_their_recorded_revision():
+    got = {rel: hashlib.sha256((PROJECT / rel).read_bytes()).hexdigest() for rel in REVISED_HK017}
+    assert got == REVISED_HK017
 
 
 def test_plan_041_revised_consumer_matches_its_recorded_revision():
