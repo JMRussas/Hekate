@@ -414,6 +414,10 @@ public sealed class PlanStore(string connectionString, string graphName = "code_
         return new ClaimResult(receipt, false, stillCurrent, now, []);
     }
 
+    /// <summary>Plan 047: what the stores say about one attempt's retained trace (identity-bound). Never writes.</summary>
+    public Task<AttemptTraceSourceResult> ReadAttemptTraceSourceAsync(Guid nodeId, string attemptId) =>
+        AttemptTraceSources.ReadAsync(connectionString, nodeId, attemptId);
+
     /// <summary>Read a receipt plus its factual, read-only correlation with current state. Never writes.</summary>
     public async Task<ClaimResult> ReadClaimAsync(Guid rootId, string claimKey)
     {

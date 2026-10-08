@@ -128,6 +128,11 @@ public static class PlanContractEndpoints
         api.MapGet("/nodes/{nodeId:guid}/events", async (Guid nodeId, string? afterSeq, string? limit) =>
             await Events(store, null, nodeId, afterSeq, limit));
 
+        // Plan 047: one attempt's retained worker trace, read-only. Files are confined under
+        // HEKATE_TRACE_ROOT, read on each request; the root is read per request, never cached.
+        api.MapGet("/nodes/{nodeId:guid}/attempts/{attemptId}/trace", async (Guid nodeId, string attemptId, string? afterSeq, string? limit) =>
+            await Trace(store, Environment.GetEnvironmentVariable(AttemptTrace.RootVariable), nodeId, attemptId, afterSeq, limit));
+
         api.MapPost("/nodes/{nodeId:guid}/decide", async (Guid nodeId, DecideRequest req) =>
         {
             if (Missing(("operationKey", req.OperationKey), ("actor", req.Actor), ("expectedStateRevision", req.ExpectedStateRevision),
@@ -224,6 +229,104 @@ public static class PlanContractEndpoints
         });
     }
 
+    /// <summary>
+    /// Compose one trace page (trace contract v0). Status says what is known about the trace, never
+    /// whether a process is alive: running = no exited record and the node's current attempt is
+    /// this one in progress; unfinished = no exited record otherwise. Integrity is verified only
+    /// when exited finalized a complete, write-error-free trace whose retained bytes match; a
+    /// complete trace that does not match is refused. Every key is present, null when not
+    /// applicable, and the serialized response stays within the UTF-8 budget.
+    /// </summary>
+    public static async Task<IResult> Trace(PlanStore store, string? traceRoot, Guid nodeId, string attemptId, string? afterSeqText, string? limitText)
+    {
+        long? afterSeq = null;
+        if (afterSeqText is not null)
+        {
+            if (!long.TryParse(afterSeqText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var a))
+                return Error(400, InvalidQuery, "afterSeq must be a non-negative integer.");
+            afterSeq = a;
+        }
+        var limit = 200;
+        if (limitText is not null && (!int.TryParse(limitText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out limit) || limit < 1 || limit > 500))
+            return Error(400, InvalidQuery, "limit must be an integer between 1 and 500.");
+
+        var found = await store.ReadAttemptTraceSourceAsync(nodeId, attemptId);
+        if (found.Source is not { } s) return Error(StatusFor(found.ErrorCode!), found.ErrorCode!, found.ErrorMessage ?? "");
+
+        IResult Page(string status, string? reason, string integrity, string? kind, TraceExit? exit, (string Text, long Bytes)? prompt,
+            IReadOnlyList<TraceRecord> records, long? next, bool capped) =>
+            TraceJson(new
+            {
+                contractVersion = PlanContract.Version, nodeId = s.NodeId, attemptId = s.AttemptId, attemptEpoch = s.AttemptEpoch, claimKey = s.ClaimKey,
+                status, reason, integrity, executionKind = kind,
+                exit = exit is null ? null : new { code = exit.Code, killReason = exit.KillReason },
+                prompt = prompt is { } p ? new { text = p.Text, bytes = p.Bytes } : null,
+                records, nextAfterSeq = next, capped,
+            });
+        var empty = Array.Empty<TraceRecord>();
+
+        if (s.NotCapturedReason is { } why) return Page("not_captured", why, "none", null, null, null, empty, null, false);
+
+        var (traceRef, refError) = AttemptTrace.ParseRef(s.LaunchDataJson!);
+        if (refError is not null) return Error(StatusFor(AttemptTraceCodes.Invalid), AttemptTraceCodes.Invalid, refError);
+        if (traceRef is null) return Page("not_captured", AttemptTraceSources.NoTraceBlock, "none", null, null, null, empty, null, false);
+
+        TraceFinal? final = null;
+        TraceExit? exit = null;
+        if (s.ExitedDataJson is { } exitedJson)
+        {
+            var (f, x, exitError) = AttemptTrace.ParseExited(exitedJson);
+            if (exitError is not null) return Error(StatusFor(AttemptTraceCodes.Invalid), AttemptTraceCodes.Invalid, exitError);
+            (final, exit) = (f, x);
+        }
+        // An exited record from before trace capture carries no trace block: the attempt's own files are then unverifiable.
+        var status = final is not null ? "exited" : s.CurrentInProgress ? "running" : "unfinished";
+
+        if (string.IsNullOrWhiteSpace(traceRoot))
+            return Error(StatusFor(AttemptTraceCodes.RootNotConfigured), AttemptTraceCodes.RootNotConfigured, $"{AttemptTrace.RootVariable} is not configured.");
+        var promptPath = AttemptTrace.Confine(traceRoot, traceRef.RunDir, traceRef.PromptName);
+        var tracePath = AttemptTrace.Confine(traceRoot, traceRef.RunDir, traceRef.TraceName);
+        foreach (var refused in new[] { promptPath, tracePath }.Where(p => p.Kind == TracePathKind.Refused))
+            return Error(StatusFor(AttemptTraceCodes.PathRefused), AttemptTraceCodes.PathRefused, refused.Reason!);
+        if (promptPath.Kind == TracePathKind.Missing || tracePath.Kind == TracePathKind.Missing)
+            return Page("missing", null, "none", traceRef.ExecutionKind, null, null, empty, null, false);
+
+        var promptBytes = AttemptTrace.ReadBounded(promptPath.FullPath!);
+        var traceBytes = AttemptTrace.ReadBounded(tracePath.FullPath!);
+        if (promptBytes is null || traceBytes is null)
+            return Error(StatusFor(AttemptTraceCodes.FileTooLarge), AttemptTraceCodes.FileTooLarge, "A retained trace file is larger than this endpoint reads.");
+
+        var integrity = "unverified";
+        if (final is { Complete: true, WriteError: false })
+        {
+            if (!AttemptTrace.Matches(final, promptBytes, traceBytes))
+                return Error(StatusFor(AttemptTraceCodes.IntegrityMismatch), AttemptTraceCodes.IntegrityMismatch, "The retained trace does not match its recorded size and hash.");
+            integrity = "verified";
+        }
+        var exitView = status == "exited" ? exit : null;
+        var capped = final?.Capped ?? false;
+        (string, long)? promptView = afterSeq is null ? (new System.Text.UTF8Encoding(false, false).GetString(promptBytes), promptBytes.LongLength) : null;
+
+        // The budget covers the whole serialized response: measure the header with no records first.
+        var header = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            contractVersion = PlanContract.Version, nodeId = s.NodeId, attemptId = s.AttemptId, attemptEpoch = s.AttemptEpoch, claimKey = s.ClaimKey,
+            status, reason = (string?)null, integrity, executionKind = traceRef.ExecutionKind,
+            exit = exitView is null ? null : new { code = exitView.Code, killReason = exitView.KillReason },
+            prompt = promptView is { } pv ? new { text = pv.Item1, bytes = pv.Item2 } : null,
+            records = empty, nextAfterSeq = long.MaxValue, capped,
+        }, AttemptTrace.Json).Length;
+        if (header > AttemptTrace.ResponseBudgetBytes)
+            return Error(StatusFor(AttemptTraceCodes.RecordTooLarge), AttemptTraceCodes.RecordTooLarge, "The prompt alone is larger than the response budget.");
+        var page = AttemptTrace.ReadPage(traceBytes, afterSeq, limit, AttemptTrace.ResponseBudgetBytes - header);
+        if (page.ErrorCode is { } pageError) return Error(StatusFor(pageError), pageError, page.ErrorMessage ?? "");
+        return Page(status, null, integrity, traceRef.ExecutionKind, exitView, promptView, page.Records, page.NextAfterSeq, capped);
+    }
+
+    /// <summary>Serialize with the shared settings and return the exact bytes measured against the budget.</summary>
+    private static IResult TraceJson(object body) =>
+        Results.Bytes(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(body, AttemptTrace.Json), "application/json; charset=utf-8");
+
     private static OperationContext Ctx(string? key, long? expected, string? actor) => new(key!, expected!.Value, actor!);
 
     private static PlanContent Content(string? value, Dictionary<string, string>? attributes) => new(value, attributes);
@@ -258,6 +361,11 @@ public static class PlanContractEndpoints
             or PlanStoreErrorCodes.PlanExists or PlanStoreErrorCodes.NodeExists or PlanStoreErrorCodes.ConcurrentModification
             or PlanStoreErrorCodes.ManagedPlanProtected => 409,
         PlanStoreErrorCodes.ProjectionFailed => 503,
+        // Plan 047 attempt traces.
+        AttemptTraceCodes.AttemptNotFound => 404,
+        AttemptTraceCodes.IdentityConflict or AttemptTraceCodes.PathRefused or AttemptTraceCodes.IntegrityMismatch
+            or AttemptTraceCodes.RecordTooLarge or AttemptTraceCodes.FileTooLarge or AttemptTraceCodes.Invalid => 409,
+        AttemptTraceCodes.RootNotConfigured or AttemptTraceCodes.JournalUnavailable => 503,
         _ => 422,
     };
 
