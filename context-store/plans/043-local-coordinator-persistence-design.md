@@ -82,10 +82,12 @@ Across that restart nothing is dispatched twice: in-flight or uncertain work sto
   4. the **single-instance lock**: a PostgreSQL session advisory lock keyed by the marker, held for the store's lifetime;
   5. PlanStore via the Api, the project row and the three journal installers;
   6. verify.
+
+  A failure after step 4 stops only this instance's Api and lock. The partially initialized owned database and its locator are **kept** for operator inspection (review 1907 F3, root msg 1910).
 - **`LocalStore.open`:**
   1. the locator;
   2. the database exists;
-  3. the marker matches;
+  3. the marker matches (a missing marker table is `marker_missing`, review 1907 F1);
   4. the lock is taken **before the Api starts** (a second coordinator gets `store_in_use`);
   5. the Api starts on the locator's own port (a busy port is `api_port_in_use`; another listener is never killed or adopted);
   6. verify (tables, functions, project, bounds);
@@ -126,7 +128,7 @@ Across that restart nothing is dispatched twice: in-flight or uncertain work sto
 
 **Tests** (all on disposable coordinator databases)
 
-`tests/test_local_store.py` (22):
+`tests/test_local_store.py` (23 cases):
 - create, mark and verify; never adopt or recreate;
 - open refuses a foreign marker, a missing database, a non-coordinator name or an unreadable locator;
 - verify refuses a hidden journal table and mismatched bounds;
@@ -138,7 +140,9 @@ Across that restart nothing is dispatched twice: in-flight or uncertain work sto
 - uncertain or unparseable acts stop the session;
 - the CLI `--store local`;
 - **the two-process continuation with an operator pin** and `plan_changed`;
-- an unbound run root is refused.
+- an unbound run root is refused;
+- a missing marker table gives `marker_missing`;
+- a failed create stops its Api (the port is free) and keeps the database and locator.
 
 `tests/test_plan_run.py`:
 - a pin of a pending node re-imports as a no-op;
@@ -146,3 +150,9 @@ Across that restart nothing is dispatched twice: in-flight or uncertain work sto
 - `attach_plan` gives plan_missing, attaches, allows the pin, and refuses unauthorized drift.
 
 `tests/test_plan_run_d3.py`: a stopped integration gives `integration_exists`, with the directory kept.
+
+**Boundaries of this increment (review 1907, root msg 1910)**
+- **Uncertain operator evidence is not resolved in place.** An intent without an outcome, or a partial or unparseable line in `operator-acts.jsonl`, stops every session (`uncertain_operator_acts`). This increment has no classification or resolution act (deferred). The log is never hand-edited, and an act is never silently retried.
+- **N1, the pin is trusted-local.** `attach_plan` accepts any valid spec/recipe ref on a node *declared pending*. It does not cross-check that a `revise` act in the operator log made it: under the single-account loopback boundary (§3), whoever can reach the Api can pin.
+- **N2, the Api applies the PlanStore schema at startup.** Every `create` and `open` starts the Api, which applies its own PlanStore schema before `verify`. "Verify, never repair" therefore covers what this module owns: the marker, the project row, the journal tables and functions, and the bounds.
+- **N3, continue in the ORIGINAL run root.** The accepted predecessors' owned clones live under the run root. A recipe chain continued in another run root cannot find its predecessor's artifact and stops `predecessor_evidence`.

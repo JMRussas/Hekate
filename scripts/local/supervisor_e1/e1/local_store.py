@@ -173,12 +173,16 @@ class LocalStore:
                "SET search_path = ag_catalog, \"$user\", public; SELECT create_graph('code_graph'); "
                "SELECT create_vlabel('code_graph','CodeNode'); SELECT create_elabel('code_graph','DEPENDS_ON');")
         s._acquire_lock()                                                       # single instance from the start (review 1894 D3)
-        s._start_api()                                                          # the Api applies the PlanStore schema
-        s.psql(f"INSERT INTO projects (id, name, root_path) VALUES ('{loc.project_id}', 'local-coordinator', 'local://coordinator')")
-        install(s.dsn, E2C_BOUNDS)
-        install_acts(s.dsn)
-        install_handoff(s.dsn)
-        s.verify()
+        try:
+            s._start_api()                                                      # the Api applies the PlanStore schema
+            s.psql(f"INSERT INTO projects (id, name, root_path) VALUES ('{loc.project_id}', 'local-coordinator', 'local://coordinator')")
+            install(s.dsn, E2C_BOUNDS)
+            install_acts(s.dsn)
+            install_handoff(s.dsn)
+            s.verify()
+        except BaseException:
+            s.stop()            # stop only OUR Api and lock (review 1907 F3); the partially initialized owned database
+            raise               # and its locator are KEPT for operator inspection (root msg 1910)
         return s
 
     @classmethod
@@ -218,7 +222,7 @@ class LocalStore:
     def _check_marker(self) -> None:
         try:
             row = self.psql("SELECT marker || '|' || purpose || '|' || project_id FROM hekate_local_coordinator")
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, RuntimeError):     # HZ._run raises RuntimeError on a psql failure (review 1907 F1)
             raise LocalStoreRefused("marker_missing", self.loc.db) from None
         if row != f"{self.loc.marker}|{PURPOSE}|{self.loc.project_id}":
             raise LocalStoreRefused("marker_mismatch", self.loc.db)

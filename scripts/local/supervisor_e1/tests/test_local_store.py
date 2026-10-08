@@ -409,3 +409,38 @@ def test_uncertain_or_unparseable_operator_acts_stop_before_any_dispatch(store):
         assert [x["phase"] for x in e.value.detail] == ["unparseable", "intent"]
     finally:
         log.write_bytes(before)
+
+
+# ------------------------------------------------------------------------ review 1907 F1/F3 (root msg 1910)
+
+def test_a_missing_marker_table_is_a_typed_refusal(store):
+    """F1: a database the locator names whose marker table is gone is marker_missing, never a raw RuntimeError."""
+    store.psql("ALTER TABLE hekate_local_coordinator RENAME TO hekate_local_coordinator_hidden")
+    try:
+        with pytest.raises(LS.LocalStoreRefused) as e:
+            LS.LocalStore.open(store.state_dir)
+        assert e.value.code == "marker_missing"
+    finally:
+        store.psql("ALTER TABLE hekate_local_coordinator_hidden RENAME TO hekate_local_coordinator")
+
+
+def test_a_failed_create_stops_its_api_and_frees_the_port(tmp_path, monkeypatch):
+    """F3: a create that fails after the Api started stops only its own Api and lock; the partially initialized owned
+    database and its locator are KEPT for operator inspection (root msg 1910)."""
+    port = 5141
+
+    def boom(dsn):
+        raise RuntimeError("installer failed")
+    monkeypatch.setattr(LS, "install_acts", boom)
+    with pytest.raises(RuntimeError):
+        LS.LocalStore.create(tmp_path / "state", api_port=port)
+    from e1 import harness as HZ
+    assert HZ._port_free(port)                                                   # our Api child was stopped
+    loc = LS.Locator.read(tmp_path / "state")                                    # the locator is kept
+    s = LS.LocalStore(tmp_path / "state", loc)
+    s._container()
+    try:
+        assert s.psql(f"SELECT 1 FROM pg_database WHERE datname = '{loc.db}'", db="postgres") == "1"   # the DB is kept
+        assert s.psql("SELECT purpose FROM hekate_local_coordinator") == LS.PURPOSE
+    finally:
+        s.drop_for_test()                                                        # disposable: this test made it

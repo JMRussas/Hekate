@@ -70,7 +70,9 @@ The harness database is dropped at exit **whatever the outcome**. `Harness.stop(
   - **The first run** imports the plan, then binds the run root (`plan.binding.json` plus the original `plan.import.json`).
   - **A later run with the SAME plan file in the SAME run root** attaches with no re-import, skips accepted nodes, and stops on in-flight or uncertain work. An edited plan file is `plan_changed`.
   - After a `spec_pending` stop, the operator pins the spec; that is the one authorized drift. Then the same command continues.
-  - Uncertain or unparseable operator-act log entries stop the run before any dispatch.
+  - Uncertain or unparseable operator-act log entries stop the run before any dispatch. This version cannot resolve them in place: never hand-edit the log, and nothing is retried.
+  - Continue only in the ORIGINAL run root: a recipe node needs its predecessor's owned clone there, otherwise it stops `predecessor_evidence`.
+  - A pin is trusted-local: any valid ref on a pending node is accepted; it is not cross-checked with the operator-act log.
   - `actor` is a label, not authentication. The database is never dropped.
   - Creating a coordinator database is not a CLI command. It is `e1.local_store.LocalStore.create`, and activating a dedicated one needs its own GO.
 - **A recipe node needs no operator step.** A `{"recipe": ...}` node (D3 v1: one predecessor, same original repository) gets its base derived from the predecessor's accepted artifact within the same run, so a fully pinned or recipe chain can reach `all_done` in ONE `run`. Its stops (`repo_lineage_mismatch`, `recipe_tamper`, `oracle_conflict`, `predecessor_evidence`, ...) pass through as `reason` and `detail`. The integration repo, resolved spec and provenance are under `<run-root>/<key>.integration/`.
