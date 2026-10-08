@@ -201,6 +201,9 @@ export default function ManagedPlansView({ taskMode = false }: { taskMode?: bool
       <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">
         Attempt trace · {nameOf(nodeId)}
       </div>
+      <div data-testid="trace-observation-limits" className="text-xs text-slate-400">
+        Worker liveness: unknown · Useful progress: unknown. Task state and recorded trace do not establish either.
+      </div>
       <AttemptTrace key={trace.attemptId} state={trace}
         onReload={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, null, setTrace)}
         onMore={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, trace.lastSeq, setTrace)} />

@@ -56,6 +56,8 @@ async function openAttempt(page: Page, r: Parameters<typeof mockContract>[1], at
 test('a finished, verified trace shows prompt and normalized items; acceptance stays the node decision', async ({ page }) => {
   const m = await openAttempt(page, routes({ [T('a1')]: { body: traceBody({ records: CLAUDE }) } }));
   const trace = page.getByTestId('attempt-trace');
+  await expect(page.getByTestId('trace-observation-limits')).toContainText('Worker liveness: unknown');
+  await expect(page.getByTestId('trace-observation-limits')).toContainText('Useful progress: unknown');
   await expect(trace).toHaveAttribute('data-status', 'exited');
   await expect(trace).toHaveAttribute('data-integrity', 'verified');
   await expect(page.getByTestId('trace-status')).toHaveText('Attempt finished; trace matches its recorded hash.');
@@ -93,6 +95,7 @@ test('an attempt in progress keeps its cursor at the last record and can be chec
   const later = traceBody({ prompt: null, records: CLAUDE.slice(2) });
   const m = await openAttempt(page, routes({ [T('a1')]: { body: running }, [T('a1', 'limit=200&afterSeq=1')]: { body: later } }));
   await expect(page.getByTestId('trace-status')).toHaveText('Attempt in progress; trace unverified.');
+  await expect(page.getByTestId('trace-observation-limits')).toContainText('Worker liveness: unknown');
   await expect(page.getByTestId('trace-more')).toHaveCount(0);
   await page.getByTestId('trace-check').click();
   await expect(page.getByTestId('attempt-trace')).toHaveAttribute('data-status', 'exited');

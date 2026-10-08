@@ -135,3 +135,12 @@ Every key is always present, with `null` when it does not apply:
 - Files are read in full on each request, bounded at 64 MiB.
 - The journal schema is the supervisor fixture schema created by the local store. A database
   without it gets 503 rather than an empty trace.
+
+## Observation boundary (2026-10-08)
+
+The attempt workspace labels worker liveness and useful progress as unknown for
+all trace states, including loading/refusal. Recorded task state, journal entries
+and trace hash verification do not establish either. Completion and review stay
+in the authoritative node projection. Shared ChatAgent observation cross-checks
+the current attempt start event and trace claim key when both are available; that
+is correlation across the same local source, not authenticated actor provenance.
