@@ -2,6 +2,7 @@
 //
 // Left: managed-plan discovery (uuid cursor; Refresh resets it). Right: the selected plan as a
 // tree, a dependency map and its history, plus the selected node's detail, attempts and history.
+// The selected attempt's trace is shown below them in the central column, where it has room to be read.
 // GET only. Each data slot (list, plan, plan events, node events, attempt trace) has one live
 // request; switching plan, node or attempt aborts the old ones and late responses are dropped
 // before parsing (requestSlot). Refresh clears every selection, the selected attempt included;
@@ -266,6 +267,17 @@ export default function ManagedPlansView() {
                 <EventsTimeline testId="plan-events" state={planEvents} nameOf={nameOf}
                   onLoadMore={() => void loadEvents(planEventsSlot, (c, g) => getPlanEvents(plan.plan.rootId, c, g), planEvents.nextCursorText, setPlanEvents)} />
               )}
+              {/* The selected attempt's conversation gets the wide central column; its selector stays in the node sidebar. */}
+              {nodeId !== null && trace.attemptId !== null && (
+                <section data-testid="trace-workspace" className="mt-4 border-t border-slate-700 pt-3 text-sm">
+                  <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">
+                    Attempt trace · {nameOf(nodeId)}
+                  </div>
+                  <AttemptTrace key={trace.attemptId} state={trace}
+                    onReload={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, null, setTrace)}
+                    onMore={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, trace.lastSeq, setTrace)} />
+                </section>
+              )}
             </div>
             {nodeId !== null && (
               <div className="w-96 flex-shrink-0 border-l border-slate-700 pl-4">
@@ -274,13 +286,7 @@ export default function ManagedPlansView() {
                     onLoadMore={() => void loadEvents(nodeEventsSlot, (c, g) => getNodeEvents(nodeId, c, g), nodeEvents.nextCursorText, setNodeEvents)} />
                 } attempts={
                   <AttemptsPanel events={nodeEvents.items} partial={nodeEvents.nextCursorText !== null}
-                    selectedAttemptId={trace.attemptId} onSelect={selectAttempt} trace={
-                      trace.attemptId === null ? null : (
-                        <AttemptTrace key={trace.attemptId} state={trace}
-                          onReload={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, null, setTrace)}
-                          onMore={() => void loadTrace(traceSlot, nodeId, trace.attemptId!, trace.lastSeq, setTrace)} />
-                      )
-                    } />
+                    selectedAttemptId={trace.attemptId} onSelect={selectAttempt} />
                 } />
               </div>
             )}

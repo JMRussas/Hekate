@@ -2,12 +2,11 @@
 //
 // Attempts are grouped by attemptId from the node-event rows the view already holds; no other
 // request is made. While more history pages exist the list may be partial, and it says so.
-// Selecting an attempt shows its trace below the list.
+// Selecting an attempt shows its trace in the view's central column.
 //
 // Depends on: planContract/types.ts, managed/traceState.ts
 // Used by: ManagedPlansView (rendered inside NodeDetail's Attempts section)
 
-import type { ReactNode } from 'react';
 import type { PlanEventView } from '../../planContract/types';
 import { summarizeAttempts } from './traceState';
 
@@ -16,10 +15,9 @@ interface Props {
   partial: boolean;
   selectedAttemptId: string | null;
   onSelect: (attemptId: string) => void;
-  trace: ReactNode;
 }
 
-export default function AttemptsPanel({ events, partial, selectedAttemptId, onSelect, trace }: Props) {
+export default function AttemptsPanel({ events, partial, selectedAttemptId, onSelect }: Props) {
   const attempts = summarizeAttempts(events);
   return (
     <div data-testid="node-attempts" className="text-xs space-y-1">
@@ -37,7 +35,6 @@ export default function AttemptsPanel({ events, partial, selectedAttemptId, onSe
           </button>
         ))}
       {partial && <div data-testid="attempts-partial" className="text-slate-500">More history exists; load it to see earlier attempts.</div>}
-      {trace}
     </div>
   );
 }

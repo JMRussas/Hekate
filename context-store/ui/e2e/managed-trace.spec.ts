@@ -68,6 +68,12 @@ test('a finished, verified trace shows prompt and normalized items; acceptance s
   await expect(page.getByTestId('effective-acceptance')).toContainText('accepted');
   await expect(page.getByTestId('attempt-row')).toHaveAttribute('data-selected', 'true');
   expect(m.requests.map(r => r.url)).toContain(`/api/plan-contract/v1${T('a1')}`);
+  // Layout: the conversation is in the wide central workspace; the sidebar keeps only the selector.
+  await expect(page.getByTestId('trace-workspace').getByTestId('attempt-trace')).toBeVisible();
+  await expect(page.getByTestId('node-detail').getByTestId('attempt-trace')).toHaveCount(0);
+  await expect(page.getByTestId('node-detail').getByTestId('attempt-row')).toHaveCount(1);
+  const [main, side] = await Promise.all([page.getByTestId('trace-workspace').boundingBox(), page.getByTestId('node-detail').boundingBox()]);
+  expect(main!.width).toBeGreaterThan(side!.width);
 });
 
 test('not_captured states say no trace was recorded, with the reason, and show no items', async ({ page }) => {
