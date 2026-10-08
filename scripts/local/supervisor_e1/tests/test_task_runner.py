@@ -716,3 +716,66 @@ def test_verify_only_refuses_a_run_that_already_has_a_decision(taskrun, tmp_path
     with pytest.raises(TR.PreflightRefused) as e:
         TR.verify_only(spec, tmp_path / "rr", Path(ev["runDir"]), tmp_path / "rr" / "reverify-1", root_go="x")
     assert e.value.code == "verify_binding_failed" and e.value.detail["run_stopped_without_decision"] is False
+
+
+# ------------------------------------------------------------------------ per-step bounded logs (msgs 1775/1780)
+
+def test_a_failed_step_names_its_failure_from_retained_output_not_the_tail(ver):
+    """The CA013 gap: the failing test was printed EARLY; the 400-char tail lost it. The step log keeps the
+    retained output beside the worktree, and failureLines names the failure."""
+    make, f = ver
+    v, repo = make()
+    dec, rep = review(v, candidate(repo, f["base"], {"src/value.txt": "42 tsdetail\n"}))
+    assert (dec, rep["why"]) == ("rejected", "step_failed:tsc")
+    step = rep["steps"][0]
+    assert "keeps the old contract" not in step["outputTail"]                       # the old evidence lost it
+    log = Path(step["log"]["path"])
+    data = log.read_bytes()
+    assert log.parent == v.run_dir_of() and log.name == "verify-r1-tsc.log"           # beside, never inside, the worktree
+    assert Path(rep["worktree"]) not in log.parents
+    assert b"keeps the old contract" in data and step["log"] == {"path": str(log), "sha256": hashlib.sha256(data).hexdigest(),
+                                                                   "bytes": len(data)}
+    assert step["logTruncated"] is False and step["outputSha256"] == hashlib.sha256(data).hexdigest()
+    assert step["failureLines"] == ["FAIL  tests/unit/value.test.ts > value > keeps the old contract"]
+
+
+def test_the_log_holds_only_the_retained_prefix_and_says_so(ver, fx):
+    make, f = ver
+    _, doc = fx
+    v, repo = make(edited(doc, lambda d: d["verify"]["steps"][0].update(outputKeepBytes=64)))
+    dec, rep = review(v, candidate(repo, f["base"], {"src/value.txt": "42 tsdetail\n"}))
+    step = rep["steps"][0]
+    data = Path(step["log"]["path"]).read_bytes()
+    assert len(data) == 64 == step["log"]["bytes"] and step["logTruncated"] is True        # the output cap is unchanged
+    assert step["outputBytes"] > 64 and step["outputSha256"] != step["log"]["sha256"]      # digest/count of the WHOLE stream
+    assert step["failureLines"] == ["FAIL  tests/unit/value.test.ts > value > keeps the old contract"]
+
+
+def test_an_accepted_run_logs_every_step_and_the_oracle_streams_separately(ver):
+    make, f = ver
+    v, repo = make()
+    dec, rep = review(v, candidate(repo, f["base"], {"src/value.txt": "42\n"}))
+    assert (dec, rep["why"]) == ("accepted", "all_steps_pass") and rep["status"] == TR.CLEAN_STATUS
+    tsc, oracle = rep["steps"]
+    for s in (tsc, oracle):
+        assert Path(s["log"]["path"]).is_file() and s["failureLines"] == [] and s["logTruncated"] is False
+    assert json.loads(Path(oracle["log"]["path"]).read_bytes())["numPassedTests"] == 3                # stdout = the report
+    assert b"ExperimentalWarning" in Path(oracle["stderrLog"]["path"]).read_bytes() and "stderrLog" not in tsc
+
+
+def test_a_log_that_cannot_be_written_is_recorded_and_never_changes_the_verdict(ver):
+    make, f = ver
+    v, repo = make()
+    (v.run_dir_of() / "verify-r1-tsc.log").write_text("pre-existing", encoding="utf-8")   # exclusive create fails
+    dec, rep = review(v, candidate(repo, f["base"], {"src/value.txt": "42\n"}))
+    assert (dec, rep["why"]) == ("accepted", "all_steps_pass")
+    assert rep["steps"][0]["logError"] == [{"part": "log", "type": "FileExistsError"}] and "log" not in rep["steps"][0]
+    assert (v.run_dir_of() / "verify-r1-tsc.log").read_text(encoding="utf-8") == "pre-existing"   # never overwritten
+
+
+def test_failure_lines_strip_ansi_dedupe_and_bound():
+    text = "\x1b[31m FAIL \x1b[39m tests/a.test.ts > x\n × y\n FAIL  tests/a.test.ts > x\n" + "".join(f" FAIL  t{i}\n" for i in range(40))
+    got = TR.failure_lines(text)
+    assert got[:2] == ["FAIL  tests/a.test.ts > x", "× y"] and len(got) == TR.FAILURE_LINES_MAX
+    assert TR.failure_lines("FAIL " + "z" * 1000)[0] == ("FAIL " + "z" * 1000)[:300]
+    assert TR.failure_lines("all good\nTests 3 passed\n") == []

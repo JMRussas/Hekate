@@ -128,6 +128,26 @@ Decision order. **uncertain** means the run stops for an operator, with no decis
   - These are integration evidence, reported separately (msg 1710). They are not verifier findings.
   - **Lesson for v1:** a declared regression step (the repo's own suite or a named subset), so the verifier sees what integration will.
 
+## 3c. Per-step bounded logs (revision 4, root msg 1780)
+
+**Why.** The CA013 pilot (pilot-d7784379a3e3, msg 1775) was rejected at `step_failed:full-suite`. The step report kept only the last 400 characters, and vitest prints the failing test's name **earlier** than that. So the evidence did not name it, and the cause had to be found by reading the source.
+
+**What changed.** Every verify step's **retained** output is now written to `<run_dir>/verify-r<N>-<step>.log`:
+- **The retained output** is the bounded prefix `run_bounded` keeps, up to `outputKeepBytes`, unchanged. Each log is created exclusively, **beside** the verify worktree and never inside it.
+- **The step report** references the log by `{path, sha256, bytes}`. `outputSha256` and `outputBytes` stay the digest and count of the whole stream, and `logTruncated` says when the log holds only a prefix.
+- **The report-bearing `oracle` step** also writes its stderr prefix to `<…>.stderr.log`.
+- **`failureLines`:** for a failed or timed-out step, up to 20 best-effort lines (`FAIL …`, `× …`, with ANSI stripped) taken from the retained output.
+- **A log write failure** is recorded as `logError` and never changes the verdict.
+
+**Unchanged:** output caps, truncation semantics, verdict logic and step limits.
+
+**Tests:** `test_task_runner.py` adds 5 cases:
+- a failure printed early, before more than 3000 characters of filler, is absent from the tail but present in the log, and named in `failureLines`;
+- with a 64-byte cap, the log holds 64 bytes and `logTruncated` is true, while `outputSha256` covers the whole stream;
+- on an accepted run every step has a log, the oracle's stdout log is the JSON report, and it has a separate stderr log;
+- a pre-existing log path gives `logError`, with no overwrite and the verdict unchanged;
+- `failure_lines` strips ANSI, removes duplicates and stays within its bounds.
+
 ## 4. Limits (not claimed)
 
 - **No OS isolation.** The worker, npm and the steps run as the operator user. Install scripts are disabled, but dependency code still runs during steps.

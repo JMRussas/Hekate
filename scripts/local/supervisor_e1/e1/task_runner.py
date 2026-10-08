@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -336,7 +337,46 @@ def oracle_outcome(spec: T.TaskSpec, b: R.Bounded, wt: Path) -> tuple[str, str]:
     return "accepted", "all_steps_pass"
 
 
-# --- the spec verifier -------------------------------------------------------------------------------------
+FAILURE_LINE = re.compile(r"^\s*(?:FAIL|×|✗)\s+\S.*$")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+FAILURE_LINES_MAX = 20
+
+
+def failure_lines(text: str) -> list[str]:
+    """Best-effort names of failing tests from RETAINED output (vitest prints `FAIL  <file> > <test>` /
+    `× <test>` before its summary): at most 20 lines, each at most 300 chars. Evidence only, never a decision."""
+    out = []
+    for ln in ANSI.sub("", text).splitlines():
+        if FAILURE_LINE.match(ln) and ln.strip() not in out:
+            out.append(ln.strip()[:300])
+            if len(out) == FAILURE_LINES_MAX:
+                break
+    return out
+
+
+def step_log(stem: Path, b: R.Bounded, report: bool) -> dict[str, Any]:
+    """Write a verify step's RETAINED output (the bounded prefix run_bounded kept; outputKeepBytes, unchanged)
+    to `<stem>.log` beside -- never inside -- the verify worktree, created exclusively, and reference it by
+    path and sha256 (msgs 1775/1780). `outputSha256`/`outputBytes` stay the digest/count of the WHOLE stream;
+    `logTruncated` says the log holds only a prefix. A report step also gets its stderr prefix as `<stem>.stderr.log`.
+    A write failure is recorded (`logError`) and never changes the verdict."""
+    ev: dict[str, Any] = {}
+    parts = [("log", stem.with_name(stem.name + ".log"), b.head)]
+    if report:
+        parts.append(("stderrLog", stem.with_name(stem.name + ".stderr.log"), b.err_head))
+    for key, path, data in parts:
+        try:
+            with open(path, "xb") as f:
+                f.write(data)
+            ev[key] = {"path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        except OSError as e:
+            ev.setdefault("logError", []).append({"part": key, "type": type(e).__name__})
+    ev["logTruncated"] = b.total != len(b.head)
+    ev["failureLines"] = failure_lines(b.head.decode("utf-8", errors="replace")) if b.rc not in (0, None) or b.timed_out else []
+    return ev
+
+
+# --- the spec verifier-------------------------------------------------------------------------------------
 
 @dataclass
 class SpecVerifier:
@@ -430,7 +470,8 @@ class SpecVerifier:
                 return verdict("uncertain", "verify_spawn_failed")
             steps.append({"name": s["name"], "rc": b.rc, "timedOut": b.timed_out, "killVerified": b.kill_verified,
                           "drained": b.drained, "outputSha256": b.sha256, "outputBytes": b.total,
-                          "outputTail": b.head.decode("utf-8", errors="replace")[-400:], **(stderr_evidence(b) if report else {})})
+                          "outputTail": b.head.decode("utf-8", errors="replace")[-400:], **(stderr_evidence(b) if report else {}),
+                          **step_log(Path(self.run_dir_of()) / f"verify-r{rnd}-{s['name']}", b, report)})
             if not b.kill_verified:
                 return verdict("uncertain", "verify_kill_unconfirmed")
             if not b.drained:
