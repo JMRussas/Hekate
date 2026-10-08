@@ -572,12 +572,43 @@ def load_preflight(spec: T.TaskSpec, run_root: Path) -> dict[str, Any]:
     return dict(rec, repo=str(repo))
 
 
+def worker_choice(backend: str, worker_model: str | None, execution_kind: str) -> None:
+    """The run's explicit worker override (plan 048), checked before any effect: a known backend, a model override only
+    for codex (Claude keeps the spec's model), and a declared kind that matches the backend."""
+    if backend not in W.BACKENDS:
+        raise PreflightRefused("worker_backend")
+    if worker_model is not None and (backend != "codex" or not (isinstance(worker_model, str) and W.MODEL.fullmatch(worker_model))):
+        raise PreflightRefused("worker_model")
+    if execution_kind not in W.BACKEND_KINDS[backend]:
+        raise PreflightRefused("worker_execution_kind")
+
+
+def worker_record(spec: T.TaskSpec, backend: str, worker_model: str | None, execution_kind: str) -> dict[str, Any]:
+    """evidence.json `worker`: what was asked of which CLI, and which spec bounds that CLI enforces. Nothing is inferred
+    about billing or the model that actually ran (codex reports none)."""
+    w = spec.doc["worker"]
+    if backend == "claude":
+        return {"backend": "claude", "executionKind": execution_kind, "specModel": w["model"], "requestedModel": w["model"],
+                "requestedModelSource": "spec", "budgetUsd": w["budgetUsd"], "budgetEnforced": True, "maxTurns": w["maxTurns"],
+                "turnsEnforced": True, "usage": "cli-reported cost, turns and duration (not metered)",
+                "shellScope": f"Bash({w['testCommand']}) only"}
+    return {"backend": "codex", "executionKind": execution_kind, "specModel": w["model"], "specModelIgnored": True,
+            "requestedModel": worker_model, "requestedModelSource": "override" if worker_model else "cli-default",
+            "reportedModel": "unreported", "budgetUsd": w["budgetUsd"], "budgetEnforced": False, "maxTurns": w["maxTurns"],
+            "turnsEnforced": False, "usage": "cli-reported tokens only (no cost, turns or duration; not metered)",
+            "shellScope": "any shell command inside the workspace-write sandbox (the test command is named in the task, "
+                          "not enforced)"}
+
+
 def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], executable_sha256: str, setup, client, aj,
         project_id: str, execution_kind: str, root_go: str | None, task_suffix: str = "",
         timeouts: tuple[int, int, int] = (1200, 600, 300), attach: tuple[str, str] | None = None,
-        claim_check: Callable[[dict[str, Any]], Any] | None = None) -> tuple[P.PilotResult, dict[str, Any]]:
+        claim_check: Callable[[dict[str, Any]], Any] | None = None, backend: str = "claude",
+        worker_model: str | None = None) -> tuple[P.PilotResult, dict[str, Any]]:
     """ONE supervised pilot on the owned clone. Requires a passing preflight of THIS spec. `attach`/`claim_check`
-    (plan-run v0, plan 042) drive an existing imported node instead of a disposable one-leaf plan."""
+    (plan-run v0, plan 042) drive an existing imported node instead of a disposable one-leaf plan. `backend`/`worker_model`
+    (plan 048): an explicit run override of the worker CLI; the spec bytes are unchanged."""
+    worker_choice(backend, worker_model, execution_kind)
     rec = load_preflight(spec, run_root)
     check_pins(spec)
     repo, d = Path(rec["repo"]), spec.doc
@@ -602,7 +633,8 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
             return P.WorkReport("failed", reason="executable_hash_mismatch")
         if "w" not in holder:
             cfg = R.adapter_config(params, repo=repo, base_sha=d["source"]["taskBaseCommit"], run_id=cfgp.run_id,
-                                   run_dir=resolved.run_dir.resolve(), execution_kind=execution_kind)
+                                   run_dir=resolved.run_dir.resolve(), execution_kind=execution_kind, backend=backend,
+                                   worker_model=worker_model)
             # the worker's OWN dependencies, installed after `worktree add` and before launch (the prepare hook)
             holder["w"] = W.CliWorker(W.CliConfig(**{**cfg.__dict__, "prepare": lambda wt: install_deps(spec, wt, root)}))
         return holder["w"](order)
@@ -615,7 +647,8 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
     evidence: dict[str, Any] = {"rootGo": root_go, "specSha256": spec.sha256, "preflight": rec, "repo": str(repo),
                                 "runDir": str(resolved.run_dir), "outcome": result.outcome, "reason": result.reason,
                                 "detail": result.detail, "verifier": verifier.reports, "databaseRetained": False,
-                                "provenance": prov, **prov_file, "errors": list(prov_errors)}
+                                "provenance": prov, **prov_file, "errors": list(prov_errors),
+                                "worker": worker_record(spec, backend, worker_model, execution_kind)}
 
     def best_effort(part: str, fn: Callable[[], Any]) -> None:
         try:
@@ -724,6 +757,8 @@ def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -
     ap.add_argument("--exe-sha256")
     ap.add_argument("--launch-real-model", action="store_true")
     ap.add_argument("--root-go")
+    ap.add_argument("--worker", choices=W.BACKENDS, default="claude", help="run: the worker CLI (plan 048); default claude")
+    ap.add_argument("--worker-model", help="run --worker codex: the model to request (default: the CLI's own default)")
     a = ap.parse_args(argv)
     try:
         spec = T.load(a.spec)
@@ -784,7 +819,8 @@ def main(argv: list[str], *, harness_factory: Callable[[], Any] | None = None) -
             command = (a.exe.resolve(),) + ((a.exe_arg.resolve(),) if a.exe_arg else ())
             res, ev = run(spec, a.run_root.resolve(), executable=command, executable_sha256=a.exe_sha256,
                           setup=SetupClient(h.base_url), client=SupervisorClient(h.base_url), aj=aj, project_id=h.project_id,
-                          execution_kind="fake-cli" if a.exe_arg else "claude-cli", root_go=a.root_go)
+                          execution_kind="fake-cli" if a.exe_arg else f"{a.worker}-cli", root_go=a.root_go,
+                          backend=a.worker, worker_model=a.worker_model)
         finally:
             aj.close()
         print(json.dumps({"outcome": res.outcome, "reason": res.reason, "detail": res.detail, "rounds": len(res.rounds),

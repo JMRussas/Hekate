@@ -112,7 +112,7 @@ def provenance_doc(declared: dict[str, Any]) -> dict[str, Any]:
         raise ExportRefused("provenance_fields", f"missing {missing} extra {extra}")
     w = declared["worker"]
     if not (isinstance(w, dict) and set(w) == {"kind", "requestedModel", "reportedModels", "reportedModelsAuthenticated"}
-            and w["kind"] in ("claude-cli", "fake") and w["reportedModelsAuthenticated"] is False):
+            and w["kind"] in ("claude-cli", "codex-cli", "fake") and w["reportedModelsAuthenticated"] is False):
         raise ExportRefused("provenance_worker")
     r = declared["reviewer"]
     if not (isinstance(r, dict) and set(r) == {"kind", "inputSha256"} and r["kind"] in ("deterministic-verifier", "model-session")):

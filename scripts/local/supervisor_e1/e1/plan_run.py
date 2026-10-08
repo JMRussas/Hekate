@@ -222,7 +222,8 @@ def _write_log(run_root: Path, result: PlanRunResult) -> Path:
 
 def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, executable: tuple[Path, ...], executable_sha256: str,
              execution_kind: str, root_go: str | None, timeouts: tuple[int, int, int] = (1200, 600, 300),
-             task_suffix: Callable[[str], str] | None = None) -> PlanRunResult:
+             task_suffix: Callable[[str], str] | None = None, backend: str = "claude",
+             worker_model: str | None = None) -> PlanRunResult:
     run_root = Path(run_root)
     run_root.mkdir(parents=True, exist_ok=True)
     result = PlanRunResult("needs_operator", None, plan.root, plan.doc.sha256)
@@ -278,7 +279,8 @@ def run_plan(plan: PI.ImportedPlan, run_root: Path, *, setup, client, aj, execut
                              aj=aj, project_id=plan.project_id, execution_kind=execution_kind, root_go=root_go,
                              task_suffix=task_suffix(key) if task_suffix else "", timeouts=timeouts,
                              attach=(plan.root, s["nodeId"]),
-                             claim_check=make_claim_check(s["nodeId"], s["value"], s["contentRevision"], preds))
+                             claim_check=make_claim_check(s["nodeId"], s["value"], s["contentRevision"], preds),
+                             backend=backend, worker_model=worker_model)
             step.action, step.outcome, step.reason = "ran", res.outcome, res.reason
             step.evidence = str(Path(ev["runDir"]) / "evidence.json")
             if res.outcome != "accepted":

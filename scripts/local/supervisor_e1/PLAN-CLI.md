@@ -59,6 +59,12 @@ caps, with private reasoning dropped). `launch_intent` names both files before s
 `evidence.json` `adapter.<round>.trace` carry their final bytes, sha256 and `complete`. The trace is evidence for
 viewing only: acceptance still comes from the verifier.
 
+**Codex worker (plan 048).** `--worker codex` runs each node with `codex exec --json` instead of Claude Code (pin the
+native `codex.exe` with `--exe`/`--exe-sha256`; `--worker-model` optionally names the model, else the CLI default is
+used). The spec's model is not passed to Codex, and its budget and turn limit are NOT enforced by that CLI: only the
+supervisor's timeouts and output caps apply, and usage is tokens only. Each node's `evidence.json` `worker` records
+these terms. A finished Codex turn only allows the capture; the verifier still decides acceptance.
+
 Exit codes: `0` all_done, `1` needs_operator (or an error after the harness started), `2` refused before any effect.
 
 - A harness that cannot start (for example, port 5108 in use) gives `harness_unavailable`, exit 1.

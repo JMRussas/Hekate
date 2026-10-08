@@ -112,12 +112,13 @@ class RealParams:
 
 
 def adapter_config(params: RealParams, *, repo: Path, base_sha: str, run_id: str, run_dir: Path,
-                   execution_kind: str = "claude-cli") -> W.CliConfig:
+                   execution_kind: str = "claude-cli", backend: str = "claude", worker_model: str | None = None) -> W.CliConfig:
+    """For codex (plan 048) the spec's model (a Claude alias) is NOT passed: `worker_model` (None = the CLI default) is."""
     return W.CliConfig(command=params.executable, repo=repo, base_sha=base_sha, run_id=run_id, run_dir=run_dir,
-                       model=params.model, max_budget_usd=params.max_budget_usd, max_turns=params.max_turns,
-                       total_timeout_s=params.total_timeout_s, first_output_timeout_s=params.first_output_timeout_s,
-                       inactivity_timeout_s=params.inactivity_timeout_s, test_command=params.test_command,
-                       execution_kind=execution_kind)
+                       model=worker_model if backend == "codex" else params.model, max_budget_usd=params.max_budget_usd,
+                       max_turns=params.max_turns, total_timeout_s=params.total_timeout_s,
+                       first_output_timeout_s=params.first_output_timeout_s, inactivity_timeout_s=params.inactivity_timeout_s,
+                       test_command=params.test_command, execution_kind=execution_kind, backend=backend)
 
 
 def validate_params(params: RealParams) -> None:
