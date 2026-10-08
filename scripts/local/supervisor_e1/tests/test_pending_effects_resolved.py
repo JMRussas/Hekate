@@ -9,6 +9,7 @@ import pytest
 
 from e1 import handoff as H
 from e1.evidence import ModelJournal
+from e2b_support import jdb  # noqa: F401 (fixture: the owned disposable journal DB)
 
 ROOT, CK = "root-1", "ck-1"
 TERMINAL = {"decision": "abandoned_no_effects", "reconciliationRef": "recon-1"}
@@ -118,3 +119,43 @@ def test_an_unresolved_mismatch_still_refuses_and_corruption_and_unconfirmed_are
     items = H.pending_effects(records, None, [["dispatch_outcome"]], [{"recordId": "r9", "kind": "dispatch_outcome"}])
     assert items == [{"kind": "open_intent", "id": items[0]["id"], "status": "unknown", "awaiting": ["dispatch_outcome"]},
                      {"kind": "commit_unknown", "id": "r9", "status": "unknown", "awaiting": ["dispatch_outcome"]}]
+
+
+# --- the durable path (root msg 2252): a REAL DurableJournal stream, resolved, read back exactly as handoff_durable.prepare
+# reads it (one REPEATABLE READ snapshot: the streams row, read_stream_records, _aux's outstanding) ----------------------
+
+def test_durable_resolved_stream_lists_its_closed_intent_through_the_handoff_snapshot_read(jdb):
+    import uuid
+
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from e1.acts_durable import install_acts
+    from e1.durable import CONNECT_OPTIONS, audit_counters, read_stream_records
+    from e1.handoff_durable import _aux
+
+    dsn = jdb.make()
+    install_acts(dsn)
+    root = str(uuid.uuid4())
+    dj = jdb.writer()
+    dj.append(root, CK, "claim_intent", {"attemptId": "a1"})
+    dj.append(root, CK, "claimed", {"outcome": "claimed"})
+    dj.append(root, CK, "package_ref", {"packageSha256": "p" * 64, "jcs": "{}"})
+    dj.append(root, CK, "dispatch_intent", {"exec": "e" * 64, "key": {}})
+    dj.append(root, CK, "operator_resolution", TERMINAL)
+    dj.resolve(root, CK)
+    with psycopg.connect(dsn, autocommit=True, row_factory=dict_row, options=CONNECT_OPTIONS) as conn:
+        conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        try:
+            cur = conn.cursor()
+            g = cur.execute("SELECT per_stream FROM supervisor_journal.global_usage WHERE id = 1").fetchone()
+            s = cur.execute("SELECT * FROM supervisor_journal.streams WHERE root = %s AND claim_key = %s", (root, CK)).fetchone()
+            records, corrupt = read_stream_records(cur, root, CK, s, g["per_stream"])
+            outstanding, _, _ = _aux(cur, root, CK)
+        finally:
+            conn.execute("ROLLBACK")
+    assert s["state"] == "resolved" and corrupt is None and outstanding == []          # the read chain is clean; reservations cleared
+    items = H.pending_effects(records, corrupt, outstanding)
+    assert items == [{"kind": "open_intent", "id": items[0]["id"], "status": "closed:abandoned_no_effects",
+                      "awaiting": ["dispatch_outcome"]}] and items[0]["id"].startswith("dispatch_intent@")
+    assert audit_counters(dsn) == []
