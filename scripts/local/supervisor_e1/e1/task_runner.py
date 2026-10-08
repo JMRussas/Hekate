@@ -251,10 +251,10 @@ def report_cases(report: Any, wt: Path) -> tuple[set[tuple], dict[str, int]]:
     return out, counts
 
 
-def baseline(spec: T.TaskSpec, repo: Path, run_root: Path) -> dict[str, Any]:
-    """Run the baseline argv at the task base with pristine deps. It must END NORMALLY (verified exit,
-    drained, not timed out, not truncated) with expectedExit, and its JSON report must name EXACTLY the
-    declared cases (file, fullName, status, failure first line); no suite-level error; counts agree."""
+def run_baseline(spec: T.TaskSpec, repo: Path, run_root: Path) -> tuple[R.Bounded, dict[str, Any], Path]:
+    """Run the baseline argv at the task base with pristine deps in <run_root>/baseline. It must END NORMALLY
+    (verified exit, drained, not timed out, not truncated). Returns the bounded run (its head is the whole
+    report), the evidence and the worktree. Shared by baseline() and task authoring's capture (e1/task_author.py)."""
     b0 = spec.doc["oracle"]["baseline"]
     wt = run_root / "baseline"
     add = _git("worktree", "add", "--detach", str(wt), spec.doc["source"]["taskBaseCommit"], cwd=repo)
@@ -271,6 +271,15 @@ def baseline(spec: T.TaskSpec, repo: Path, run_root: Path) -> dict[str, Any]:
         raise PreflightRefused("baseline_not_normal", ev)
     if b.total != len(b.head):
         raise PreflightRefused("baseline_report_truncated", ev)
+    return b, ev, wt
+
+
+def baseline(spec: T.TaskSpec, repo: Path, run_root: Path) -> dict[str, Any]:
+    """Run the baseline argv at the task base with pristine deps. It must END NORMALLY (verified exit,
+    drained, not timed out, not truncated) with expectedExit, and its JSON report must name EXACTLY the
+    declared cases (file, fullName, status, failure first line); no suite-level error; counts agree."""
+    b0 = spec.doc["oracle"]["baseline"]
+    b, ev, wt = run_baseline(spec, repo, run_root)
     if b.rc != b0["expectedExit"]:
         raise PreflightRefused("spec_baseline_mismatch", dict(ev, reason="exit"))
     try:
