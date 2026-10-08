@@ -10,7 +10,8 @@ pushes, or edits the source checkout. Before any effect `run` requires an explic
 and --root-go. `--exe-arg` (offline tests only) runs the FAKE CLI and labels the whole result fake.
 
 The disposable harness drops its PlanStore database at exit, so a needs_operator stop is NOT resumable by this
-CLI: a `spec_pending` node (plan-run v0, operator-prepared bases) needs its predecessor's accepted artifact
+CLI. A recipe node (D3 v1) derives its base within the run and needs no operator; a `spec_pending` node
+(plan-run v0, operator-prepared bases) needs its predecessor's accepted artifact
 integrated and its spec frozen, then a run of the completed plan in a NEW run root. Exit codes: 0 all_done,
 1 needs_operator (or an error after the harness started), 2 refused before any effect.
 """

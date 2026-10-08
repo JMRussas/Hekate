@@ -176,3 +176,16 @@ def test_a_failure_after_the_harness_started_is_a_typed_stop_and_the_harness_is_
     sh = SessionHarness(harness)
     assert CLI.main(run_argv(plan_file(fx, one_node(fx)), tmp_path / "rr"), harness_factory=lambda: sh) == 1 and sh.stopped
     assert last_json(capsys) == {"outcome": "needs_operator", "reason": "unexpected_error", "detail": "RuntimeError"}
+
+
+def test_a_recipe_chain_runs_to_all_done_in_one_cli_run(harness, fx, tmp_path, capsys, scenarios):
+    from test_plan_run_d3 import chain, recipe_doc, write_recipe
+    path, rsha = write_recipe(fx, recipe_doc(fx))
+    plan = plan_file(fx, chain(fx, path, rsha, "cli d3 chain"))
+    assert CLI.main(["validate", "--plan", str(plan)]) == 0
+    assert last_json(capsys)["nodes"][1]["spec"] == {"recipe": {"path": path, "sha256": rsha}}
+    sh = SessionHarness(harness)
+    assert CLI.main(run_argv(plan, tmp_path / "rr"), harness_factory=lambda: sh) == 0 and sh.stopped
+    out = last_json(capsys)
+    assert (out["outcome"], [(s["key"], s["outcome"]) for s in out["steps"]]) == ("all_done", [("a", "accepted"), ("b", "accepted")])
+    assert (tmp_path / "rr" / "b.integration" / "provenance.json").is_file()

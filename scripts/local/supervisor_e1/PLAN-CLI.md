@@ -21,7 +21,7 @@ uv run python -m e1.plan_cli run --plan D:/plans/slice.json --run-root D:/runs/s
 
 `validate` prints, for each node:
 - its predecessors;
-- its spec reference (`pending` or a pinned path and sha256);
+- its spec reference: `pending`, a pinned path and sha256, or a `{"recipe": {path, sha256}}` (D3 v1, plan 044);
 - for a pinned spec: the issue, task base, allow list, verify steps and worker bounds (model, budget, rounds, turns). These bounds are the spec's own, applied as in the single-task runner.
 
 ## What `run` checks before any effect
@@ -56,6 +56,7 @@ The harness database is dropped at exit **whatever the outcome**. `Harness.stop(
 ## Limits (v0)
 
 - **A stop cannot be resumed.** The harness drops its PlanStore database at exit. After `needs_operator`, prepare what the stop names, then run the plan again in a **new** run root.
+- **A recipe node needs no operator step.** A `{"recipe": ...}` node (D3 v1: one predecessor, same original repository) gets its base derived from the predecessor's accepted artifact within the same run, so a fully pinned or recipe chain can reach `all_done` in ONE `run`. Its stops (`repo_lineage_mismatch`, `recipe_tamper`, `oracle_conflict`, `predecessor_evidence`, ...) pass through as `reason` and `detail`. The integration repo, resolved spec and provenance are under `<run-root>/<key>.integration/`.
 - **A pending spec is an operator stop.** A `spec: null` node, whose base is prepared by an operator (D3 v0), stops with `spec_pending` once its predecessors are accepted. Their accepted artifacts are in the per-node owned clones under the run root. To continue:
   1. integrate those artifacts into the source repo;
   2. freeze the node's spec on them;
