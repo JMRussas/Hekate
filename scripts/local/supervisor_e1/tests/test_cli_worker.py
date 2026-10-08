@@ -450,6 +450,8 @@ NULLS = {"total_cost_usd": None, "num_turns": None, "duration_ms": None}
     ({"total_cost_usd": 2, "num_turns": 0, "duration_ms": 0}, {"total_cost_usd": "2", "num_turns": 0, "duration_ms": 0}),
     ({"total_cost_usd": 0.0}, dict(NULLS, total_cost_usd="0.0")),
     ({"total_cost_usd": 0}, dict(NULLS, total_cost_usd="0")),
+    ({"total_cost_usd": 10 ** 400, "num_turns": 10 ** 400}, dict(NULLS, total_cost_usd="1" + "0" * 400, num_turns=10 ** 400)),
+    ({"total_cost_usd": -(10 ** 400)}, NULLS),                                   # root msg 2045: no OverflowError
     ({}, NULLS),
     ({"total_cost_usd": "0.4", "num_turns": "7", "duration_ms": 1.5}, NULLS),
     ({"total_cost_usd": True, "num_turns": True, "duration_ms": False}, NULLS),
@@ -468,6 +470,7 @@ def test_reported_usage_keeps_only_well_formed_fields(fields, want):
     ("usage_bad", "ok", None, NULLS),                                            # malformed usage: same outcome, nulls
     ("usage_twice", "unknown", "ambiguous_result", {"total_cost_usd": "0.1", "num_turns": 1, "duration_ms": 1}),
     ("happy", "ok", None, NULLS),                                                # a result without usage fields
+    ("usage_bigint", "ok", None, {"total_cost_usd": "1" + "0" * 400, "num_turns": 10 ** 400, "duration_ms": 1}),
     ("no_result", "unknown", "no_result", None),                                 # no result event: no usage at all
 ])
 def test_the_round_evidence_carries_the_first_results_reported_usage(tmp_path, repo, scenario, status, reason, usage):

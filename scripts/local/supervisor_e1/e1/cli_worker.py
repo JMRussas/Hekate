@@ -314,8 +314,12 @@ def reported_usage(event: dict[str, Any]) -> dict[str, Any]:
         return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
 
     c = event.get("total_cost_usd")
-    ok = isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) and c >= 0
-    cost = (str(c) if isinstance(c, int) else repr(c)) if ok else None
+    if isinstance(c, int) and not isinstance(c, bool):          # every Python int is finite; never math.isfinite on
+        cost = str(c) if c >= 0 else None                       # one (a huge JSON integer overflows it; root msg 2045)
+    elif isinstance(c, float):
+        cost = repr(c) if math.isfinite(c) and c >= 0 else None
+    else:
+        cost = None
     return {"label": USAGE_LABEL, "total_cost_usd": cost, "num_turns": count(event.get("num_turns")),
             "duration_ms": count(event.get("duration_ms"))}
 
