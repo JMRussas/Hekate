@@ -1,10 +1,15 @@
 # Plan 048 — codex worker v0: `codex exec` as an alternate node worker
 
-**Status: implemented, pending root review (2026-10-08). No model was run during implementation.**
-- **Branch:** `feat/codex-worker` from `dcb45b0` (plan 046 capture A).
-- **GO:** root msg 2469 (proposal 2468). Feasibility: smokes 001–004 and the model-free sandbox diagnosis (msgs 2427–2446).
-- **Test scope:** a fake codex (`tests/fake_codex.py`) replaying the smoke-004 event shapes, temporary repos, the
-  disposable harness. No model, no network, no push.
+**Status (2026-10-08):**
+- **Adapter:** integrated in primary at `1a3b6d9` (`e8abb2e` and the UTF-8 prompt line `041b069`, `feat/codex-worker`).
+- **PATH fix (§5):** under final root review on `fix/codex-path-packaged`.
+- **Live README rehearsal `codex-trace-001`:** accepted in round 1, with every shell call failing (§5).
+- **`codex-smoke-005`:** passed both a shell read and a file edit after the fix.
+- **GO:** root msgs 2469 (proposal 2468), 2487, 2501 and 2512. Feasibility: smokes 001–004 and the model-free sandbox
+  diagnosis (msgs 2427–2446).
+- **Implementation test scope** (the original adapter, before any real run): a fake codex (`tests/fake_codex.py`)
+  replaying the smoke-004 event shapes, temporary repos and the disposable harness. No model, no network, no push. Real
+  runs came afterwards, each under its own GO.
 
 ## 1. What changes for the user
 
@@ -41,8 +46,11 @@ codex.exe exec --json --ephemeral --ignore-user-config --ignore-rules --sandbox 
 ```
 
 - The user's `config.toml` (its MCP servers and credentials) and execpolicy rules are not loaded.
-- Environment: the same allowlist, with the exact `%LOCALAPPDATA%\Microsoft\WindowsApps` PATH entry removed for codex
-  only. Its `pwsh.exe` alias cannot start under the unelevated sandbox; without it Codex uses System32 PowerShell.
+- Environment: the same allowlist, with two kinds of PATH entry removed for codex only (`codex_path_excluded`, §5):
+  - the exact `%LOCALAPPDATA%\Microsoft\WindowsApps` alias directory;
+  - `%ProgramFiles%\WindowsApps` and every packaged-app directory under it, such as Store PowerShell 7.
+  Neither `pwsh.exe` can start under the unelevated sandbox's restricted token. Without them Codex uses System32
+  Windows PowerShell 5.1. Other entries keep their order; Claude's PATH is unchanged.
 - Never `--dangerously-bypass-approvals-and-sandbox`, `--approve-for-me` or codex's own `--worktree`.
 
 Event semantics:
