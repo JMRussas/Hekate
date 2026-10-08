@@ -227,3 +227,97 @@ def test_the_connection_is_read_only_and_errors_never_echo_the_dsn(jdb):
     with pytest.raises(RC.CollectorRefused) as e:
         RC.collect_observation(bad, W)
     assert e.value.code == "connect_failed" and "password" not in str(e.value).lower() and bad not in str(e.value)
+
+
+# --- root review 2366: deadline validation, setup cleanup, header numerics/bounds before stream reads ----------------
+
+@pytest.mark.parametrize("deadline", [float("nan"), float("inf"), -1, True, "1", None])
+def test_an_invalid_deadline_refuses_before_connecting(monkeypatch, deadline):
+    def never(*a, **kw):
+        raise AssertionError("connect must not be attempted")
+    monkeypatch.setattr(RC.psycopg, "connect", never)
+    with pytest.raises(RC.CollectorRefused) as e:
+        RC.collect_observation("dbname=x", W, deadline_s=deadline)
+    assert e.value.code == "read_failed" and "deadline" in str(e.value)
+
+
+class FakeCursor:
+    def __init__(self, log):
+        self.log = log
+
+    def execute(self, sql, *a):
+        self.log.append(("execute", sql))
+
+    def close(self):
+        self.log.append("cursor.close")
+
+
+class FakeConn:
+    def __init__(self, log, cursor_fails=False):
+        self.log, self.cursor_fails = log, cursor_fails
+
+    def cursor(self):
+        if self.cursor_fails:
+            raise RuntimeError("cursor boom")
+        return FakeCursor(self.log)
+
+    def cancel(self):
+        self.log.append("cancel")
+
+    def close(self):
+        self.log.append("conn.close")
+
+
+def test_a_failing_cursor_creation_still_closes_the_connection(monkeypatch):
+    log = []
+    monkeypatch.setattr(RC.psycopg, "connect", lambda *a, **kw: FakeConn(log, cursor_fails=True))
+    with pytest.raises(RC.CollectorRefused) as e:
+        RC.collect_observation("dbname=x", W)
+    assert (e.value.code, str(e.value)) == ("read_failed", "read_failed: setup: RuntimeError") and log == ["conn.close"]
+
+
+def test_a_failing_timer_start_still_closes_cursor_and_connection(monkeypatch):
+    log = []
+    monkeypatch.setattr(RC.psycopg, "connect", lambda *a, **kw: FakeConn(log))
+
+    class BadTimer:
+        def __init__(self, *a, **kw):
+            self.daemon = False
+
+        def start(self):
+            raise RuntimeError("no threads")
+
+        def cancel(self):
+            log.append("timer.cancel")
+    monkeypatch.setattr(RC.threading, "Timer", BadTimer)
+    with pytest.raises(RC.CollectorRefused) as e:
+        RC.collect_observation("dbname=x", W)
+    assert e.value.code == "read_failed" and "RuntimeError" in str(e.value)
+    assert log == ["timer.cancel", ("execute", "ROLLBACK"), "cursor.close", "conn.close"]
+
+
+def test_an_infinite_resolved_at_refuses_before_any_stream_read(jdb):
+    dsn = jdb.make()
+    dj = jdb.writer()
+    feed(dj, "r1", PRE + [("operator_resolution", TERMINAL)])
+    dj.resolve("r1", CK)
+    dj.close()
+    raw(dsn, "UPDATE supervisor_journal.streams SET resolved_at = 'Infinity' WHERE root = 'r1'", replica=True)
+    queries = []
+    with pytest.raises(RC.CollectorRefused) as e:
+        RC.collect_observation(dsn, W, _before_query=lambda cur: queries.append(1))
+    assert e.value.code == "read_failed" and "resolved_at" in str(e.value) and len(queries) == 4   # BEGIN, Q1, Q2, Q3
+
+
+def test_outstanding_beyond_per_stream_refuses_before_any_stream_read(jdb):
+    dsn = jdb.make()
+    dj = jdb.writer()
+    feed(dj, "r1", PRE)
+    dj.close()
+    raw(dsn, "UPDATE supervisor_journal.global_usage SET per_stream = 2",
+        "UPDATE supervisor_journal.streams SET outstanding = '[[\"claimed\"],[\"claimed\"],[\"claimed\"]]'::jsonb WHERE root = 'r1'",
+        replica=True)
+    queries = []
+    with pytest.raises(RC.CollectorRefused) as e:
+        RC.collect_observation(dsn, W, _before_query=lambda cur: queries.append(1))
+    assert e.value.code == "read_failed" and "outstanding" in str(e.value) and len(queries) == 4

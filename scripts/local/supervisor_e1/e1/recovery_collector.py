@@ -25,6 +25,9 @@ CONTRACT (root review 2350/2351):
   Values are validated with e1.recovery_manifest's own patterns and are never rewritten.
 - The canonical observation size is counted INCREMENTALLY and exactly (header + every stream + separating commas);
   over OBSERVATION_MAX it refuses input_overflow before any further stream is read.
+- deadline_s must be a finite number >= 0 (bool refused; 0 means "time out immediately"), checked before connecting.
+- Every step after connecting (cursor, watchdog start, queries) is inside one cleanup guarantee: the owned timer is
+  cancelled and the cursor and connection are closed even if setup itself fails (typed read_failed, error type only).
 - SOFT DEADLINE ONLY: no query is issued once deadline_s has elapsed (collector_timeout), and a watchdog requests
   cancellation of the running statement (conn.cancel()). connect_timeout, statement_timeout and lock_timeout bound
   individual operations, but cancellation, connection teardown and result draining can themselves block: NO bound on
@@ -35,6 +38,7 @@ CONTRACT (root review 2350/2351):
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from typing import Any, Callable
@@ -79,7 +83,7 @@ def _ok(v: Any, pattern) -> bool:
     return isinstance(v, str) and RM._encodable(v) and bool(pattern.fullmatch(v))
 
 
-def _header(i: int, row: dict[str, Any]) -> dict[str, Any]:
+def _header(i: int, row: dict[str, Any], per_stream: int) -> dict[str, Any]:
     """The projection header of one stream, or the WHOLE collection refuses (identity is never invented)."""
     def bad(field: str) -> CollectorRefused:
         return CollectorRefused("read_failed", f"stream {i}: {field}")
@@ -92,12 +96,18 @@ def _header(i: int, row: dict[str, Any]) -> dict[str, Any]:
     if not _ok(row["head_hash"], RM.HEX64):
         raise bad("head_hash")
     out = row["outstanding"]
-    if not (isinstance(out, list) and all(isinstance(o, list) and 1 <= len(o) <= RM.TERMINALS_PER_INTENT_MAX
-                                          and all(isinstance(k, str) and k in TERMINALS for k in o) for o in out)):
+    if not (isinstance(out, list) and len(out) <= per_stream
+            and all(isinstance(o, list) and 1 <= len(o) <= RM.TERMINALS_PER_INTENT_MAX
+                    and all(isinstance(k, str) and k in TERMINALS for k in o) for o in out)):
         raise bad("outstanding")
     ra = row["resolved_at"]
-    if (ra is None) != (row["state"] == "active") or (ra is not None and not (isinstance(ra, (int, float)) and ra >= 0)):
+    if (ra is None) != (row["state"] == "active"):
         raise bad("resolved_at")
+    if ra is not None:
+        try:
+            RM._nonneg_number(ra, "resolvedAt")                   # the projection's own rule: no bool, inf or NaN
+        except RM.ProjectionRefused:
+            raise bad("resolved_at") from None
     return {"root": row["root"], "claimKey": row["claim_key"], "state": row["state"], "outstanding": [list(o) for o in out],
             "headHash": row["head_hash"], "resolvedAt": ra, "corrupt": None, "records": [], "summary": None}
 
@@ -122,15 +132,22 @@ def collect_observation(dsn: str, writer: str, *, deadline_s: float = 120.0, now
     """The sanitized observation of ONE writer (see the module contract). `_before_query` is a TEST hook only."""
     if not _ok(writer, RM.IDENT):
         raise CollectorRefused("read_failed", "writer id")
+    if isinstance(deadline_s, bool) or not isinstance(deadline_s, (int, float)) or not math.isfinite(deadline_s) or deadline_s < 0:
+        raise CollectorRefused("read_failed", "deadline_s must be a finite number >= 0")       # checked BEFORE connecting
     t0 = now()
     try:
         conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row, connect_timeout=10, options=CONNECT_OPTIONS)
     except Exception as e:  # noqa: BLE001 -- typed; the message (which can echo the DSN) is never kept
         raise CollectorRefused("connect_failed", type(e).__name__) from None
-    timer = threading.Timer(max(0.0, deadline_s - (now() - t0)), _cancel, args=(conn,))
-    timer.daemon = True
-    timer.start()
-    cur = conn.cursor()
+    timer = cur = None
+    try:                                                          # EVERY post-connect step is inside the cleanup guarantee
+        cur = conn.cursor()
+        timer = threading.Timer(max(0.0, deadline_s - (now() - t0)), _cancel, args=(conn,))
+        timer.daemon = True
+        timer.start()
+    except Exception as e:  # noqa: BLE001
+        _cleanup(timer, cur, conn)
+        raise CollectorRefused("read_failed", f"setup: {type(e).__name__}") from None
 
     def before() -> None:
         if now() - t0 >= deadline_s:
@@ -154,7 +171,7 @@ def collect_observation(dsn: str, writer: str, *, deadline_s: float = 120.0, now
         rows = cur.execute(_Q3, {"cap": ID_CAP, "ocap": OUTSTANDING_CAP, "w": writer, "lim": RM.STREAMS_MAX + 1}).fetchall()
         if len(rows) > RM.STREAMS_MAX:
             raise CollectorRefused("input_overflow", f"> {RM.STREAMS_MAX} streams")
-        headers = [_header(i, r) for i, r in enumerate(rows)]
+        headers = [_header(i, r, per_stream) for i, r in enumerate(rows)]      # ALL headers before any stream read
         obs: dict[str, Any] = {"schema": RM.INPUT_SCHEMA, "writer": {"id": writer, "epoch": w["epoch"]},
                                "bounds": {"perStream": per_stream}, "streams": []}
         total = len(_canon(obs))                                  # includes the empty "[]"; each stream adds itself + a comma
@@ -200,12 +217,22 @@ def collect_observation(dsn: str, writer: str, *, deadline_s: float = 120.0, now
             raise CollectorRefused("collector_timeout", type(e).__name__) from None
         raise CollectorRefused("read_failed", type(e).__name__) from None
     finally:
-        timer.cancel()
-        for step in (lambda: cur.execute("ROLLBACK"), conn.close):
-            try:
-                step()
-            except Exception:  # noqa: BLE001 -- cleanup never masks the outcome nor echoes credentials
-                pass
+        _cleanup(timer, cur, conn)
+
+
+def _cleanup(timer, cur, conn) -> None:
+    """Cancel the owned timer, roll back, close the cursor and the connection. Never raises, never masks the outcome."""
+    steps = []
+    if timer is not None:
+        steps.append(timer.cancel)
+    if cur is not None:
+        steps += [lambda: cur.execute("ROLLBACK"), cur.close]
+    steps.append(conn.close)
+    for step in steps:
+        try:
+            step()
+        except Exception:  # noqa: BLE001 -- cleanup never masks the outcome nor echoes credentials
+            pass
 
 
 def _cancel(conn) -> None:
