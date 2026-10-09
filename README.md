@@ -121,3 +121,5 @@ data and learned conversation exports are ignored by Git.
 
 [GNU Affero General Public License v3.0 or later](LICENSE), matching Agent Insights,
 Orchestration Engine and Tiered Moderation Agent.
+
+The copyright notice and AGPL-3.0-or-later grant are preserved in [NOTICE](NOTICE).
