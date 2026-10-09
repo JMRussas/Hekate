@@ -45,7 +45,7 @@ public class TreeNode
         Attributes.TryGetValue(key, out var v) ? v : fallback;
 }
 
-public class NodeRepository
+public class NodeRepository : ICodeNodeRepository
 {
     private readonly string _connStr;
     private readonly NpgsqlConnection? _externalConn;

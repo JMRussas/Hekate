@@ -35,9 +35,9 @@ namespace CodeStoragePoc.Generator;
 
 public class CSharpGenerator
 {
-    private readonly NodeRepository _repo;
+    private readonly ICodeNodeRepository _repo;
 
-    public CSharpGenerator(NodeRepository repo) => _repo = repo;
+    public CSharpGenerator(ICodeNodeRepository repo) => _repo = repo;
 
     /// <summary>
     /// Generate C# source code from a node tree rooted at the given ID.
@@ -121,9 +121,16 @@ public class CSharpGenerator
             case "struct":
             case "class":
             {
-                var access = node.Attr("access", "public");
                 var keyword = node.Record.NodeType;
-                sb.AppendLine($"{Indent(indent)}{access} {keyword} {node.Record.Name}");
+                var parts = new List<string>();
+                AddAccess(parts, node.Attr("access", "public"));
+                if (node.Attr("is_static") == "true")
+                    parts.Add("static");
+                if (node.Attr("is_partial") == "true")
+                    parts.Add("partial");
+                parts.Add(keyword);
+                parts.Add(node.Record.Name ?? "");
+                sb.AppendLine($"{Indent(indent)}{string.Join(" ", parts)}");
                 sb.AppendLine($"{Indent(indent)}{{");
                 foreach (var child in node.Children)
                     EmitNode(child, sb, indent + 1);
@@ -138,7 +145,11 @@ public class CSharpGenerator
             {
                 var access = node.Attr("access", "public");
                 var type = node.Attr("type", "object");
-                sb.AppendLine($"{Indent(indent)}{access} {type} {node.Record.Name};");
+                var parts = new List<string>();
+                AddAccess(parts, access);
+                parts.Add(type);
+                parts.Add($"{node.Record.Name};");
+                sb.AppendLine($"{Indent(indent)}{string.Join(" ", parts)}");
                 break;
             }
 
@@ -157,7 +168,10 @@ public class CSharpGenerator
                 var paramStr = FormatParameters(parameters);
 
                 sb.AppendLine();
-                sb.AppendLine($"{Indent(indent)}{access} {typeName}({paramStr})");
+                var ctorParts = new List<string>();
+                AddAccess(ctorParts, access);
+                ctorParts.Add($"{typeName}({paramStr})");
+                sb.AppendLine($"{Indent(indent)}{string.Join(" ", ctorParts)}");
 
                 // Emit the block
                 var block = node.Children.FirstOrDefault(c => c.Record.NodeType == "block");
@@ -178,17 +192,26 @@ public class CSharpGenerator
                 var paramStr = FormatParameters(parameters);
 
                 // Build the declaration line
-                var parts = new List<string> { access };
+                // Order: access static modifier partial returnType (partial sits right before the return type).
+                var parts = new List<string>();
+                AddAccess(parts, access);
+                if (node.Attr("is_static") == "true")
+                    parts.Add("static");
                 if (!string.IsNullOrEmpty(modifier))
                     parts.Add(modifier);
+                if (node.Attr("is_partial") == "true")
+                    parts.Add("partial");
                 parts.Add(returnType);
                 parts.Add($"{node.Record.Name}({paramStr})");
 
+                var block = node.Children.FirstOrDefault(c => c.Record.NodeType == "block");
+                var declaration = string.Join(" ", parts);
+
                 sb.AppendLine();
-                sb.AppendLine($"{Indent(indent)}{string.Join(" ", parts)}");
+                // Declaration-only methods (no body block) end with a semicolon.
+                sb.AppendLine($"{Indent(indent)}{declaration}{(block == null ? ";" : "")}");
 
                 // Emit the block
-                var block = node.Children.FirstOrDefault(c => c.Record.NodeType == "block");
                 if (block != null)
                     EmitNode(block, sb, indent);
                 break;
@@ -250,6 +273,16 @@ public class CSharpGenerator
             var type = p.Attr("type", "object");
             return $"{type} {p.Record.Name}";
         }));
+    }
+
+    /// <summary>
+    /// Add an access keyword to a declaration. "implicit" is stored metadata
+    /// meaning "no access modifier written" and must never be emitted as C#.
+    /// </summary>
+    private static void AddAccess(List<string> parts, string access)
+    {
+        if (!string.IsNullOrEmpty(access) && access != "implicit")
+            parts.Add(access);
     }
 
     private static string Indent(int level) => new(' ', level * 4);
