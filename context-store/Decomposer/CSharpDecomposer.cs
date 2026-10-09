@@ -24,9 +24,9 @@ namespace CodeStoragePoc.Decomposer;
 
 public class CSharpDecomposer
 {
-    private readonly NodeRepository _repo;
+    private readonly ICodeNodeRepository _repo;
 
-    public CSharpDecomposer(NodeRepository repo) => _repo = repo;
+    public CSharpDecomposer(ICodeNodeRepository repo) => _repo = repo;
 
     /// <summary>
     /// Decompose a C# source file into nodes and persist to the database.
@@ -189,6 +189,8 @@ public class CSharpDecomposer
 
         if (modifiers.Contains("static"))
             attrs["is_static"] = "true";
+        if (modifiers.Contains("partial"))
+            attrs["is_partial"] = "true";
 
         var baseTypes = typeDecl.BaseList?.Types.Select(t => t.ToString()).ToList();
         if (baseTypes is { Count: > 0 })
@@ -238,6 +240,8 @@ public class CSharpDecomposer
 
         if (modifiers.Contains("static"))
             attrs["is_static"] = "true";
+        if (modifiers.Contains("partial"))
+            attrs["is_partial"] = "true";
 
         await _repo.InsertNode(methodId, projectId, fileId, "method",
             m.Identifier.Text, null, parentId, siblingOrder, "decomposer", attrs);
@@ -262,12 +266,15 @@ public class CSharpDecomposer
         }
         else if (m.ExpressionBody != null)
         {
-            // Expression-bodied: create block with single return statement
+            // Expression-bodied: create block with a single statement.
+            // Non-void: "return expr;". Void: "expr;" ("return expr;" is CS0127 in a void method).
+            var isVoid = m.ReturnType is PredefinedTypeSyntax pt && pt.Keyword.IsKind(SyntaxKind.VoidKeyword);
+            var stmt = isVoid ? $"{m.ExpressionBody.Expression};" : $"return {m.ExpressionBody.Expression};";
             var blockId = Guid.NewGuid();
             await _repo.InsertNode(blockId, projectId, fileId, "block",
                 null, null, methodId, order, "decomposer");
             await _repo.InsertNode(Guid.NewGuid(), projectId, fileId, "statement",
-                null, $"return {m.ExpressionBody.Expression};", blockId, 100, "decomposer");
+                null, stmt, blockId, 100, "decomposer");
         }
     }
 
