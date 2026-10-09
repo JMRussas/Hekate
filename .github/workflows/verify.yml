@@ -25,5 +25,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install --quiet "pytest>=8,<9"
+      # The checks load hades/server.py, which imports its service dependencies.
+      - run: python -m pip install --quiet "pytest>=8,<9" -r hades/requirements.txt
       - run: python -m pytest tests/test_publication_paths.py -q
