@@ -74,6 +74,8 @@ uv run python -m e1.owned_dispatch run    ...same as launch...   # foreground (w
 - Single plan, single node at a time, single machine. No service, no Windows deployment, no remote or production use.
 - Verified so far only by offline unit tests with injected fakes (no database, no Api, no model). A live smoke with the fake CLI on an owned store is still required before relying on it.
 
+Stop requests can now be fenced to one launch (`stop --expected-launch-id`); see plan 053. An unfenced `stop` keeps the behaviour described above.
+
 ## Review corrections
 
 The first candidate was rejected before live use. Six loop test fixtures lacked a valid spec loader seam; the repaired seam preserves real default validation. Independent tests fence PID reuse, future/nonfinite heartbeat, unavailable creation evidence, arbitrary reason text, and plan hash before child spawn. Public owner liveness is distinct from unknown worker liveness/useful progress. Spec-pending remains an explicit operator preparation gate. Duration and stop checks occur between nodes; an in-flight native runner retains its own finite subprocess bounds and may outlast the dispatcher duration.

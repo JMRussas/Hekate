@@ -23,6 +23,7 @@ import math
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -48,6 +49,10 @@ EXIT_OK, EXIT_STOPPED, EXIT_REFUSED = 0, 1, 2
 CREATE_NO_WINDOW, CREATE_NEW_PROCESS_GROUP, CREATE_BREAKAWAY_FROM_JOB = 0x08000000, 0x00000200, 0x01000000
 SECRET_KEY = re.compile(r"(token|secret|passw|credential|authorization|api[-_]?key|prompt)", re.I)
 STEPS_KEPT, DETAIL_MAX = 20, 2000
+# Fenced stop (plan 053): a request may name the launch it was meant for; only that dispatcher honours it.
+LAUNCH_ID = re.compile(r"[0-9a-f]{32}")
+STOP_READ_MAX, STOP_UNKNOWN_GRACE_S, STOP_RETAINED_MAX = 4096, 5.0, 16
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 class Refused(Exception):
@@ -411,8 +416,96 @@ def dispatch_dir(state_dir: Path) -> Path:
     return Path(state_dir) / DISPATCH_DIR
 
 
-def stop_flag(directory: Path, halt: threading.Event) -> Callable[[], bool]:
-    return lambda: halt.is_set() or (Path(directory) / STOP).exists()
+def read_stop_request(path: Path) -> tuple[str, Any]:
+    """One bounded look at the stop file: (none | legacy | fenced | unknown, detail). Only a regular, non-link file of at
+    most STOP_READ_MAX bytes is read; anything else is `unknown` and its content is never trusted. `legacy` is a JSON
+    object that names no target (the unfenced request); `fenced` carries a well-formed targetLaunchId."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return "none", None
+    except OSError:
+        return "unknown", "unreadable"
+    if not stat.S_ISREG(st.st_mode) or getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT:
+        return "unknown", "not_regular_file"
+    if st.st_size > STOP_READ_MAX:
+        return "unknown", "oversized"
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return "unknown", "unreadable"
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            return "unknown", "not_regular_file"
+        raw = os.read(fd, STOP_READ_MAX + 1)
+    except OSError:
+        return "unknown", "unreadable"
+    finally:
+        os.close(fd)
+    if len(raw) > STOP_READ_MAX:
+        return "unknown", "oversized"
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return "unknown", "malformed"
+    if not isinstance(doc, dict):
+        return "unknown", "malformed"
+    if "targetLaunchId" not in doc:
+        return "legacy", None
+    target = doc["targetLaunchId"]
+    if type(target) is str and LAUNCH_ID.fullmatch(target):
+        return "fenced", target
+    return "unknown", "malformed"
+
+
+class StopGate:
+    """The dispatcher's `stop_requested` seam. Honours the halt event, an unfenced (legacy) request, and a fenced request
+    naming THIS dispatcher's launch id; the first honoured request latches. A well-formed request for another launch is
+    ignored and a request whose content cannot be established (malformed, oversized, link, unreadable: `unknown`) is
+    ignored once it persists past a short grace (so a half-written file is not judged). Both are RENAMED (never deleted)
+    to a sibling evidence name in the dispatch directory, which this dispatcher owns while it holds the store."""
+
+    def __init__(self, directory: Path, halt: threading.Event, launch_id: str | None = None, *,
+                 clock: Callable[[], float] = time.time, note: Callable[..., None] | None = None):
+        self.path, self.halt, self.launch_id, self.clock, self.note = Path(directory) / STOP, halt, launch_id, clock, note
+        self.honored, self.ignored, self.unknown_since = False, 0, None
+
+    def __call__(self) -> bool:
+        if self.honored or self.halt.is_set():
+            return True
+        kind, info = read_stop_request(self.path)
+        if kind == "none":
+            self.unknown_since = None
+            return False
+        if kind == "legacy" or (kind == "fenced" and self.launch_id is not None and info == self.launch_id):
+            self.honored = True
+            return True
+        if kind == "fenced":
+            self.retain("foreign", {"target": info})
+        else:
+            now = self.clock()
+            self.unknown_since = now if self.unknown_since is None else self.unknown_since
+            if now - self.unknown_since >= STOP_UNKNOWN_GRACE_S:
+                self.retain("unverified", {"reason": info})
+        return False
+
+    def retain(self, label: str, data: dict[str, Any]) -> None:
+        self.unknown_since = None
+        if self.ignored >= STOP_RETAINED_MAX:
+            return                                                       # bounded evidence: still ignored, left in place
+        dest = self.path.with_name(f"{STOP}.{label}-{int(self.clock() * 1000)}-{uuid.uuid4().hex[:6]}")
+        try:
+            os.replace(self.path, dest)
+        except OSError:
+            dest = None
+        self.ignored += 1
+        if self.note:
+            self.note(f"{label}_stop_request_ignored", retained=dest.name if dest else None, **data)
+
+
+def stop_flag(directory: Path, halt: threading.Event, launch_id: str | None = None, **kw: Any) -> StopGate:
+    return StopGate(directory, halt, launch_id, **kw)
 
 
 def previous_owner(state_dir: Path, now: float, alive: Callable[[int], bool] = pid_alive) -> dict[str, Any] | None:
@@ -521,7 +614,11 @@ def serve(a: argparse.Namespace, *, opener: Callable[[Path], Any] | None = None)
                 raise RuntimeError(f"plan_read_{r.status}")
             return r.body
 
-        should_stop = stop_flag(ddir, halt)
+        def note_ignored(kind: str, **data: Any) -> None:
+            status.event(kind, **data)
+            status.update(ignoredStopRequests=should_stop.ignored)
+
+        should_stop = stop_flag(ddir, halt, a.launch_id, note=note_ignored)
 
         def dispatch(max_nodes: int) -> PR.PlanRunResult:
             try:
@@ -636,17 +733,32 @@ def launch(a: argparse.Namespace, *, popen: Callable[..., Any] = subprocess.Pope
     return EXIT_STOPPED
 
 
-def request_stop(state_dir: Path, by: str, now: float | None = None, alive: Callable[[int], bool] = pid_alive) -> tuple[int, dict[str, Any]]:
+def request_stop(state_dir: Path, by: str, now: float | None = None, alive: Callable[[int], bool] = pid_alive,
+                 expected_launch_id: str | None = None) -> tuple[int, dict[str, Any]]:
+    """Leave a graceful-stop request for the live owner. With `expected_launch_id` the request is FENCED: it is refused
+    unless the live owner now has that launch id, and it records the target so a different owner that appears before or
+    after the write ignores it. The write is a request, not a delivery: nothing here claims the owner saw or obeyed it."""
+    fenced = expected_launch_id is not None
+    if fenced and not (type(expected_launch_id) is str and LAUNCH_ID.fullmatch(expected_launch_id)):
+        return EXIT_REFUSED, {"refused": "invalid_expected_launch_id"}
     rep = report(state_dir, now, alive)
     if rep.get("liveness") != "running":
         return EXIT_REFUSED, {"refused": "no_live_owner", "state": rep.get("state")}
+    if fenced and (rep.get("owner") or {}).get("launchId") != expected_launch_id:
+        return EXIT_REFUSED, {"refused": "owner_changed", "expectedLaunchId": expected_launch_id}
+    body = {"requestedBy": by[:80], "requestedAt": iso(time.time() if now is None else now), "id": uuid.uuid4().hex[:8]}
+    if fenced:
+        body["targetLaunchId"] = expected_launch_id
     path = dispatch_dir(state_dir) / STOP
     try:
         with open(path, "x", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps({"requestedBy": by[:80], "requestedAt": iso(time.time() if now is None else now), "id": uuid.uuid4().hex[:8]}))
+            f.write(json.dumps(body))
     except FileExistsError:
         return EXIT_REFUSED, {"refused": "stop_already_requested"}
-    return EXIT_OK, {"stopRequested": True, "note": "graceful: the running node finishes (bounded by its spec), then no new claim"}
+    out: dict[str, Any] = {"stopRequested": True, "note": "graceful: the running node finishes (bounded by its spec), then no new claim"}
+    if fenced:
+        out.update(targetLaunchId=expected_launch_id, note="request recorded for that launch only; delivery and stop completion are not confirmed: read `status`")
+    return EXIT_OK, out
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -667,6 +779,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--observe-only", action="store_true", help="observe once and report; never dispatch")
     ap.add_argument("--launch-mode", choices=("foreground", "hidden"), default="foreground")
     ap.add_argument("--launch-id", help="host correlation across Windows virtualenv launcher/interpreter processes")
+    ap.add_argument("--expected-launch-id", help="stop only: fence the request to the owner with this 32-char lowercase hex launch id")
     ap.add_argument("--wait-s", type=int, default=60, help="launch: how long to wait for the child's status")
     d = Limits()
     ap.add_argument("--max-duration-s", type=int, default=d.max_duration_s)
@@ -679,6 +792,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str]) -> int:
     a = build_parser().parse_args(argv)
+    if a.expected_launch_id is not None and a.command != "stop":
+        print(json.dumps({"refused": "unsupported_flag", "detail": {"flag": "--expected-launch-id", "command": a.command}}))
+        return EXIT_REFUSED
     if a.command in ("status", "stop"):
         if a.state_dir is None:
             print(json.dumps({"refused": "state_dir_required"}))
@@ -687,7 +803,7 @@ def main(argv: list[str]) -> int:
             rep = report(a.state_dir)
             print(json.dumps(rep, indent=1, default=str))
             return EXIT_REFUSED if rep["state"] == "no_status" else EXIT_OK
-        code, out = request_stop(a.state_dir, a.actor)
+        code, out = request_stop(a.state_dir, a.actor, expected_launch_id=a.expected_launch_id)
         print(json.dumps(out))
         return code
     if a.command == "launch":
