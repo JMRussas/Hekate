@@ -2,8 +2,8 @@
 
 Scope: `CSharpDecomposer` -> node store -> `CSharpGenerator`, one file at a time.
 Tests: `PlanContracts.Tests/CSharpPartialRoundTripTests.cs` (real decomposer and generator over an
-in-memory `ICodeNodeRepository`; every generated file is compiled with Roslyn against the trusted
-platform references).
+in-memory `ICodeNodeRepository`; compiler fixtures verify generated partial pieces together
+with Roslyn against trusted platform references).
 
 ## Stored metadata
 
@@ -54,8 +54,7 @@ These were bugs and now produce compilable output:
   `sealed`, `unsafe`, ...); `base_types` and `generic_params` are stored but not emitted;
   method type parameters, constraints, `async`, `extern`, `new`, `ref`/`out`/`in`/`params`/`this`
   parameter modifiers and default values; attributes; XML docs.
-- `static` on fields and properties-as-nodes is not emitted by the field handler (properties
-  use stored full text and are fine). A static field inside a `static partial class` therefore
+- The field handler does not emit `is_static`; properties retain their original full text. A static field inside a `static partial class` therefore
   will not compile.
 - Namespaces are always emitted file-scoped; nested namespaces, multiple namespaces per file,
   records, interfaces, delegates, local functions and partial properties/events are not handled.
