@@ -33,4 +33,7 @@ if Path("node_modules").exists():
 for rel, src in (("node_modules/vitest/vitest.mjs", "vitest.py"), ("node_modules/typescript/bin/tsc", "tsc.py")):
     Path(rel).parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(HERE / src, rel)
+if Path("package.json").is_file() and "prettier" in Path("package.json").read_text(encoding="utf-8"):      # v1 formatter fixtures only
+    Path("node_modules/prettier/bin").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(HERE / "prettier.py", "node_modules/prettier/bin/prettier.cjs")
 print("added 2 packages in 0s")

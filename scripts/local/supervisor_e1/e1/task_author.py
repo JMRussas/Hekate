@@ -45,6 +45,8 @@ from e1 import task_spec as T
 
 PROFILE_VERSION = "hekate-task-profile.v0"
 DRAFT_VERSION = "hekate-task-draft.v0"
+PROFILE_VERSION_V1 = "hekate-task-profile.v1"     # v0 plus `formatter` and up to 4 extra steps; composes supervised-task-spec.v1
+DRAFT_VERSION_V1 = "hekate-task-draft.v1"         # v0 plus `formatPaths` (a subset of `allow`); the only draft a v1 profile accepts
 AUTHORING_VERSION = "hekate-task-authoring.v0"
 ORACLE_TOKEN = "{oracle}"
 PROVISIONAL = "(capture: provisional)"
@@ -97,9 +99,15 @@ def _checked(what: str, fn, *a):
 def parse_profile(raw: bytes) -> dict[str, Any]:
     """The SHAPE of the profile. Every value is re-validated by task_spec.parse once composed."""
     d = _strict(raw, "profile")
-    _checked("profile", T._exact, d, ("version", "repo", "tools", "lock", "deps", "oracleRunner", "steps", "worker"), "profile")
-    if d["version"] != PROFILE_VERSION:
+    v1 = isinstance(d, dict) and d.get("version") == PROFILE_VERSION_V1
+    _checked("profile", T._exact, d, ("version", "repo", "tools", "lock", "deps", "oracleRunner", "steps", "worker")
+             + (("formatter",) if v1 else ()), "profile")
+    if d["version"] not in (PROFILE_VERSION, PROFILE_VERSION_V1):
         raise AuthorRefused("profile_version")
+    if v1:                                                                  # the SHAPE; task_spec re-validates every value
+        fm = _checked("profile", T._exact, d["formatter"], ("prettierEntry", "config", "timeoutS", "outputKeepBytes"), "formatter")
+        _checked("profile", T._exact, fm["prettierEntry"], ("path", "version", "sha256"), "formatter.prettierEntry")
+        _checked("profile", T._exact, fm["config"], ("path", "sha256"), "formatter.config")
     _checked("profile", T._abs_path, d["repo"], "repo")
     tools = _checked("profile", T._exact, d["tools"], ("pinnedNodeExe", "npmCli"), "tools")
     for k in ("pinnedNodeExe", "npmCli"):
@@ -116,8 +124,8 @@ def parse_profile(raw: bytes) -> dict[str, Any]:
     if not isinstance(run["argv"], list) or run["argv"].count(ORACLE_TOKEN) != 1:
         raise AuthorRefused("profile_invalid", "oracleRunner.argv must hold the token {oracle} exactly once")
     steps = d["steps"]
-    if not isinstance(steps, list) or len(steps) > 3:
-        raise AuthorRefused("profile_invalid", "steps must hold 0..3 steps (the oracle step is added first)")
+    if not isinstance(steps, list) or len(steps) > (4 if v1 else 3):
+        raise AuthorRefused("profile_invalid", f"steps must hold 0..{4 if v1 else 3} steps (the oracle step is added first)")
     for i, s in enumerate(steps):
         _checked("profile", T._exact, s, ("name", "argv", "timeoutS", "outputKeepBytes"), f"steps[{i}]")
         if s["name"] == "oracle" or ORACLE_TOKEN in (s["argv"] if isinstance(s["argv"], list) else []):
@@ -126,11 +134,20 @@ def parse_profile(raw: bytes) -> dict[str, Any]:
     return d
 
 
-def parse_draft(raw: bytes) -> dict[str, Any]:
+def parse_draft(raw: bytes, v1: bool = False) -> dict[str, Any]:
     d = _strict(raw, "draft")
-    _checked("draft", T._exact, d, ("version", "source", "task", "allow", "oracle", "worker", "metadata"), "draft")
-    if d["version"] != DRAFT_VERSION:
+    _checked("draft", T._exact, d, ("version", "source", "task", "allow", "oracle", "worker", "metadata")
+             + (("formatPaths",) if v1 else ()), "draft")
+    if d["version"] != (DRAFT_VERSION_V1 if v1 else DRAFT_VERSION):
         raise AuthorRefused("draft_version")
+    if v1:
+        fp = d["formatPaths"]
+        if not isinstance(fp, list) or not fp:
+            raise AuthorRefused("draft_invalid", "formatPaths must be a non-empty list of allow paths")
+        for i, p in enumerate(fp):
+            _checked("draft", T._rel_path, p, f"formatPaths[{i}]")
+        if not set(fp) <= set(d["allow"] if isinstance(d["allow"], list) else []):
+            raise AuthorRefused("draft_invalid", "formatPaths must be a subset of allow")
     src = _checked("draft", T._exact, d["source"], ("anchorCommit", "taskBaseCommit"), "source")
     for k in ("anchorCommit", "taskBaseCommit"):
         _checked("draft", T._str, src[k], f"source.{k}", 40, 40, T.HEX40)
@@ -159,8 +176,9 @@ def compose(profile: dict[str, Any], draft: dict[str, Any], oracle_files: list[d
             cases: list[dict[str, Any]], expected_exit: int) -> bytes:
     """The supervised-task-spec.v0 bytes. Every value comes from the profile, the draft or a computed hash/capture."""
     run, argv = profile["oracleRunner"], oracle_argv(profile, draft["oracle"])
+    v1 = profile["version"] == PROFILE_VERSION_V1
     doc = {
-        "specVersion": T.SPEC_VERSION,
+        "specVersion": T.SPEC_VERSION_V1 if v1 else T.SPEC_VERSION,
         "source": {"repo": profile["repo"], **draft["source"]},
         "task": draft["task"],
         "allow": [{"path": p, "status": "M", "mode": "100644"} for p in draft["allow"]],
@@ -173,6 +191,7 @@ def compose(profile: dict[str, Any], draft: dict[str, Any], oracle_files: list[d
         "hashes": {**profile["tools"], **profile["lock"]},
         "deps": profile["deps"],
         "metadata": draft["metadata"],
+        **({"formatter": {**profile["formatter"], "paths": draft["formatPaths"]}} if v1 else {}),
     }
     return (json.dumps(doc, indent=1) + "\n").encode("utf-8")
 
@@ -252,7 +271,8 @@ def prepare(draft_path: Path, profile_path: Path, reference_path: Path, out: Pat
     """Everything before any effect. Raises AuthorRefused only; nothing is created."""
     raw_d, raw_p, raw_r = (read_input(draft_path, "draft"), read_input(profile_path, "profile"),
                            read_input(reference_path, "reference"))
-    profile, d = parse_profile(raw_p), parse_draft(raw_d)
+    profile = parse_profile(raw_p)
+    d = parse_draft(raw_d, profile["version"] == PROFILE_VERSION_V1)
     check_tool_pins(profile)                                               # BEFORE any subprocess
     if out.exists():
         raise AuthorRefused("out_exists", str(out))

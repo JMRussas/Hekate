@@ -72,6 +72,14 @@ class CliRefused(Exception):
         self.code = code
 
 
+class FinalizeRefused(Exception):
+    """A typed stop from CliConfig.finalize: status `failed` | `unknown`, a reason code and the evidence gathered so far."""
+
+    def __init__(self, status: str, reason: str, evidence: dict[str, Any] | None = None):
+        super().__init__(f"{status}:{reason}")
+        self.status, self.reason, self.evidence = status, reason, evidence
+
+
 @dataclass(frozen=True)
 class CliConfig:
     command: tuple[Path, ...]          # absolute existing files: (claude,) or, in tests, (python, fake_cli.py)
@@ -99,6 +107,12 @@ class CliConfig:
     # HEAD check and BEFORE launch_intent, e.g. to install the worker's own dependencies. Any exception is a
     # typed `prepare_failed`: nothing is journaled and nothing is spawned. None (the default) = unchanged.
     prepare: Callable[[Path], None] | None = None
+    # Optional supervisor hook (task spec v1 formatter): finalize(worktree, round) runs in _capture AFTER the worker exited
+    # and the HEAD check and BEFORE `git add -A`/commit. It may rewrite allowlisted candidate files and returns host
+    # derivation evidence (kept in RunEvidence.finalize, never mixed with provider usage). FinalizeRefused = a typed stop
+    # (failed = the candidate's fault, unknown = infrastructure doubt: no model retry); any other exception = unknown.
+    # None (the default) = unchanged.
+    finalize: Callable[[Path, int], dict[str, Any]] | None = None
     execution_kind: str = "claude-cli"   # labels the attempt trace only (P.EXECUTION_KINDS); never changes behaviour
     # The worker CLI (plan 048): "claude" (default, unchanged) or "codex" (`codex exec --json`). For codex, `model` may
     # be None = the CLI's own default (requested nothing, reported nothing); the $/turn bounds are NOT enforced by it.
@@ -142,6 +156,8 @@ def validate(cfg: CliConfig) -> None:
             raise CliRefused("config_bounds", name)
     if cfg.prepare is not None and not callable(cfg.prepare):
         raise CliRefused("config_prepare")
+    if cfg.finalize is not None and not callable(cfg.finalize):
+        raise CliRefused("config_finalize")
     if not isinstance(cfg.restricted, bool):
         raise CliRefused("config_restricted")
     if not RUN_ID.fullmatch(cfg.committer.replace("-", "")):
@@ -937,6 +953,14 @@ class CliWorker:
         head = _git("rev-parse", "HEAD", cwd=wt).stdout.strip()
         if head != cfg.base_sha:
             return P.WorkReport("failed", reason="worker_moved_head", attested=True)
+        if cfg.finalize is not None:
+            try:
+                ev.finalize = cfg.finalize(wt, order.round)  # v1-only evidence; v0 vars(ev) keeps its historical shape
+            except FinalizeRefused as e:
+                ev.finalize = e.evidence
+                return P.WorkReport(e.status, reason=e.reason, attested=True)
+            except Exception:  # noqa: BLE001 -- an unexpected host failure is uncertain, never a model retry
+                return P.WorkReport("unknown", reason="finalize_error", attested=True)
         if _git("add", "-A", cwd=wt).returncode != 0:
             return P.WorkReport("unknown", reason="git_add_failed", attested=True)
         raw = _git("diff", "--cached", "--raw", "-z", "--no-renames", cwd=wt).stdout

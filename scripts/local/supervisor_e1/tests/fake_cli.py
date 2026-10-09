@@ -96,8 +96,12 @@ elif scenario.startswith("value_"):
     say(act({"kind": "worker_ack", "seq": 1}))
     if not os.path.isfile("node_modules/vitest/vitest.mjs"):
         sys.exit(5)                               # the prepare hook did not run before the launch
-    good = scenario in ("value_ok", "value_touch_oracle", "value_touch_lock") or (scenario == "value_bad_then_ok" and rnd >= 2)
-    edit("src/value.txt", "42\n" if good else "41\n")
+    good = scenario in ("value_ok", "value_unformatted", "value_touch_oracle", "value_touch_lock") or (scenario == "value_bad_then_ok" and rnd >= 2)
+    if scenario == "value_unformatted":                  # correct but unformatted: trailing blanks, exact LF bytes on any OS
+        with open("src/value.txt", "wb") as fh:
+            fh.write(b"42   \n")
+    else:
+        edit("src/value.txt", "42\n" if good else "41\n")
     if scenario == "value_touch_oracle":
         edit("tests/unit/value.test.ts", '{"cases": [{"name": "value is 42", "expect": "*"}]}\n')
     if scenario == "value_touch_lock":

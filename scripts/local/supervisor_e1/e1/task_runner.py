@@ -306,6 +306,10 @@ def run_baseline(spec: T.TaskSpec, repo: Path, run_root: Path) -> tuple[R.Bounde
     if add.returncode != 0:
         raise PreflightRefused("baseline_worktree_failed", git_stderr(add))
     deps = install_deps(spec, wt, run_root)
+    if spec.formatter is not None:                              # v1: the pinned Prettier entry and config, before any model spend
+        from e1 import task_format as TF
+        if not TF.pins_ok(wt, spec.formatter):
+            raise PreflightRefused("formatter_pin_mismatch")
     check_pins(spec)
     check_tree(spec, wt)
     b = R.run_bounded(list(b0["argv"]), cwd=wt, timeout_s=b0["timeoutS"], keep=b0["reportMaxBytes"], env=W.worker_env(),
@@ -636,7 +640,11 @@ def run(spec: T.TaskSpec, run_root: Path, *, executable: tuple[Path, ...], execu
                                    run_dir=resolved.run_dir.resolve(), execution_kind=execution_kind, backend=backend,
                                    worker_model=worker_model)
             # the worker's OWN dependencies, installed after `worktree add` and before launch (the prepare hook)
-            holder["w"] = W.CliWorker(W.CliConfig(**{**cfg.__dict__, "prepare": lambda wt: install_deps(spec, wt, root)}))
+            hooks = {"prepare": lambda wt: install_deps(spec, wt, root)}
+            if spec.formatter is not None:            # v1 only: the trusted supervisor formatter, before the artifact commit
+                from e1 import task_format as TF
+                hooks["finalize"] = TF.make_finalize(spec, repo, root, lambda: resolved.run_dir.resolve())
+            holder["w"] = W.CliWorker(W.CliConfig(**{**cfg.__dict__, **hooks}))
         return holder["w"](order)
 
     root = Path(run_root).resolve()

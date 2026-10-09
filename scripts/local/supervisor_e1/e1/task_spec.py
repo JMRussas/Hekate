@@ -20,7 +20,9 @@ from e1 import cli_worker as W
 from e1 import consumer as C
 
 SPEC_VERSION = "supervised-task-spec.v0"
+SPEC_VERSION_V1 = "supervised-task-spec.v1"      # v0 plus ONE trusted supervisor formatter and one more verify step slot
 SPEC_MAX = 64 << 10
+PRETTIER_ENTRY = re.compile(r"^node_modules/prettier/[A-Za-z0-9._/\-]{1,200}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 STEP_NAME = re.compile(r"^[a-z0-9-]{1,32}$")
@@ -44,6 +46,11 @@ class TaskSpec:
 
     def step(self, name: str) -> dict[str, Any]:
         return next(s for s in self.doc["verify"]["steps"] if s["name"] == name)
+
+    @property
+    def formatter(self) -> dict[str, Any] | None:
+        """The v1 trusted formatter descriptor; None for every v0 spec."""
+        return self.doc.get("formatter")
 
 
 def _fail(code: str, detail: str = ""):
@@ -138,6 +145,47 @@ def load(path: Path) -> TaskSpec:
 
 
 def validate(d: Any) -> None:
+    """v0 exactly as before; v1 is v0's rules on the same document minus `formatter` (and one more verify step),
+    plus the formatter descriptor. A v0 document carrying a `formatter` key is a spec_shape refusal."""
+    if isinstance(d, dict) and d.get("specVersion") == SPEC_VERSION_V1:
+        _exact(d, ("specVersion", "source", "task", "allow", "oracle", "verify", "worker", "hashes", "deps", "metadata", "formatter"), "spec")
+        _validate_v0_rules({**{k: v for k, v in d.items() if k != "formatter"}, "specVersion": SPEC_VERSION}, max_steps=5)
+        _validate_formatter(d["formatter"], d)
+        return
+    _validate_v0_rules(d, max_steps=4)
+
+
+def _validate_formatter(f: Any, d: dict[str, Any]) -> None:
+    _exact(f, ("prettierEntry", "config", "paths", "timeoutS", "outputKeepBytes"), "formatter")
+    entry = _exact(f["prettierEntry"], ("path", "version", "sha256"), "formatter.prettierEntry")
+    _str(entry["path"], "formatter.prettierEntry.path", 1, 300, PRETTIER_ENTRY)
+    _rel_path(entry["path"], "formatter.prettierEntry.path")
+    _str(entry["path"], "formatter.prettierEntry.path", 1, 300, ARGV_ELEMENT)
+    _str(entry["version"], "formatter.prettierEntry.version", 1, 16, NPM_VERSION)
+    _str(entry["sha256"], "formatter.prettierEntry.sha256", 64, 64, HEX64)
+    cfg = _exact(f["config"], ("path", "sha256"), "formatter.config")       # the pinned config: prettier reads no other
+    _rel_path(cfg["path"], "formatter.config.path")
+    _str(cfg["path"], "formatter.config.path", 1, 300, ARGV_ELEMENT)
+    _str(cfg["sha256"], "formatter.config.sha256", 64, 64, HEX64)
+    allow = {a["path"] for a in d["allow"]}
+    oracle = {o["path"] for o in d["oracle"]["files"]}
+    if cfg["path"].startswith("-") or cfg["path"] in allow | oracle or cfg["path"].startswith("node_modules/"):
+        _fail("spec_formatter", "formatter.config.path must be a tracked config outside allow, oracle and node_modules")
+    paths = f["paths"]
+    if not isinstance(paths, list) or not 1 <= len(paths) <= 8:
+        _fail("spec_value", "formatter.paths must hold 1..8 entries")
+    for i, p in enumerate(paths):
+        _rel_path(p, f"formatter.paths[{i}]")
+        _str(p, f"formatter.paths[{i}]", 1, 300, ARGV_ELEMENT)
+        if p.startswith("-") or p not in allow:
+            _fail("spec_formatter", f"formatter.paths[{i}] must be one of the allow paths and not look like a flag")
+    if len(set(paths)) != len(paths):
+        _fail("spec_formatter", "duplicate formatter path")
+    _int(f["timeoutS"], "formatter.timeoutS", 1, 120)
+    _int(f["outputKeepBytes"], "formatter.outputKeepBytes", 1, 64 << 10)
+
+
+def _validate_v0_rules(d: Any, max_steps: int) -> None:
     _exact(d, ("specVersion", "source", "task", "allow", "oracle", "verify", "worker", "hashes", "deps", "metadata"), "spec")
     if d["specVersion"] != SPEC_VERSION:
         _fail("spec_version")
@@ -190,8 +238,8 @@ def validate(d: Any) -> None:
         seen.add(p)
 
     steps = _exact(d["verify"], ("steps",), "verify")["steps"]
-    if not isinstance(steps, list) or not 1 <= len(steps) <= 4:
-        _fail("spec_value", "verify.steps must hold 1..4 steps")
+    if not isinstance(steps, list) or not 1 <= len(steps) <= max_steps:
+        _fail("spec_value", f"verify.steps must hold 1..{max_steps} steps")
     names: list[str] = []
     for i, s in enumerate(steps):
         _exact(s, ("name", "argv", "timeoutS", "outputKeepBytes"), f"verify.steps[{i}]")

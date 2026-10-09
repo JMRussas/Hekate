@@ -42,7 +42,7 @@ def _oracle(d):
     (lambda d: d.update(extra=1), "spec_shape"),
     (lambda d: d["worker"].update(extra=1), "spec_shape"),
     (lambda d: d.pop("metadata"), "spec_shape"),
-    (lambda d: d.update(specVersion="supervised-task-spec.v1"), "spec_version"),
+    (lambda d: d.update(specVersion="supervised-task-spec.v99"), "spec_version"),
     (lambda d: d["deps"].update(timeoutS=1.5), "spec_float"),
     (lambda d: d["source"].update(anchorCommit=d["source"]["taskBaseCommit"]), "spec_value"),
     (lambda d: d["source"].update(repo="relative/repo"), "spec_value"),
