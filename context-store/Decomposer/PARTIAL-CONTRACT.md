@@ -7,11 +7,11 @@ with Roslyn against trusted platform references).
 
 ## Stored metadata
 
-| Node | Attribute | Meaning |
-|------|-----------|---------|
-| `class`, `struct`, `method` | `is_partial = "true"` | `partial` was written. Absent otherwise. |
-| `class`, `struct`, `method`, ... | `access` | Written access keyword, or `implicit` if none was written. |
-| `class`, `method` | `is_static = "true"` | `static` was written (already stored before). |
+| Node                             | Attribute             | Meaning                                                    |
+| -------------------------------- | --------------------- | ---------------------------------------------------------- |
+| `class`, `struct`, `method`      | `is_partial = "true"` | `partial` was written. Absent otherwise.                   |
+| `class`, `struct`, `method`, ... | `access`              | Written access keyword, or `implicit` if none was written. |
+| `class`, `method`                | `is_static = "true"`  | `static` was written (already stored before).              |
 
 `implicit` is metadata only. The generator never emits it as a keyword; it omits the access
 modifier instead (types, fields, constructors, methods).
@@ -43,6 +43,7 @@ implementation in another) is the source's responsibility; the generator does no
 ## Behavior changes to nonpartial output
 
 These were bugs and now produce compilable output:
+
 - `access = implicit` no longer emits the literal `implicit`.
 - `is_static` is honored for types and methods (previously dropped).
 - Bodyless methods end with `;`.
