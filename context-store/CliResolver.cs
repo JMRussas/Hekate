@@ -47,7 +47,6 @@ public static class CliResolver
     private static readonly string[] _fallbackDirs =
     [
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"),
-        @"C:\Users\jruss\AppData\Roaming\npm",
         @"C:\Program Files\nodejs",
     ];
 

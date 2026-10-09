@@ -5,7 +5,7 @@ under a named project. The project is created on first run (idempotent
 on name — re-running returns the existing id).
 
 Usage:
-    python index_code.py --name DungeonCrawl --root D:\\Git\\DnD\\game
+    python index_code.py --name DungeonCrawl --root ./example-project
     python index_code.py            # uses the defaults above
     python index_code.py --base http://localhost:5102 --concurrency 8
 """
@@ -22,7 +22,7 @@ import httpx
 
 DEFAULT_CTX_STORE = os.environ.get("CTX_STORE_URL", "http://192.168.1.164:5102")
 DEFAULT_NAME = "DungeonCrawl"
-DEFAULT_ROOT = r"D:\Git\DnD\game"
+DEFAULT_ROOT = os.environ.get("CANVAS_SOURCE_ROOT", ".")
 
 EXCLUDE_PARTS = {".git", ".claude", "bin", "obj", "__pycache__", ".worktrees", ".venv", "node_modules"}
 EXTENSIONS = (".cs",)

@@ -181,7 +181,7 @@ Files like `ec36_full.json`, `pl.json`, `slot_tasks.json`, `sentinel_full.json`,
 - **Fix:** `mcp__hekate__build_index` on both.
 
 ### 25. Hardcoded path in CliResolver
-- **context-store/CliResolver.cs:51** — `@"C:\Users\jruss\AppData\Roaming\npm"` hardcoded to your profile.
+- **context-store/CliResolver.cs:51** — historically included a user-specific npm fallback; publication cleanup now uses the current profile's application-data directory.
 
 ### 26. Extension: no tests, command handlers have no try/catch
 - Zero test files. Command handlers (`startProject`, `pauseProject`, etc.) have no error handling — failures propagate as unhandled rejections.

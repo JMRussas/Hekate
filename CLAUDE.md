@@ -24,7 +24,7 @@ Key files: `Odin/gods/pipeline.py` (event loop), `Odin/gods/handlers/registratio
 
 | Directory | Purpose | What lives there |
 |-----------|---------|-----------------|
-| `C:\Users\jruss\Documents\GitHub\Hekate` | **Source repo** (git) | All source code, commits, pushes |
+| `<your Hekate checkout>` | **Source repo** (git) | All source code, commits, pushes |
 | `C:\Hekate` | **Deployment target** (NSSM services) | Published binaries + copied Python source |
 
 **Never clone or init git in `C:\Hekate`.** It's a deployment directory. Deploy with `bash scripts/deploy.sh` from admin terminal.
@@ -60,7 +60,7 @@ All services run via NSSM from `C:\Hekate`, **not** from the source repo.
 | HekateTypeScriptWorker | similar | 9202 | TS worker (internal) |
 | HekateCppWorker | similar | 9201 | C++ worker (internal) |
 | HekateAdmin | Python 3.14 `server.py` | 5201 | Hades — admin service. Needs `PATH` with nssm + python |
-| HekateLLMGateway | Python 3.11 `server.py` | 5210 | LLM proxy — LocalSystem with HOME=jruss for CLI OAuth |
+| HekateLLMGateway | Python 3.11 `server.py` | 5210 | LLM proxy — LocalSystem with an explicitly configured CLI user profile |
 | HekateHadesMcp | Python 3.11 `mcp_bridge.py` | 5211 | Hades MCP bridge (SSE transport) |
 | HekatePrometheusMcp | Python 3.11 `prometheus_mcp.py` | 5212 | Project/task management MCP (SSE transport) |
 | HekateAgentContextMcp | Python 3.11 `server.py` | 5213 | Agent context MCP (SSE transport) |
@@ -68,10 +68,10 @@ All services run via NSSM from `C:\Hekate`, **not** from the source repo.
 ### NSSM Environment (HekateEngine)
 
 The service runs as LocalSystem. These env vars are set via `nssm set AppEnvironmentExtra`:
-- `PATH` — must include: `C:\Program Files\nodejs`, `C:\Users\jruss\AppData\Roaming\npm`, Python311
-- `HOME=C:\Users\jruss` — CLI tools read auth from user home
-- `USERPROFILE=C:\Users\jruss`
-- `APPDATA=C:\Users\jruss\AppData\Roaming`
+- `PATH` — must include: `C:\Program Files\nodejs`, `<CLI user profile>\AppData\Roaming\npm`, Python311
+- `HOME=<CLI user profile>` — CLI tools read auth from user home
+- `USERPROFILE=<CLI user profile>`
+- `APPDATA=<CLI user profile>\AppData\Roaming`
 - `GEMINI_FORCE_FILE_STORAGE=true` — forces file-based OAuth instead of Windows Credential Manager
 
 ### Service Management
@@ -120,7 +120,7 @@ Use Hades MCP tools or HTTP API:
 ## Project Structure
 
 ```
-Hekate/                              # Source repo (C:\Users\jruss\Documents\GitHub\Hekate)
+Hekate/                              # Source repo (<your Hekate checkout>)
 ├── CLAUDE.md                        # This file
 ├── scripts/
 │   ├── deploy.sh                    # Full deploy to C:\Hekate
@@ -226,7 +226,7 @@ Tier map: `Odin/gods/handlers/odin.py` `_TIER_MAP`. Fallback chain: `["claude_co
 - **Runtime**: Node.js 24+, Python 3.11 (NOT 3.14), .NET 8 (SDK 10), Docker
 - **Key env vars**: `ANTHROPIC_API_KEY` (optional), `CODESTORAGE_CONNSTR`, `OLLAMA_URL`
 - **Platform**: Windows 11, bash shell (Git Bash)
-- **Python**: Use `C:\Users\jruss\AppData\Local\Programs\Python\Python311\python.exe` — Python 3.14 has broken FastAPI imports
+- **Python**: Use the `HEKATE_PYTHON` interpreter path configured for the deployment — Python 3.14 has broken FastAPI imports
 
 ## Git Workflow
 

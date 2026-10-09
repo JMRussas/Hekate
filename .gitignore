@@ -38,3 +38,10 @@ Odin/gods/odin/data/
 
 # Local plan-only profile state (scripts/local/hekate-local.ps1)
 .hekate-local/
+
+# Machine-local settings, generated plans and learned conversation data
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+**/.hekate/plans/
+orchestration/orchestration.db
+orchestration/backend/services/learning/conversation_patterns.json

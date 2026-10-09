@@ -19,7 +19,7 @@ STARTUP_TIMEOUT=60
 POLL_INTERVAL=2
 PIDFILE="${SCRIPT_DIR}/.orchestration.pid"
 RESTART_FLAG="${SCRIPT_DIR}/.restart-needed"
-PYTHON="C:/Users/jruss/AppData/Local/Programs/Python/Python311/python.exe"
+PYTHON="${HEKATE_PYTHON:-python}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'

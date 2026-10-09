@@ -6,6 +6,7 @@
 #  Used by:    app.py
 
 import logging
+import os
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -39,8 +40,8 @@ health_router = APIRouter(tags=["health"])
 _log = logging.getLogger("orchestration.services")
 
 # NSSM services that can be managed via the /nssm endpoint
-# Full path — LocalSystem PATH may not include the WinGet links directory
-_NSSM = r"C:\Users\jruss\AppData\Local\Microsoft\WinGet\Links\nssm.exe"
+# Set HEKATE_NSSM for services whose PATH does not include NSSM.
+_NSSM = os.environ.get("HEKATE_NSSM", "nssm.exe")
 
 _ALLOWED_NSSM_SERVICES = {
     "HekateOrchestration", "HekateContextStore", "HekateServer",

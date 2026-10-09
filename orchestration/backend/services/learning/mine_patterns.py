@@ -7,17 +7,18 @@ Samples the 50 largest files from each directory (longer = more patterns).
 
 import json
 import os
+import os
 import re
 import sys
 from pathlib import Path
 from collections import Counter, defaultdict
 
 DIRS = [
-    Path.home() / ".claude/projects/c--Users-jruss-Documents-GitHub-Hekate",
-    Path.home() / ".claude/projects/C--Hekate-orchestration",
+    Path(directory) for directory in os.environ.get("HEKATE_CLAUDE_LOG_DIRS", "").split(os.pathsep)
+    if directory
 ]
 
-OUTPUT = Path(r"c:\Users\jruss\Documents\GitHub\Hekate\orchestration\backend\services\learning\conversation_patterns.json")
+OUTPUT = Path(__file__).with_name("conversation_patterns.json")
 
 # Negative signal words for user corrections
 NEGATIVE_SIGNALS = re.compile(

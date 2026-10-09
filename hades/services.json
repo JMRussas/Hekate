@@ -1,7 +1,7 @@
 {
   "infra": {
     "docker_desktop": "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe",
-    "compose_file": "C:\\Users\\jruss\\Documents\\GitHub\\Hekate\\context-store\\docker-compose.yml",
+    "compose_file": "context-store/docker-compose.yml",
     "postgres_container": "code-storage-db",
     "postgres_port": 5433,
     "startup_timeout": 90
@@ -10,7 +10,7 @@
     "HekateOrchestration": {
       "port": 5200,
       "health": "http://localhost:5200/api/health",
-      "app": "C:\\Users\\jruss\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "app": "python",
       "app_args": "run.py",
       "app_dir": "C:\\Hekate\\orchestration",
       "group": "core",
@@ -73,7 +73,7 @@
     "HekateLLMGateway": {
       "port": 5210,
       "health": "http://localhost:5210/health",
-      "app": "C:\\Users\\jruss\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "app": "python",
       "app_args": "C:\\Hekate\\llm-gateway\\server.py",
       "app_dir": "C:\\Hekate\\llm-gateway",
       "group": "core",

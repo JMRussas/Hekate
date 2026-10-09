@@ -273,7 +273,7 @@ TOOLS: list[dict] = [
                 "properties": {
                     "name": {"type": "string", "description": "Short project name."},
                     "requirements": {"type": "string", "description": "What the project should accomplish. Be specific."},
-                    "repo_path": {"type": "string", "description": "Git repo path for the project. Use C:/Users/jruss/Documents/GitHub/Hekate for Hekate work, or omit to use the default workspace D:/Conversations/Odin/."},
+                    "repo_path": {"type": "string", "description": "Git repo path for the project. Use the absolute path of your Hekate checkout for Hekate work, or omit to use the default workspace D:/Conversations/Odin/."},
                 },
                 "required": ["name", "requirements"],
             },

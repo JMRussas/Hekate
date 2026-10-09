@@ -27,8 +27,8 @@ logger = logging.getLogger("orchestration.learning")
 
 # Conversation log directories (Claude Code JSONL)
 _CONVERSATION_DIRS = [
-    Path.home() / ".claude" / "projects" / "c--Users-jruss-Documents-GitHub-Hekate",
-    Path.home() / ".claude" / "projects" / "C--Hekate-orchestration",
+    Path(directory) for directory in os.environ.get("HEKATE_CLAUDE_LOG_DIRS", "").split(os.pathsep)
+    if directory
 ]
 
 # ---------------------------------------------------------------------------

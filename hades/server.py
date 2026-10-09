@@ -31,7 +31,7 @@ VERSION = "0.1.0"
 APP_START_TIME = time.monotonic()
 
 HEKATE_ROOT = Path(os.environ.get("HEKATE_ROOT", "C:/Hekate"))
-SOURCE_ROOT = Path(os.environ.get("HEKATE_SOURCE", "C:/Users/jruss/Documents/GitHub/Hekate"))
+SOURCE_ROOT = Path(os.environ.get("HEKATE_SOURCE", str(Path(__file__).resolve().parents[1])))
 PORT = int(os.environ.get("ADMIN_MCP_PORT", "5201"))
 
 # Service registry — loaded from services.json, with hardcoded fallback
@@ -43,7 +43,15 @@ def _load_services() -> tuple[dict, dict]:
     if SERVICES_FILE.exists():
         with open(SERVICES_FILE, "r") as f:
             data = json.load(f)
-        return data.get("services", {}), data.get("infra", {})
+        services = data.get("services", {})
+        infra = data.get("infra", {})
+        for service in services.values():
+            if service.get("app") == "python":
+                service["app"] = os.environ.get("HEKATE_PYTHON", sys.executable)
+        compose = infra.get("compose_file")
+        if compose and not Path(compose).is_absolute():
+            infra["compose_file"] = str(SOURCE_ROOT / compose)
+        return services, infra
     # Fallback if JSON missing
     return {
         "HekateOrchestration":    {"port": 5200, "health": "http://localhost:5200/api/health", "managed": True, "group": "core"},

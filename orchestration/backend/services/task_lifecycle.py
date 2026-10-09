@@ -22,6 +22,7 @@ import random
 import re
 import time
 import uuid
+from pathlib import Path
 
 import anthropic
 import httpx
@@ -85,7 +86,7 @@ async def _sync_status_to_context_store(
         # Never propagate — this is fire-and-forget
         logger.debug("Context store status sync failed for task %s", task_title, exc_info=True)
 
-SOURCE_ROOT = os.environ.get("HEKATE_SOURCE", r"C:\Users\jruss\Documents\GitHub\Hekate")
+SOURCE_ROOT = os.environ.get("HEKATE_SOURCE", str(Path(__file__).resolve().parents[3]))
 
 
 async def _ensure_workspace(cwd: str, db, project_id: str):

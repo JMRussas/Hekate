@@ -18,9 +18,9 @@
 
 set -e
 
-PYTHON="C:/Users/jruss/AppData/Local/Programs/Python/Python311/python.exe"
+PYTHON="${HEKATE_PYTHON:-python}"
 SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
-DEPLOY="C:/Hekate"
+DEPLOY="${HEKATE_ROOT:-C:/Hekate}"
 SERVICE="HekateEngine"
 
 # NSSM must run from DEPLOY dir (LocalSystem can't access user folders)
