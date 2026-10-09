@@ -1,0 +1,29 @@
+name: Verify
+on: [push, pull_request]
+permissions:
+  contents: read
+
+# Covers the suites that run without services: the plan-contract rules and the
+# publication configuration checks. The orchestration, Odin and supervisor_e1
+# suites and the dashboard tests need the owned local store, model CLIs or
+# repairs recorded in the repository and are not run here.
+jobs:
+  plan-contracts:
+    # Windows: the bare-file-name rule treats a backslash as a separator, which
+    # Linux file systems do not, so one refusal case holds only on Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet test context-store/PlanContracts.Tests/PlanContracts.Tests.csproj --nologo
+  publication-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet "pytest>=8,<9"
+      - run: python -m pytest tests/test_publication_paths.py -q

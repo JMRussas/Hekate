@@ -1,5 +1,7 @@
 # Hekate — AI project orchestration
 
+[![Verify](https://github.com/JMRussas/Hekate/actions/workflows/verify.yml/badge.svg)](https://github.com/JMRussas/Hekate/actions/workflows/verify.yml)
+
 Hekate is a local engineering prototype for planning and executing software work
 with AI roles. Its development workflow combines **multi-pass plan review**,
 **test-first development**, and **cross-model code review**. It brings planning,
