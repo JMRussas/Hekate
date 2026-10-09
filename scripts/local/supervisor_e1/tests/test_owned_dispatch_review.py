@@ -89,3 +89,24 @@ def test_launch_correlates_virtualenv_launcher_with_runtime_owner(tmp_path, caps
     assert OD.launch(OD.build_parser().parse_args(argv), popen=wrapper_spawn) == OD.EXIT_OK
     result = json.loads(capsys.readouterr().out)
     assert result["launched"] and result["pid"] == os.getpid() and result["launcherPid"] == 7777
+
+
+def test_unconfirmed_launch_reports_the_child_launch_id_and_spawns_once(tmp_path, capsys):
+    from types import SimpleNamespace
+    _, argv = prepared(tmp_path)
+    argv[0] = "launch"
+    spawned, slept = [], []
+    clock = [1000.0]
+    def silent_spawn(command, **kwargs):
+        spawned.append(command)
+        return SimpleNamespace(pid=7777, poll=lambda: None)
+    def sleep(seconds):                                                  # injected clock: no real waiting
+        slept.append(seconds)
+        clock[0] += seconds
+    args = OD.build_parser().parse_args(argv)
+    assert OD.launch(args, popen=silent_spawn, now=lambda: clock[0], sleep=sleep) == OD.EXIT_STOPPED
+    result = json.loads(capsys.readouterr().out)
+    assert len(spawned) == 1 and slept
+    child_id = spawned[0][spawned[0].index("--launch-id") + 1]
+    assert result["launched"] == "unconfirmed" and result["launchId"] == child_id
+    assert OD.LAUNCH_ID.fullmatch(child_id)

@@ -728,7 +728,7 @@ def launch(a: argparse.Namespace, *, popen: Callable[..., Any] = subprocess.Pope
             print(json.dumps({"launched": False, "exitCode": proc.returncode, "log": str(ddir / LOG)}))
             return EXIT_STOPPED
         sleep(1.0)
-    print(json.dumps({"launched": "unconfirmed", "pid": proc.pid, "note": "no matching status yet; check `status` before launching again",
+    print(json.dumps({"launched": "unconfirmed", "pid": proc.pid, "launchId": a.launch_id, "note": "no matching status yet; check `status` before launching again",
                       "log": str(ddir / LOG)}))
     return EXIT_STOPPED
 
