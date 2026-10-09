@@ -25,6 +25,22 @@ from gods.task_states import transition_task
 
 logger = logging.getLogger("gods.api")
 
+# Max task IDs bound into a single task_deps query by list_tasks.
+TASK_DEPS_CHUNK_SIZE = 500
+
+
+def _parse_tools(raw: Any) -> list[str]:
+    """Project tools_json as a list of strings; anything else becomes []."""
+    if not isinstance(raw, str):
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list) or not all(isinstance(t, str) for t in parsed):
+        return []
+    return parsed
+
 
 # ---------------------------------------------------------------------------
 # Request/Response models
@@ -202,7 +218,8 @@ def create_app(
         e: HekateEngine = app.state.engine
         sql = (
             "SELECT id, title, description, task_type, status, wave, model_tier, "
-            "retry_count, verification_status, cost_usd, created_at, updated_at "
+            "retry_count, verification_status, cost_usd, tools_json, "
+            "created_at, updated_at "
             "FROM tasks WHERE project_id = $1"
         )
         params: list = [project_id]
@@ -214,7 +231,26 @@ def create_app(
             params.append(wave)
         sql += " ORDER BY wave, priority"
 
-        return await e.db.fetchall(sql, tuple(params))
+        rows = await e.db.fetchall(sql, tuple(params))
+
+        task_ids = [row["id"] for row in rows]
+        deps_by_task: dict[str, list[str]] = {}
+        # Every returned task is covered; chunking only bounds per-query params.
+        for start in range(0, len(task_ids), TASK_DEPS_CHUNK_SIZE):
+            chunk = task_ids[start:start + TASK_DEPS_CHUNK_SIZE]
+            placeholders = ", ".join(f"${i + 1}" for i in range(len(chunk)))
+            dep_rows = await e.db.fetchall(
+                "SELECT task_id, depends_on FROM task_deps "
+                f"WHERE task_id IN ({placeholders})",
+                tuple(chunk),
+            )
+            for dep in dep_rows:
+                deps_by_task.setdefault(dep["task_id"], []).append(dep["depends_on"])
+
+        for row in rows:
+            row["tools"] = _parse_tools(row.pop("tools_json", None))
+            row["depends_on"] = sorted(set(deps_by_task.get(row["id"], [])))
+        return rows
 
     @app.get("/api/tasks/{task_id}")
     async def get_task(task_id: str):
