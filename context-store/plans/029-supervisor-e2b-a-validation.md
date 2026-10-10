@@ -11,8 +11,8 @@
 
 | Item | Value |
 |---|---|
-| Hekate base | committed **`ca672ec`**. Clean-source gate: `git archive ca672ec` plus **only** the owned overlay below, in `C:\Users\jruss\AppData\Local\Temp\claude\d--Git-Hekate\ad845ee3-ddf5-4018-8f3b-f217b500bf47\scratchpad\hekate-ca672ec-e2b` (temporary). `diff -rq` against the workspace showed the overlay identical. The Api was built from the clean archive |
-| ChatAgent H1 | unchanged from 027: `5255daacfc670a4919f61439eb12adcb6a401920` in `C:\Users\jruss\AppData\Local\Temp\claude\d--Git-Hekate\ad845ee3-ddf5-4018-8f3b-f217b500bf47\scratchpad\chatagent-5255daa`, `node_modules` a shared directory junction (not enforced read-only). `D:\Git\ChatAgent` not touched |
+| Hekate base | committed **`ca672ec`**. Clean-source gate: `git archive ca672ec` plus **only** the owned overlay below, in `<user profile>\AppData\Local\Temp\claude\d--Git-Hekate\ad845ee3-ddf5-4018-8f3b-f217b500bf47\scratchpad\hekate-ca672ec-e2b` (temporary). `diff -rq` against the workspace showed the overlay identical. The Api was built from the clean archive |
+| ChatAgent H1 | unchanged from 027: `5255daacfc670a4919f61439eb12adcb6a401920` in `<user profile>\AppData\Local\Temp\claude\d--Git-Hekate\ad845ee3-ddf5-4018-8f3b-f217b500bf47\scratchpad\chatagent-5255daa`, `node_modules` a shared directory junction (not enforced read-only). `D:\Git\ChatAgent` not touched |
 | Runtimes | uv 0.11.19; CPython 3.13.13; Node v24.21.0 (pinned H1 runtime); PostgreSQL in the owned `hekate-local` container |
 | Dependency | **`psycopg[binary]>=3.2`**, locked at psycopg 3.3.6 / psycopg-binary 3.3.6 (plus tzdata). Justified (msg 930): session advisory locks, explicit transactions, concurrent connections and a killable connection-owning child process |
 | Container | owned `hekate-local` (label-verified). Lifecycle owned by claude-hekate from msg 927: started from stopped, **stopped again after the runs** |
